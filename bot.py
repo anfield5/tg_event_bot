@@ -12,30 +12,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Logging setup
+# Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH")
 
+# Decode emoji codes like "U+1F4A9" to real emojis
 def decode_emoji(emoji_code):
     try:
-        return emoji_code.replace("U+", "\\U000").encode().decode("unicode_escape")
-    except:
+        return bytes(emoji_code.replace("U+", "\\U000").encode().decode('unicode_escape'), 'utf-8').decode('unicode_escape')
+    except Exception:
         return emoji_code
 
-# Icons from environment
-DEFAULT_GOING_ICON = decode_emoji(os.getenv("DEFAULT_GOING_ICON", ""))
-DEFAULT_NOTGOING_ICON = decode_emoji(os.getenv("DEFAULT_NOTGOING_ICON", ""))
-OPEN_EVENT_ICON = decode_emoji(os.getenv("OPEN_EVENT_ICON", ""))
-CLOSE_EVENT_ICON = decode_emoji(os.getenv("CLOSE_EVENT_ICON", ""))
+DEFAULT_GOING_ICON = decode_emoji(os.getenv("DEFAULT_GOING_ICON", "U+2705"))
+DEFAULT_NOTGOING_ICON = decode_emoji(os.getenv("DEFAULT_NOTGOING_ICON", "U+274C"))
+OPEN_EVENT_ICON = decode_emoji(os.getenv("OPEN_EVENT_ICON", "U+1F7E2"))
+CLOSE_EVENT_ICON = decode_emoji(os.getenv("CLOSE_EVENT_ICON", "U+1F534"))
 
-# Google Sheets auth
+# Google Sheets authentication
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_PATH, scope)
 client = gspread.authorize(credentials)
@@ -55,6 +54,7 @@ def create_event_keyboard(event_id, going, not_going, counters, is_open, user_ch
         return InlineKeyboardMarkup(buttons)
 
     chosen = user_choices.get(username)
+
     going_button = InlineKeyboardButton(f"{going_icon} Going", callback_data=f"going_{event_id}")
     not_going_button = InlineKeyboardButton(f"{notgoing_icon} Not Going", callback_data=f"notgoing_{event_id}")
 
@@ -76,9 +76,6 @@ def create_event_keyboard(event_id, going, not_going, counters, is_open, user_ch
 
     return InlineKeyboardMarkup(buttons)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Use /add_event <event_name> [going_icon] [notgoing_icon] to create event.")
-
 async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please provide event name after command.")
@@ -91,17 +88,12 @@ async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     event_id = str(uuid4())[:8]
     is_open = True
 
-    going = set()
-    not_going = set()
-    counters = {}
-    user_choices = {}
-
     events_data[event_id] = {
         "name": event_name,
-        "going": going,
-        "not_going": not_going,
-        "counters": counters,
-        "user_choices": user_choices,
+        "going": set(),
+        "not_going": set(),
+        "counters": {},
+        "user_choices": {},
         "is_open": is_open,
         "message_id": None,
         "chat_id": update.effective_chat.id,
@@ -110,23 +102,30 @@ async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     username = update.effective_user.username or update.effective_user.first_name
-    keyboard = create_event_keyboard(event_id, going, not_going, counters, is_open, user_choices, username, going_icon, notgoing_icon)
 
-    text = f"*{event_name}*\n\n{going_icon} *Going* (0):\n\n{notgoing_icon} *Not going* (0):"
+    keyboard = create_event_keyboard(event_id, set(), set(), {}, is_open, {}, username, going_icon, notgoing_icon)
 
-    message = await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    text = (
+        f"*{event_name}*\n\n"
+        f"{going_icon} *Going* (0):\n\n"
+        f"{notgoing_icon} *Not going* (0):\n"
+    )
+
+    message = await update.message.reply_text(
+        text, reply_markup=keyboard, parse_mode="Markdown"
+    )
+
     events_data[event_id]["message_id"] = message.message_id
-
     now_str = datetime.now().isoformat()
     events_sheet.append_row([event_id, event_name, now_str, 0, 0])
 
 async def update_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Please provide parameters: event_name [going_icon] [notgoing_icon]")
+        await update.message.reply_text("Usage: /update_event <event_name> [going_icon] [notgoing_icon]")
         return
 
     if not events_data:
-        await update.message.reply_text("No events to update.")
+        await update.message.reply_text("No events found to update.")
         return
 
     last_event_id = list(events_data.keys())[-1]
@@ -141,13 +140,21 @@ async def update_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     event["notgoing_icon"] = notgoing_icon
 
     username = update.effective_user.username or update.effective_user.first_name
-    keyboard = create_event_keyboard(last_event_id, event["going"], event["not_going"], event["counters"], event["is_open"], event["user_choices"], username, going_icon, notgoing_icon)
+    keyboard = create_event_keyboard(
+        last_event_id, event["going"], event["not_going"], event["counters"],
+        event["is_open"], event["user_choices"], username, going_icon, notgoing_icon
+    )
 
     going_list = "\n".join(event["going"])
-    counters_text = "\n".join([f"{count}, from {user}" for user, count in event["counters"].items()])
-    not_going_list = "\n".join(event["not_going"])
+    counter_text = "\n".join([f"{c}, from {u}" for u, c in event["counters"].items()])
+    notgoing_list = "\n".join(event["not_going"])
 
-    text = f"*{event_name}*\n\n{going_icon} *Going* ({len(event['going'])}):\n{going_list}\n{counters_text}\n{notgoing_icon} *Not going* ({len(event['not_going'])}):\n{not_going_list}"
+    text = (
+        f"*{event_name}*\n\n"
+        f"{going_icon} *Going* ({len(event['going'])}):\n{going_list}\n"
+        f"{counter_text}\n"
+        f"{notgoing_icon} *Not going* ({len(event['not_going'])}):\n{notgoing_list}"
+    )
 
     await update.message.reply_text(text=text, reply_markup=keyboard, parse_mode="Markdown")
 
@@ -155,17 +162,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
-    if data == "noop":
-        return
-
     try:
-        action, event_id = data.split("_", 1)
+        action, event_id = query.data.split("_", 1)
     except ValueError:
         return
 
     if event_id not in events_data:
-        await query.edit_message_text("Event not found or expired.")
+        await query.edit_message_text("Event not found.")
         return
 
     event = events_data[event_id]
@@ -181,62 +184,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notgoing_icon = event.get("notgoing_icon", DEFAULT_NOTGOING_ICON)
 
     if action == "going":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
-        user_choices[username] = "going"
-        going.add(username)
-        not_going.discard(username)
-
+        if is_open:
+            user_choices[username] = "going"
+            going.add(username)
+            not_going.discard(username)
     elif action == "notgoing":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
-        user_choices[username] = "notgoing"
-        not_going.add(username)
-        going.discard(username)
-
-    elif action == "add":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
+        if is_open:
+            user_choices[username] = "notgoing"
+            not_going.add(username)
+            going.discard(username)
+    elif action == "add" and is_open:
         counters[username] = counters.get(username, 0) + 1
-
-    elif action == "sub":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
-        if username in counters:
-            if counters[username] > 1:
-                counters[username] -= 1
-            else:
-                del counters[username]
-
-    elif action == "close":
-        if not is_open:
-            await query.answer("Already closed.", show_alert=True)
-            return
+    elif action == "sub" and is_open:
+        if counters.get(username, 0) > 1:
+            counters[username] -= 1
+        elif counters.get(username, 0) == 1:
+            del counters[username]
+    elif action == "close" and is_open:
         event["is_open"] = False
         total_going = len(going) + sum(counters.values())
         total_not_going = len(not_going)
-        for idx, record in enumerate(events_sheet.get_all_records(), start=2):
+        all_records = events_sheet.get_all_records()
+        for idx, record in enumerate(all_records, start=2):
             if record["EVENT_ID"] == event_id:
                 events_sheet.update_cell(idx, 4, total_going)
                 events_sheet.update_cell(idx, 5, total_not_going)
                 break
-
-    elif action == "open":
+    elif action == "open" and not is_open:
         event["is_open"] = True
 
-    text = f"*{event['name']}*\n\n{going_icon} *Going* ({len(going)}):\n" + \
-           "\n".join(going) + "\n" + \
-           "\n".join([f"{count}, from {u}" for u, count in counters.items()]) + "\n" + \
-           f"{notgoing_icon} *Not going* ({len(not_going)}):\n" + "\n".join(not_going)
-
     keyboard = create_event_keyboard(event_id, going, not_going, counters, event["is_open"], user_choices, username, going_icon, notgoing_icon)
+    going_list = "\n".join(going)
+    counter_text = "\n".join([f"{c}, from {u}" for u, c in counters.items()])
+    notgoing_list = "\n".join(not_going)
+
+    text = (
+        f"*{event['name']}*\n\n"
+        f"{going_icon} *Going* ({len(going)}):\n{going_list}\n"
+        f"{counter_text}\n"
+        f"{notgoing_icon} *Not going* ({len(not_going)}):\n{notgoing_list}"
+    )
 
     await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="Markdown")
+
     actions_sheet.append_row([event_id, datetime.now().isoformat(), username, user.id, action])
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Use /add_event <event_name> [going_icon] [notgoing_icon] to create event.")
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
