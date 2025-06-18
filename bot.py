@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 # GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH")
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+# GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+credentials_info = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
+
 # credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
@@ -35,7 +38,7 @@ def escape_markdown(text):
 
 # Google Sheets authentication
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_JSON, scope)
+# credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_JSON, scope)
 # credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_PATH, scope)
 client = gspread.authorize(credentials)
 
