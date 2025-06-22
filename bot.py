@@ -27,18 +27,19 @@ load_dotenv()
 
 from dotenv import load_dotenv, find_dotenv
 
-HELP_TEXT = """
-<b>Event Bot Commands:</b><br><br>
-/add_event &lt;event_name&gt; [going_icon] [notgoing_icon] — create a new event.<br>
-/update_event &lt;event_name&gt; [going_icon] [notgoing_icon] — update the name or icons of the latest event.<br>
-/help — show this help message.<br><br>
-<b>Interactive buttons:</b><br>
-✅ Going / ❌ Not Going — mark your attendance.<br>
-➕ Add / ➖ Sub — specify/change the number of people you’re bringing.<br>
-🔴 Close Event — close the event for further responses.<br>
-🟢 Open Event — reopen the event for participation.<br><br>
-Supports multiple events at once and saves data to Google Sheets.
-"""
+HELP_TEXT = (
+    "*Event Bot Commands:*\n\n"
+    "/add_event \\<event\\_name\\> \\[going\\_icon\\] \\[notgoing\\_icon\\] — create a new event\\.\n"
+    "/update_event \\<event\\_name\\> \\[going\\_icon\\] \\[notgoing\\_icon\\] — update the name or icons of the latest event\\.\n"
+    "/help — show this help message\\.\n\n"
+    "*Interactive buttons:*\n"
+    "✅ Going / ❌ Not Going — mark your attendance\\.\n"
+    "➕ Add / ➖ Sub — specify/change the number of people you’re bringing\\.\n"
+    "🔴 Close Event — close the event for further responses\\.\n"
+    "🟢 Open Event — reopen the event for participation\\.\n\n"
+    "Supports multiple events at once and saves data to Google Sheets\\."
+)
+
 
 # Logging
 logging.basicConfig(
@@ -80,7 +81,7 @@ def now2ddmmyy():
 
 # Command to show help message
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
+    await update.message.reply_text(HELP_TEXT, parse_mode="MarkdownV2")
 
 # Handler for new chat members
 async def greet_new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
