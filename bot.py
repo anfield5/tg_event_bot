@@ -29,8 +29,8 @@ from dotenv import load_dotenv, find_dotenv
 
 HELP_TEXT = (
     "*Event Bot Commands:*\n\n"
-    "/addevent <event_name> [going_icon] [notgoing_icon] — create a new event\n"
-    "/editevent <event_name> [going_icon] [notgoing_icon] — update the name or icons of the latest event\n"
+    "/addevent \<event\\_name\> \\[going\\_icon\] \\[notgoing\\_icon\] — create a new event\n"
+    "/editevent \<event\\_name\> \\[going\\_icon\] \\[notgoing\\_icon\] — update the name or icons of the latest event\n"
     "/help — show this help message\n\n"
     "*Interactive buttons:*\n"
     "✅ Going / ❌ Not Going — mark your attendance\n"
