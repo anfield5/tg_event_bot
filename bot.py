@@ -34,7 +34,7 @@ DEFAULT_CLOSE_ICON = codecs.decode(os.getenv("DEFAULT_CLOSE_ICON"), "unicode_esc
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
 
-print("Bot is starting...")
+# print("Bot is starting...")
 
 # Escape Markdown special chars function
 def escape_markdown(text):
@@ -44,7 +44,12 @@ def escape_markdown(text):
 # Google Sheets authentication
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-credentials_info = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+raw_credentials = os.getenv("GOOGLE_CREDENTIALS_JSON")
+# Fix \n
+fixed_credentials = raw_credentials.replace("\\n", "\n")
+credentials_info = json.loads(fixed_credentials)
+
+# credentials_info = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
 client = gspread.authorize(credentials)
 events_sheet = client.open(GOOGLE_SHEET_NAME).worksheet("Events")
