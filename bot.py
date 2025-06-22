@@ -29,8 +29,8 @@ from dotenv import load_dotenv, find_dotenv
 
 HELP_TEXT = (
     "*Event Bot Commands:*\n\n"
-    "/addevent \<event\\_name\> \\[going\\_icon\] \\[notgoing\\_icon\] — create a new event\n"
-    "/editevent \<event\\_name\> \\[going\\_icon\] \\[notgoing\\_icon\] — update the name or icons of the latest event\n"
+    "/addevent <event\\_name> \\[going\\_icon] \\[notgoing\\_icon] — create a new event\n"
+    "/editevent <event\\_name> \\[going\\_icon] \\[notgoing\\_icon] — update the name or icons of the latest event\n"
     "/help — show this help message\n\n"
     "*Interactive buttons:*\n"
     "✅ Going / ❌ Not Going — mark your attendance\n"
@@ -380,7 +380,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             event_id=event_id,
             going_count=(len(going) + sum(counters.values())),
             notgoing_count=len(not_going),
-            closed_by_username=username)
+            closed_by_username=username_raw)
     elif action == "open":
         event["is_open"] = True
         is_open = True
@@ -394,7 +394,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         f"*{escape_markdown(event['name'])}*\n\n"
-        f"{going_icon} *Going* ({len(going)}):\n{going_list_text}\n"
+        f"{going_icon} *Going* ({len(going)+sum(counters.values())}):\n{going_list_text}\n"
         f"{counter_text}\n"
         f"{notgoing_icon} *Not going* ({len(not_going)}):\n{not_going_list_text}"
     )
