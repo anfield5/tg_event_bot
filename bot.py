@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from dotenv import load_dotenv, find_dotenv
-print("Loading env from:", find_dotenv())
 
 
 # Logging
@@ -45,13 +44,13 @@ def escape_markdown(text):
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 raw_credentials = os.getenv("GOOGLE_CREDENTIALS_JSON")
-# Fix \n
-fixed_credentials = raw_credentials.replace("\\n", "\n")
-credentials_info = json.loads(fixed_credentials)
+credentials_info = json.loads(raw_credentials)
+credentials_info["private_key"] = credentials_info["private_key"].replace("\\n", "\n")
 
-# credentials_info = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
 credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
 client = gspread.authorize(credentials)
+
+# Open Google Sheets
 events_sheet = client.open(GOOGLE_SHEET_NAME).worksheet("Events")
 actions_sheet = client.open(GOOGLE_SHEET_NAME).worksheet("EventActions")
 events_data = {}
