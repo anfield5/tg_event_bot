@@ -8,16 +8,37 @@ from uuid import uuid4
 from dotenv import load_dotenv
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
 
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
+
 load_dotenv()
 
 from dotenv import load_dotenv, find_dotenv
 
+HELP_TEXT = (
+    "*Event Bot Commands:*\n\n"
+    "/add_event `<event_name>` `[going_icon]` `[notgoing_icon]` — create a new event.\n"
+    "/update_event `<event_name>` `[going_icon]` `[notgoing_icon]` — update the name or icons of the latest event.\n"
+    "/help — show this help message.\n\n"
+    "*Interactive buttons:*\n"
+    "✅ Going / ❌ Not Going — mark your attendance.\n"
+    "➕ Add / ➖ Sub — specify/change the number of people you’re bringing.\n"
+    "🔴 Close Event — close the event for further responses.\n"
+    "🟢 Open Event — reopen the event for participation.\n\n"
+    "Supports multiple events at once and saves data to Google Sheets."
+)
 
 # Logging
 logging.basicConfig(
@@ -32,14 +53,6 @@ DEFAULT_CLOSE_ICON = codecs.decode(os.getenv("DEFAULT_CLOSE_ICON"), "unicode_esc
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
-
-# print("Bot is starting...")
-
-# Escape Markdown special chars function
-def escape_markdown(text):
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
-
 # Google Sheets authentication
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
@@ -54,6 +67,32 @@ client = gspread.authorize(credentials)
 events_sheet = client.open(GOOGLE_SHEET_NAME).worksheet("Events")
 actions_sheet = client.open(GOOGLE_SHEET_NAME).worksheet("EventActions")
 events_data = {}
+
+# Escape Markdown special chars function
+def escape_markdown(text):
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+# Function to get current date and time in dd.mm.yyyy HH:MM:SS.mmm format 
+def now2ddmmyy():
+    now = datetime.now()
+    return now.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]  # Drop to milliseconds
+
+# Command to show help message
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+
+# Handler for new chat members
+async def greet_new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = update.chat_member
+    if result.new_chat_member.status in ["member", "administrator"] and result.old_chat_member.status == "left":
+        chat = update.effective_chat
+        await context.bot.send_message(chat_id=chat.id, text=HELP_TEXT, parse_mode="Markdown")
+
+# Handler for private messages to greet user
+async def greet_user_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat.type == "private":
+        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 # Event keyboard creation function
 # Event keyboard has 2 statuses: opened and closed
@@ -88,11 +127,6 @@ def create_event_keyboard(event_id, going, not_going, counters, is_open, user_ch
     )
 
     return InlineKeyboardMarkup(buttons)
-
-# Function to get current date and time in dd.mm.yyyy HH:MM:SS.mmm format 
-def now2ddmmyy():
-    now = datetime.now()
-    return now.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]  # Drop to milliseconds
 
 def update_event_on_close(event_id, going_count, notgoing_count, closed_by_username):
     """
@@ -374,12 +408,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(ChatMemberHandler(greet_new_chat, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, greet_user_private))
     app.add_handler(CommandHandler("add_event", add_event))
     app.add_handler(CommandHandler("update_event", update_event))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("Bot started")
     app.run_polling()
+
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Command handlers
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("add_event", add_event))
+    app.add_handler(CommandHandler("update_event", update_event))
+
+    # Message handlers
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, greet_user_private))
+
+    # Chat member updates (for new users or groups)
+    app.add_handler(ChatMemberHandler(greet_new_chat, ChatMemberHandler.CHAT_MEMBER))
+
+    # Callback handler (for inline buttons)
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    print("Bot started")
+    app.run_polling()
+
 
 if __name__ == "__main__":
     main()
