@@ -29,14 +29,14 @@ from dotenv import load_dotenv, find_dotenv
 
 HELP_TEXT = (
     "*Event Bot Commands:*\n\n"
-    "/add_event \\<event\\_name\\> \\[going\\_icon\\] \\[notgoing\\_icon\\] — create a new event\\.\n"
-    "/update_event \\<event\\_name\\> \\[going\\_icon\\] \\[notgoing\\_icon\\] — update the name or icons of the latest event\\.\n"
-    "/help — show this help message\\.\n\n"
+    "/addevent <event_name> [going_icon] [notgoing_icon] — create a new event\n"
+    "/editevent <event_name> [going_icon] [notgoing_icon] — update the name or icons of the latest event\n"
+    "/help — show this help message\n\n"
     "*Interactive buttons:*\n"
-    "✅ Going / ❌ Not Going — mark your attendance\\.\n"
-    "➕ Add / ➖ Sub — specify/change the number of people you’re bringing\\.\n"
-    "🔴 Close Event — close the event for further responses\\.\n"
-    "🟢 Open Event — reopen the event for participation\\.\n\n"
+    "✅ Going / ❌ Not Going — mark your attendance\n"
+    "➕ Add / ➖ Sub — specify/change the number of people you’re bringing\n"
+    "🔴 Close Event — close the event for further responses\n"
+    "🟢 Open Event — reopen the event for participation\n\n"
     "Supports multiple events at once and saves data to Google Sheets\\."
 )
 
@@ -160,7 +160,7 @@ def update_event_on_close(event_id, going_count, notgoing_count, closed_by_usern
             break
 
 # Function to add a new event
-async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def addevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please provide event name after command.")
         return
@@ -219,8 +219,8 @@ async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Log the Event in the Events sheet
     events_sheet.append_row([event_id, event_name_raw, now2ddmmyy(), username_raw, "","",0, 0])
 
-# Update Google Sheets with the new event
-async def update_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Edit Google Sheets with the new event name, edit icons for going/notgoing
+async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please provide parameters: event_name [going_icon] [notgoing_icon]")
         return
@@ -409,23 +409,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(ChatMemberHandler(greet_new_chat, ChatMemberHandler.CHAT_MEMBER))
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, greet_user_private))
-    app.add_handler(CommandHandler("add_event", add_event))
-    app.add_handler(CommandHandler("update_event", update_event))
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    print("Bot started")
-    app.run_polling()
-
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
     # Command handlers
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("add_event", add_event))
-    app.add_handler(CommandHandler("update_event", update_event))
+    app.add_handler(CommandHandler("addevent", addevent))
+    app.add_handler(CommandHandler("editevent", editevent))
 
     # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, greet_user_private))
@@ -436,7 +423,6 @@ def main():
     # Callback handler (for inline buttons)
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("Bot started")
     app.run_polling()
 
 
