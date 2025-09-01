@@ -1,4 +1,45 @@
-.env
-google-credentials.json
+# ======================
+# Python cache files
+# ======================
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# ======================
+# Virtual environment (do not push local venv to GitHub)
+# ======================
+venv/
+
+# ======================
+# Environment variables (keep secrets local, not in repo)
+# ======================
+.env
+.env/
+
+# ======================
+# Logs
+# ======================
+*.log
+
+# ======================
+# OS generated files
+# ======================
+.DS_Store        # macOS
+Thumbs.db        # Windows
+
+# ======================
+# IDE / Editor settings
+# ======================
+.vscode/
+.idea/
+
+# ======================
+# Credentials / API keys (sensitive data)
+# ======================
+google-credentials.json
+
+# ======================
+# Fly.io build artifacts
+# ======================
+.fly/
