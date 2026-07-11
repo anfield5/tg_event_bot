@@ -43,3 +43,4 @@ google-credentials.json
 # Fly.io build artifacts
 # ======================
 .fly/
+database.db

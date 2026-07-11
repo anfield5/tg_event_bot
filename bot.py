@@ -3,428 +3,545 @@ import os
 import codecs
 import json
 import re
+import sqlite3
 from datetime import datetime
 from uuid import uuid4
 from dotenv import load_dotenv
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from dotenv import load_dotenv
-
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    ChatMemberHandler,
-    ContextTypes,
     MessageHandler,
-    filters
+    filters,
+    ContextTypes,
 )
+
+# Async libraries for Google Sheets API
+import gspread_asyncio
+from google.oauth2.service_account import Credentials
 
 load_dotenv()
 
-from dotenv import load_dotenv, find_dotenv
-
-HELP_TEXT = (
-    "*Event Bot Commands:*\n\n"
-    "/addevent <event\\_name> \\[going\\_icon] \\[notgoing\\_icon] — create a new event\n"
-    "/editevent <event\\_name> \\[going\\_icon] \\[notgoing\\_icon] — update the name or icons of the latest event\n"
-    "/help — show this help message\n\n"
-    "*Interactive buttons:*\n"
-    "✅ Going / ❌ Not Going — mark your attendance\n"
-    "➕ Add / ➖ Sub — specify/change the number of people you’re bringing\n"
-    "🔴 Close Event — close the event for further responses\n"
-    "🟢 Open Event — reopen the event for participation\n\n"
-    "Supports multiple events at once and saves data to Google Sheets\\."
-)
-
-
-# Logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
+# Logger configuration
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_GOING_ICON = codecs.decode(os.getenv("DEFAULT_GOING_ICON"), "unicode_escape")
-DEFAULT_NOTGOING_ICON = codecs.decode(os.getenv("DEFAULT_NOTGOING_ICON"), "unicode_escape")
-DEFAULT_OPEN_ICON = codecs.decode(os.getenv("DEFAULT_OPEN_ICON"), "unicode_escape")
-DEFAULT_CLOSE_ICON = codecs.decode(os.getenv("DEFAULT_CLOSE_ICON"), "unicode_escape")
+# Default UI icons with safe fallback configurations
+DEFAULT_GOING_ICON = codecs.decode(os.getenv("DEFAULT_GOING_ICON", "✅"), "unicode_escape")
+DEFAULT_NOTGOING_ICON = codecs.decode(os.getenv("DEFAULT_NOTGOING_ICON", "❌"), "unicode_escape")
+DEFAULT_OPEN_ICON = codecs.decode(os.getenv("DEFAULT_OPEN_ICON", "🟢"), "unicode_escape")
+DEFAULT_CLOSE_ICON = codecs.decode(os.getenv("DEFAULT_CLOSE_ICON", "🔴"), "unicode_escape")
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME")
-# Google Sheets authentication
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+GLOBAL_DEFAULT_SHEET = os.getenv("GOOGLE_SHEET_NAME")
 
-raw_credentials = os.getenv("GOOGLE_CREDENTIALS_JSON")
-credentials_info = json.loads(raw_credentials)
-credentials_info["private_key"] = credentials_info["private_key"].replace("\\n", "\n")
+# --- DATABASE INIT ---
+def init_db():
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_settings (
+            chat_id TEXT PRIMARY KEY,
+            sheet_name TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            event_id TEXT PRIMARY KEY,
+            chat_id TEXT,
+            message_id TEXT,
+            name TEXT,
+            going_icon TEXT,
+            notgoing_icon TEXT,
+            is_open INTEGER,
+            going_data TEXT,
+            notgoing_data TEXT,
+            counters_data TEXT
+        )
+    """)
+    
+    # Track unique users seen in chat with status matrix (default: active)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_users (
+            chat_id TEXT,
+            username TEXT,
+            status TEXT DEFAULT 'active',
+            PRIMARY KEY (chat_id, username)
+        )
+    """)
+    
+    # Migration helper: Check if status column exists in database, add if missing
+    cursor.execute("PRAGMA table_info(chat_users)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "status" not in columns:
+        cursor.execute("ALTER TABLE chat_users ADD COLUMN status TEXT DEFAULT 'active'")
+        
+    conn.commit()
+    conn.close()
 
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
-client = gspread.authorize(credentials)
+init_db()
 
-# Open Google Sheets
-events_sheet = client.open(GOOGLE_SHEET_NAME).worksheet("Events")
-actions_sheet = client.open(GOOGLE_SHEET_NAME).worksheet("EventActions")
-events_data = {}
+# --- ASYNC GOOGLE CLIENT ---
+def get_credentials():
+    raw_credentials = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    credentials_info = json.loads(raw_credentials)
+    credentials_info["private_key"] = credentials_info["private_key"].replace("\\n", "\n")
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    return Credentials.from_service_account_info(credentials_info, scopes=scope)
 
-# Escape Markdown special chars function
+agcm = gspread_asyncio.AsyncioGspreadClientManager(get_credentials)
+
+# --- UTILS ---
 def escape_markdown(text):
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
-# Function to get current date and time in dd.mm.yyyy HH:MM:SS.mmm format 
 def now2ddmmyy():
-    now = datetime.now()
-    return now.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]  # Drop to milliseconds
+    return datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
 
-# Command to show help message
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT, parse_mode="MarkdownV2")
+async def get_sheet_for_chat(chat_id):
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT sheet_name FROM chat_settings WHERE chat_id = ?", (str(chat_id),))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else GLOBAL_DEFAULT_SHEET
 
-# Handler for new chat members
-async def greet_new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = update.chat_member
-    if result.new_chat_member.status in ["member", "administrator"] and result.old_chat_member.status == "left":
-        chat = update.effective_chat
-        await context.bot.send_message(chat_id=chat.id, text=HELP_TEXT, parse_mode="Markdown")
+async def log_action_to_google(chat_id, event_id, action_name, username):
+    try:
+        sheet_target = await get_sheet_for_chat(chat_id)
+        gc = await agcm.authorize()
+        ss = await gc.open(sheet_target)
+        ws = await ss.worksheet("Actions")
+        await ws.append_row([event_id, action_name, username, now2ddmmyy()])
+    except Exception as e:
+        logger.error(f"Google Sheets Actions log failed. Error details: {repr(e)}")
 
-# Handler for private messages to greet user
-async def greet_user_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type == "private":
-        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+def track_user(chat_id, username, status="active"):
+    if not username:
+        return
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    # Insert with default status, or update if user already exists
+    cursor.execute("""
+        INSERT INTO chat_users (chat_id, username, status) VALUES (?, ?, ?)
+        ON CONFLICT(chat_id, username) DO UPDATE SET status = excluded.status
+    """, (str(chat_id), username, status))
+    conn.commit()
+    conn.close()
 
-# Event keyboard creation function
-# Event keyboard has 2 statuses: opened and closed
-# If event is closed, only Open Event button is available
-# If event is open, buttons Going/NotGoing, Add/Sub and Close Event are available
-def create_event_keyboard(event_id, going, not_going, counters, is_open, user_choices, username, going_icon, notgoing_icon):
+def parse_user_args(args):
+    # Flatten arguments and split by comma or spaces to handle varied inputs
+    raw_string = " ".join(args)
+    tokens = re.split(r'[\s,]+', raw_string)
+    return [t.lstrip('@').strip() for t in tokens if t.strip()]
+
+def create_event_keyboard(event_id, is_open, going_icon, notgoing_icon):
     buttons = [[], [], []]
-
     if not is_open:
-        buttons[0].append(
-            InlineKeyboardButton(f"{DEFAULT_OPEN_ICON} Open Event", callback_data=f"open_{event_id}")
-        )
+        buttons[0].append(InlineKeyboardButton(f"{DEFAULT_OPEN_ICON} Reopen Event", callback_data=f"open_{event_id}"))
         return InlineKeyboardMarkup(buttons)
 
-    # Buttons Going/NotGoing always available if event is open
-    going_text = f"{going_icon} Going"
-    notgoing_text = f"{notgoing_icon} Not Going"
-
-    going_button = InlineKeyboardButton(going_text, callback_data=f"going_{event_id}")
-    not_going_button = InlineKeyboardButton(notgoing_text, callback_data=f"notgoing_{event_id}")
-    buttons[0].extend([going_button, not_going_button])
-
-    # Buttons Add/Sub always available if event is open
-    buttons[1] = [
-        InlineKeyboardButton("Add", callback_data=f"add_{event_id}"),
-        InlineKeyboardButton("Sub", callback_data=f"sub_{event_id}")
-    ]
-
-    # Button Close Event
-    buttons[2].append(
-        InlineKeyboardButton(f"{DEFAULT_CLOSE_ICON} Close Event", callback_data=f"close_{event_id}")
-    )
-
+    buttons[0].extend([
+        InlineKeyboardButton(f"{going_icon} Going", callback_data=f"going_{event_id}"),
+        InlineKeyboardButton(f"{notgoing_icon} Not Going", callback_data=f"notgoing_{event_id}")
+    ])
+    buttons[1].extend([
+        InlineKeyboardButton("➕ Add Guest", callback_data=f"add_{event_id}"),
+        InlineKeyboardButton("➖ Remove Guest", callback_data=f"sub_{event_id}")
+    ])
+    buttons[2].append(InlineKeyboardButton(f"{DEFAULT_CLOSE_ICON} Close Event", callback_data=f"close_{event_id}"))
     return InlineKeyboardMarkup(buttons)
 
-def update_event_on_close(event_id, going_count, notgoing_count, closed_by_username):
-    """
-    Updates the Events sheet with final stats after event is closed.
+# --- COMMAND HANDLERS ---
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "*Event Bot Commands:*\n\n"
+        "/newevent `event_name` `going_icon` `notgoing_icon` — create a new event\n"
+        "/editevent `event_name` `going_icon` `notgoing_icon` — update the name or icons of the latest event\n"
+        "/notify `text_msg` — notify active users who haven't made a choice yet\n"
+        "/adduser `user1, user2` — add users into database matrix as active\n"
+        "/updateuser `user1` `-passive/-active` — update specified user activity status\n"
+        "/listusers — show tracking user status manifest list\n"
+        "/help — show this help message\n\n"
+        "*Interactive buttons:*\n"
+        "✅ Going / ❌ Not Going — mark your attendance\n"
+        "➕ Add / ➖ Sub — specify/change the number of people you’re bringing\n"
+        "🔴 Close Event — close the event for further responses\n"
+        "🟢 Open Event — reopen the event for participation\n\n"
+        "Supports multiple events at once and saves data to Google Sheets\."
+    )
+    await update.message.reply_text(help_text, parse_mode="MarkdownV2")
 
-    Params:
-    - event_id (str): unique ID of the event
-    - going_users (dict): dict of users who selected 'going'
-    - notgoing_users (dict): dict of users who selected 'not going'
-    - closed_by_username (str): user who clicked 'Close Event'
-    """
+async def track_everyone_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat and update.effective_user:
+        chat_id = str(update.effective_chat.id)
+        user = update.effective_user
+        username_raw = user.username if user.username else user.first_name
+        # Auto-track unseen active talkers
+        track_user(chat_id, username_raw, "active")
 
-    sheet = client.open(GOOGLE_SHEET_NAME).worksheet("Events")
-    records = sheet.get_all_records()
-    
-    for idx, row in enumerate(records, start=2):  # start=2 to account for header row
-        if str(row.get("EVENT_ID")) == str(event_id):
-            # Prepare updated values
-
-            # Update columns:
-            # Column G (7): GOING
-            # Column H (8): NOT GOING
-            # Column E (5): FINISHED_AT
-            # Column F (6): FINISHED_BY
-
-            sheet.update_cell(idx, 5, now2ddmmyy())
-            sheet.update_cell(idx, 6, closed_by_username)
-            sheet.update_cell(idx, 7, going_count)
-            sheet.update_cell(idx, 8, notgoing_count)
-            break
-
-# Function to add a new event
-async def addevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Please provide event name after command.")
+        await update.message.reply_text("Usage: /newevent <event_name> [going_icon] [notgoing_icon]")
         return
 
     event_name_raw = context.args[0]
     going_icon = DEFAULT_GOING_ICON
     notgoing_icon = DEFAULT_NOTGOING_ICON
-
-    if len(context.args) >= 2:
+    
+    if len(context.args) == 2:
         going_icon = context.args[1]
-    if len(context.args) >= 3:
+    elif len(context.args) >= 3:
+        going_icon = context.args[1]
         notgoing_icon = context.args[2]
 
     event_id = str(uuid4())[:8]
-    is_open = True
+    chat_id = str(update.effective_chat.id)
+    username_raw = update.effective_user.username or update.effective_user.first_name or str(update.effective_user.id)
+    
+    track_user(chat_id, username_raw, "active")
 
-    going = set()
-    not_going = set()
-    counters = {}
-    user_choices = {}
+    text = f"*{escape_markdown(event_name_raw)}*\n\n{going_icon} *Going* \(0\):\n\n{notgoing_icon} *Not Going* \(0\):\n"
+    keyboard = create_event_keyboard(event_id, True, going_icon, notgoing_icon)
+    
+    message = await update.message.reply_text(text, reply_markup=keyboard, parse_mode="MarkdownV2")
 
-    events_data[event_id] = {
-        "name": event_name_raw,
-        "going": going,
-        "not_going": not_going,
-        "counters": counters,
-        "user_choices": user_choices,
-        "is_open": is_open,
-        "message_id": None,
-        "chat_id": update.effective_chat.id,
-        "going_icon": going_icon,
-        "notgoing_icon": notgoing_icon,
-    }
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, is_open, going_data, notgoing_data, counters_data)
+        VALUES (?, ?, ?, ?, ?, ?, 1, '[]', '[]', '{}')
+    """, (event_id, chat_id, str(message.message_id), event_name_raw, going_icon, notgoing_icon))
+    conn.commit()
+    conn.close()
 
-    username = update.effective_user.username or update.effective_user.first_name or str(update.effective_user.id)
-    # username without markdown escaping for Google Sheets
-    username_raw = username
-    # username with markdown escaping for Telegram message
-    username = escape_markdown(username)
-    event_name = escape_markdown(event_name_raw)
+    try:
+        sheet_target = await get_sheet_for_chat(chat_id)
+        gc = await agcm.authorize()
+        ss = await gc.open(sheet_target)
+        ws = await ss.worksheet("Events")
+        await ws.append_row([event_id, event_name_raw, now2ddmmyy(), username_raw, "", "OPEN", ""])
+    except Exception as e:
+        logger.error(f"Google Sheets log error: {e}")
 
-    keyboard = create_event_keyboard(event_id, going, not_going, counters, is_open, user_choices, username, going_icon, notgoing_icon)
-
-    text = (
-        f"*{event_name}*\n\n"
-        f"{going_icon} *Going* (0):\n\n"
-        f"{notgoing_icon} *Not going* (0):\n"
-    )
-
-    message = await update.message.reply_text(
-        text, reply_markup=keyboard, parse_mode="Markdown"
-    )
-
-    events_data[event_id]["message_id"] = message.message_id
-    events_data[event_id]["chat_id"] = message.chat.id
-    # Log the Event in the Events sheet
-    events_sheet.append_row([event_id, event_name_raw, now2ddmmyy(), username_raw, "","",0, 0])
-
-# Edit Google Sheets with the new event name, edit icons for going/notgoing
 async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Please provide parameters: event_name [going_icon] [notgoing_icon]")
+        await update.message.reply_text("Usage: /editevent <event_name> [going_icon] [notgoing_icon]")
         return
 
-    if not events_data:
-        await update.message.reply_text("No events to update.")
+    chat_id = str(update.effective_chat.id)
+    
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT event_id, message_id, name, going_icon, notgoing_icon, is_open, going_data, notgoing_data, counters_data 
+        FROM events WHERE chat_id = ? ORDER BY rowid DESC LIMIT 1
+    """, (chat_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        await update.message.reply_text("No events found in this chat to edit.")
+        conn.close()
         return
 
-    # Get the last event from events_data
-    last_event_id = list(events_data.keys())[-1]
-    event = events_data[last_event_id]
+    event_id, message_id, current_name, current_going_icon, current_notgoing_icon, is_open, going_data, notgoing_data, counters_data = row
+    
+    if not is_open:
+        await update.message.reply_text("Last event was closed and can't be edited.")
+        conn.close()
+        return
 
-    user = update.effective_user
-    username_raw = user.username if user.username else user.first_name
+    new_name = context.args[0]
+    new_going = context.args[1] if len(context.args) >= 2 else current_going_icon
+    new_notgoing = context.args[2] if len(context.args) >= 3 else current_notgoing_icon
 
-    event_name = context.args[0]
-    going_icon = event.get("going_icon", DEFAULT_GOING_ICON)
-    notgoing_icon = event.get("notgoing_icon", DEFAULT_NOTGOING_ICON)
+    cursor.execute("""
+        UPDATE events SET name = ?, going_icon = ?, notgoing_icon = ? WHERE event_id = ?
+    """, (new_name, new_going, new_notgoing, event_id))
+    conn.commit()
+    conn.close()
 
-    if len(context.args) >= 2:
-        going_icon = context.args[1]
-    if len(context.args) >= 3:
-        notgoing_icon = context.args[2]
-
-    # Update event data
-    event["name"] = event_name
-    event["going_icon"] = going_icon
-    event["notgoing_icon"] = notgoing_icon
-
-    # Update Google Sheets
-    try:
-        sheet = client.open(GOOGLE_SHEET_NAME).worksheet("Events")
-        all_records = sheet.get_all_records()
-        for idx, row in enumerate(all_records, start=2):  # start=2 — с учётом заголовков
-            if row["EVENT_ID"] == last_event_id:
-                sheet.update_cell(idx, 2, event_name)  # EVENT_NAME
-                break
-    except Exception as e:
-        logger.error(f"Failed to update Google Sheets: {e}")
-
-    # Update telegram message
-    keyboard = create_event_keyboard(
-        last_event_id,
-        event["going"],
-        event["not_going"],
-        event["counters"],
-        event["is_open"],
-        event["user_choices"],
-        username_raw,
-        going_icon,
-        notgoing_icon,
-    )
-
-    going_list_text = "\n".join(event["going"]) if event["going"] else ""
-    counter_lines = [f"{count}, from {user_name}" for user_name, count in event["counters"].items()]
+    going = json.loads(going_data)
+    not_going = json.loads(notgoing_data)
+    counters = json.loads(counters_data)
+    
+    going_list_text = "\n".join([f"• {escape_markdown(u)}" for u in going]) if going else ""
+    counter_lines = [f"• {escape_markdown(k)} \(\+{count} g\.\)" for k, count in counters.items()]
     counter_text = "\n".join(counter_lines) if counter_lines else ""
-    not_going_list_text = "\n".join(event["not_going"]) if event["not_going"] else ""
-
+    not_going_list_text = "\n".join([f"• {escape_markdown(u)}" for u in not_going]) if not_going else ""
+    total_going = len(going) + sum(counters.values())
+    
     text = (
-        f"*{event_name}*\n\n"
-        f"{going_icon} *Going* ({len(event['going'])}):\n{going_list_text}\n"
-        f"{counter_text}\n"
-        f"{notgoing_icon} *Not going* ({len(event['not_going'])}):\n{not_going_list_text}"
+        f"*{escape_markdown(new_name)}*\n\n"
+        f"{new_going} *Going* \({total_going}\):\n{going_list_text}\n"
+        f"{'' if not counter_text else '*Guests:*'}\n{counter_text}\n"
+        f"{new_notgoing} *Not Going* \({len(not_going)}\):\n{not_going_list_text}"
     )
-
+    
+    keyboard = create_event_keyboard(event_id, bool(is_open), new_going, new_notgoing)
+    
     try:
         await context.bot.edit_message_text(
-            chat_id=event["chat_id"],
-            message_id=event["message_id"],
+            chat_id=chat_id,
+            message_id=int(message_id),
             text=text,
             reply_markup=keyboard,
-            parse_mode="Markdown"
+            parse_mode="MarkdownV2"
         )
-        # Log the action update in the Actions sheet
-        actions_sheet.append_row([last_event_id, now2ddmmyy(), username_raw, user.id, "update"])
+        await update.message.reply_text("Event metadata updated successfully in Telegram.")
     except Exception as e:
-        logger.error(f"Failed to edit event message: {e}")
-        await update.message.reply_text("Failed to update the original event message.")
-
-# Handler for button clicks
-# Handles all button clicks for the event management
-# Actions: going, notgoing, add, sub, close, open
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    if data == "noop":
-        return
+        logger.error(f"Telegram UI update failed during editevent: {e}")
 
     try:
-        action, event_id = data.split("_", 1)
-    except ValueError:
+        sheet_target = await get_sheet_for_chat(chat_id)
+        gc = await agcm.authorize()
+        ss = await gc.open(sheet_target)
+        ws = await ss.worksheet("Events")
+        records = await ws.get_all_records()
+        for idx, r in enumerate(records, start=2):
+            if str(r.get("EVENT_ID")) == str(event_id):
+                await ws.update_cell(idx, 2, new_name)
+                break
+    except Exception as e:
+        logger.error(f"Google Sheets sync failed during editevent: {e}")
+
+async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /adduser <username1>, <username2> ...")
         return
 
-    if event_id not in events_data:
-        await query.edit_message_text("Event not found or expired.")
+    chat_id = str(update.effective_chat.id)
+    usernames = parse_user_args(context.args)
+    added_users = []
+
+    for u in usernames:
+        if u:
+            track_user(chat_id, u, "active")
+            added_users.append(f"@{u}")
+
+    if added_users:
+        await update.message.reply_text(f"Successfully added active users: {', '.join(added_users)}")
+    else:
+        await update.message.reply_text("No valid usernames found.")
+
+async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /updateuser <username1> <username2> -active/-passive")
         return
 
-    event = events_data[event_id]
+    chat_id = str(update.effective_chat.id)
+    raw_args = context.args
+
+    # Check for presence of target flag in the final argument node
+    target_status = "active"
+    if raw_args[-1] in ["-active", "-passive"]:
+        target_status = raw_args[-1].replace("-", "")
+        raw_args = raw_args[:-1]
+
+    usernames = parse_user_args(raw_args)
+    updated_users = []
+
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    
+    for u in usernames:
+        if u:
+            cursor.execute("""
+                INSERT INTO chat_users (chat_id, username, status) VALUES (?, ?, ?)
+                ON CONFLICT(chat_id, username) DO UPDATE SET status = excluded.status
+            """, (chat_id, u, target_status))
+            updated_users.append(f"@{u}")
+            
+    conn.commit()
+    conn.close()
+
+    if updated_users:
+        await update.message.reply_text(f"Updated users status profile to [{target_status}]: {', '.join(updated_users)}")
+    else:
+        await update.message.reply_text("No valid usernames processed for state modifications.")
+
+async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, status FROM chat_users WHERE chat_id = ? ORDER BY username ASC", (chat_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("No users registered in this chat yet.")
+        return
+
+    lines = [f"{r[0]} - {r[1]}" for r in rows]
+    await update.message.reply_text("\n".join(lines))
+
+async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /notify <your_message_text>")
+        return
+
+    notification_msg = " ".join(context.args)
+    chat_id = str(update.effective_chat.id)
+
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT going_data, notgoing_data FROM events WHERE chat_id = ? ORDER BY rowid DESC LIMIT 1", (chat_id,))
+    event_row = cursor.fetchone()
+    
+    if not event_row:
+        await update.message.reply_text("No active events found to reference for notification lists.")
+        conn.close()
+        return
+
+    going_users = set(json.loads(event_row[0]))
+    notgoing_users = set(json.loads(event_row[1]))
+    decided_users = going_users.union(notgoing_users)
+
+    # CRITICAL EXTENSION: Query only users marked explicitly with active status profile nodes
+    cursor.execute("SELECT username FROM chat_users WHERE chat_id = ? AND status = 'active'", (chat_id,))
+    active_known_users = {r[0] for r in cursor.fetchall()}
+    conn.close()
+
+    silent_users = active_known_users.difference(decided_users)
+
+    if not silent_users:
+        await update.message.reply_text("All users have made a decision.")
+        return
+
+    mentions = [f"@{u}" if not u.isdigit() else f"User {u}" for u in silent_users]
+    output_text = f"{notification_msg}\n\n*Please respond:*\n" + ", ".join(mentions)
+    await update.message.reply_text(output_text)
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    action, event_id = query.data.split("_", 1)
+    
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id, message_id, name, going_icon, notgoing_icon, is_open, going_data, notgoing_data, counters_data FROM events WHERE event_id = ?", (event_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        await query.answer("Event not found.", show_alert=True)
+        conn.close()
+        return
+        
+    chat_id, message_id, name, going_icon, notgoing_icon, is_open, going_data, notgoing_data, counters_data = row
+    going = set(json.loads(going_data))
+    not_going = set(json.loads(notgoing_data))
+    counters = json.loads(counters_data)
+    
     user = query.from_user
     username_raw = user.username if user.username else user.first_name
-    username = escape_markdown(username_raw)
 
-    going = event["going"]
-    not_going = event["not_going"]
-    counters = event["counters"]
-    user_choices = event["user_choices"]
-    is_open = event["is_open"]
-    going_icon = event.get("going_icon", DEFAULT_GOING_ICON)
-    notgoing_icon = event.get("notgoing_icon", DEFAULT_NOTGOING_ICON)
+    track_user(chat_id, username_raw, "active")
+
+    if action in ["going", "notgoing", "add", "sub"] and not is_open:
+        await query.answer("This event is already closed!", show_alert=True)
+        conn.close()
+        return
+
+    if action in ["going", "notgoing", "add", "sub"]:
+        context.application.create_task(log_action_to_google(chat_id, event_id, action, username_raw))
 
     if action == "going":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
-        if user_choices.get(username_raw) == "going":
-            await query.answer("You already chose Going.", show_alert=True)
-            return
-
-        user_choices[username_raw] = "going"
         going.add(username_raw)
         not_going.discard(username_raw)
-
+        await query.answer("Status updated to: Going")
     elif action == "notgoing":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
-        if user_choices.get(username_raw) == "notgoing":
-            await query.answer("You already chose Not Going.", show_alert=True)
-            return
-
-        user_choices[username_raw] = "notgoing"
         not_going.add(username_raw)
         going.discard(username_raw)
-
+        await query.answer("Status updated to: Not Going")
     elif action == "add":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
         counters[username_raw] = counters.get(username_raw, 0) + 1
-
+        await query.answer(f"Guest added. Total: {counters[username_raw]}")
     elif action == "sub":
-        if not is_open:
-            await query.answer("Event is closed.", show_alert=True)
-            return
         if username_raw in counters:
             if counters[username_raw] > 1:
                 counters[username_raw] -= 1
+                await query.answer(f"Guest removed. Total: {counters[username_raw]}")
             else:
                 counters.pop(username_raw)
-
+                await query.answer("All your guests removed.")
+        else:
+            await query.answer("You haven't added any guests yet.", show_alert=True)
     elif action == "close":
-        event["is_open"] = False
-        is_open = False
-        update_event_on_close(
-            event_id=event_id,
-            going_count=(len(going) + sum(counters.values())),
-            notgoing_count=len(not_going),
-            closed_by_username=username_raw)
+        is_open = 0
+        await query.answer("Event closed.")
     elif action == "open":
-        event["is_open"] = True
-        is_open = True
+        is_open = 1
+        await query.answer("Event reopened.")
 
-    keyboard = create_event_keyboard(event_id, going, not_going, counters, is_open, user_choices, username, going_icon, notgoing_icon)
+    cursor.execute("""
+        UPDATE events SET is_open = ?, going_data = ?, notgoing_data = ?, counters_data = ? WHERE event_id = ?
+    """, (is_open, json.dumps(list(going)), json.dumps(list(not_going)), json.dumps(counters), event_id))
+    conn.commit()
+    conn.close()
 
-    going_list_text = "\n".join([escape_markdown(u) for u in going]) if going else ""
-    counter_lines = [f"{count}, from {escape_markdown(user_name)}" for user_name, count in counters.items()]
+    going_list_text = "\n".join([f"• {escape_markdown(u)}" for u in going]) if going else ""
+    counter_lines = [f"• {escape_markdown(k)} \(\+{count} g\.\)" for k, count in counters.items()]
     counter_text = "\n".join(counter_lines) if counter_lines else ""
-    not_going_list_text = "\n".join([escape_markdown(u) for u in not_going]) if not_going else ""
-
+    not_going_list_text = "\n".join([f"• {escape_markdown(u)}" for u in not_going]) if not_going else ""
+    total_going = len(going) + sum(counters.values())
+    
     text = (
-        f"*{escape_markdown(event['name'])}*\n\n"
-        f"{going_icon} *Going* ({len(going)+sum(counters.values())}):\n{going_list_text}\n"
-        f"{counter_text}\n"
-        f"{notgoing_icon} *Not going* ({len(not_going)}):\n{not_going_list_text}"
+        f"*{escape_markdown(name)}*\n\n"
+        f"{going_icon} *Going* \({total_going}\):\n{going_list_text}\n"
+        f"{'' if not counter_text else '*Guests:*'}\n{counter_text}\n"
+        f"{notgoing_icon} *Not Going* \({len(not_going)}\):\n{not_going_list_text}"
     )
-    # Log the action in the Actions sheet
-    actions_sheet.append_row([event_id, now2ddmmyy(), username_raw, user.id, action])
-
+    
+    keyboard = create_event_keyboard(event_id, bool(is_open), going_icon, notgoing_icon)
+    
     try:
-        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="Markdown")
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="MarkdownV2")
     except Exception as e:
-        logger.error(f"Failed to update message: {e}")
+        logger.error(f"Telegram UI update failed: {e}")
+
+    if action in ["close", "open"]:
+        try:
+            sheet_target = await get_sheet_for_chat(chat_id)
+            gc = await agcm.authorize()
+            ss = await gc.open(sheet_target)
+            ws = await ss.worksheet("Events")
+            records = await ws.get_all_records()
+            for idx, r in enumerate(records, start=2):
+                if str(r.get("EVENT_ID")) == str(event_id):
+                    status_str = "CLOSED" if action == "close" else "OPEN"
+                    closed_at_str = now2ddmmyy() if action == "close" else ""
+                    amount_str = total_going if action == "close" else ""
+                    
+                    await ws.update(f"E{idx}:G{idx}", [[closed_at_str, status_str, amount_str]])
+                    break
+        except Exception as e:
+            logger.error(f"Google Sheets status update failed: {e}")
 
 def main():
+    if not TELEGRAM_TOKEN:
+        logger.error("BOT_TOKEN is missing!")
+        return
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    # Command handlers
+    
+    # Message parser listener node for broad member registry synchronization
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_everyone_message))
+    
+    # Registration of command routing nodes
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("addevent", addevent))
+    app.add_handler(CommandHandler("newevent", newevent))
     app.add_handler(CommandHandler("editevent", editevent))
-
-    # Message handlers
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, greet_user_private))
-
-    # Chat member updates (for new users or groups)
-    app.add_handler(ChatMemberHandler(greet_new_chat, ChatMemberHandler.CHAT_MEMBER))
-
-    # Callback handler (for inline buttons)
+    app.add_handler(CommandHandler("notify", notify))
+    app.add_handler(CommandHandler("adduser", adduser))
+    app.add_handler(CommandHandler("updateuser", updateuser))
+    app.add_handler(CommandHandler("listusers", listusers))
+    
     app.add_handler(CallbackQueryHandler(button_handler))
-
+    
+    logger.info("Bot started successfully...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
