@@ -56,19 +56,20 @@ async def sync_users_sheet(chat_id, current_members: list):
     current_members: list of (user_id, username) tuples for people confirmed
     to currently be in `chat_id` right now.
 
-    Columns: USER_ID, USER_NAME, PLACE_ID, STATUS, ARCHIVED USER_NAME
+    Columns: USER_ID, USER_NAME, PLACE_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME
     A row is uniquely identified by (USER_ID, PLACE_ID) - the same person can
     have separate rows for separate places/groups managed by this bot.
 
     Behavior:
       - Member not yet in the sheet for this place -> append a new row with
-        STATUS = "Member" (ARCHIVED USER_NAME left blank).
+        STATUS = "MEMBER", DATE_start = current date, DATE_end = blank.
       - Member already in the sheet whose USER_NAME changed -> the old name
-        is appended to ARCHIVED USER_NAME (comma-separated), and USER_NAME is
-        updated to the current one. If they were previously "Left", their
-        STATUS flips back to "Member".
+        is appended to ARCHIVED_USER_NAME (comma-separated), and USER_NAME is
+        updated to the current one. If they were previously "LEFT", their
+        STATUS flips back to "MEMBER" and DATE_end is cleared.
       - Any existing row for this PLACE_ID that ISN'T in current_members ->
-        STATUS is set to "Left" (their row/history is kept, not deleted).
+        STATUS is set to "LEFT" and DATE_end is set to current date
+        (their row/history is kept, not deleted).
     """
     try:
         sheet_target = await get_sheet_for_chat(chat_id)
@@ -91,21 +92,37 @@ async def sync_users_sheet(chat_id, current_members: list):
             if key in index:
                 idx, rec = index[key]
                 old_name = str(rec.get("USER_NAME", "")).strip()
+                status = str(rec.get("STATUS", "")).strip().lower()
+                
                 if old_name and old_name != username:
-                    archived     = str(rec.get("ARCHIVED USER_NAME", "")).strip()
+                    archived     = str(rec.get("ARCHIVED_USER_NAME", "")).strip()
                     new_archived = f"{archived},{old_name}" if archived else old_name
                     await ws.update(f"B{idx}", [[username]])
-                    await ws.update(f"E{idx}", [[new_archived]])
-                if str(rec.get("STATUS", "")).strip().lower() == "left":
-                    await ws.update(f"D{idx}", [["Member"]])
+                    await ws.update(f"G{idx}", [[new_archived]])
+                
+                if status == "left":
+                    # LEFT -> MEMBER: update status, clear DATE_end, update DATE_start
+                    await ws.update(f"D{idx}", [["MEMBER"]])
+                    await ws.update(f"E{idx}", [[now2ddmmyy()]])
+                    await ws.update(f"F{idx}", [[""]])
+                # If status is already MEMBER, do nothing
             else:
-                await ws.append_row([str(user_id), username, str(chat_id), "Member", ""])
+                # New user: add with MEMBER status
+                await ws.append_row([str(user_id), username, str(chat_id), "MEMBER", now2ddmmyy(), "", ""])
 
+        # Handle users who left the group
         for key, (idx, rec) in index.items():
             uid, place = key
             if place == str(chat_id) and key not in current_keys:
-                if str(rec.get("STATUS", "")).strip().lower() != "left":
-                    await ws.update(f"D{idx}", [["Left"]])
+                status = str(rec.get("STATUS", "")).strip().lower()
+                if status == "member":
+                    # MEMBER -> LEFT: update status, set DATE_end, add to UserPresenceLog
+                    date_start = str(rec.get("DATE_start", "")).strip()
+                    await ws.update(f"D{idx}", [["LEFT"]])
+                    await ws.update(f"F{idx}", [[now2ddmmyy()]])
+                    # Add to UserPresenceLog only if not already logged
+                    await log_user_presence_if_not_exists(chat_id, uid, place, date_start, now2ddmmyy())
+                # If status is already LEFT, do nothing
     except Exception as e:
         logger.error(f"Google Sheets Users synchronization failed: {repr(e)}")
         raise
@@ -128,3 +145,41 @@ async def sync_event_users_sheet(chat_id, event_id, user_ids):
             logger.info("Roster was empty at commitment index. Skipping EventUsers rows insert.")
     except Exception as e:
         logger.error(f"Google Sheets EventUsers synchronization failed: {repr(e)}")
+
+
+async def log_user_presence(chat_id, user_id, date_start, date_end):
+    """
+    Logs user presence to UserPresenceLog sheet when a user leaves a monitored
+    group or the main group.
+    Columns: USER_ID, PLACE_ID, DATE_start, DATE_end
+    """
+    try:
+        sheet_target = await get_sheet_for_chat(chat_id)
+        ss = await open_spreadsheet(sheet_target)
+        ws = await ss.worksheet("UserPresenceLog")
+        await ws.append_row([str(user_id), str(chat_id), date_start, date_end])
+    except Exception as e:
+        logger.error(f"Google Sheets UserPresenceLog synchronization failed: {repr(e)}")
+
+async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start, date_end):
+    """
+    Logs user presence to UserPresenceLog sheet when a user leaves a monitored
+    group or the main group.
+    Columns: USER_ID, PLACE_ID, DATE_start, DATE_end
+    """
+    try:
+        sheet_target = await get_sheet_for_chat(chat_id)
+        ss = await open_spreadsheet(sheet_target)
+        ws = await ss.worksheet("UserPresenceLog")
+        records = await ws.get_all_records()
+
+        # if it exists in UserPresenceLog with same USER_ID, PLACE_ID and same DATE_start — we do NOT write a duplicate.
+        for r in records:
+            if (str(r.get("USER_ID", "")).strip() == str(user_id) and 
+                str(r.get("PLACE_ID", "")).strip() == str(place_id) and 
+                str(r.get("DATE_start", "")).strip() == str(date_start)):
+                return  # already logged
+
+        await ws.append_row([str(user_id), str(place_id), str(date_start), str(date_end)])
+    except Exception as e:
+        logger.error(f"Google Sheets UserPresenceLog check failed: {repr(e)}")
