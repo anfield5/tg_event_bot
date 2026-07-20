@@ -8,13 +8,15 @@ from telegram.ext import (
 )
 from config import TELEGRAM_TOKEN, logger
 from db import init_db, track_user
+from sheets import log_user_presence
 from handlers import (
     help_command,
     newevent, editevent,
     notify,
-    updateuser, listusers, refreshusers,
+    updateuser, listusers, refreshusers, adduser,
     shareevent,
     setalias, removealias, listalias,
+    addmonitor, removemonitor, listmonitors,
     track_everyone_message,
     button_handler,
     global_text_router,
@@ -26,6 +28,7 @@ async def on_chat_member_update(update, context):
     Automatically tracks users who join the group as 'active',
     and marks users who leave/are kicked as 'passive'.
     This powers /refreshusers without requiring manual /adduser.
+    Also logs user presence to UserPresenceLog sheet.
     """
     result = update.chat_member
     if not result:
@@ -46,6 +49,7 @@ async def on_chat_member_update(update, context):
         username = user.username or user.first_name or f"user{user.id}"
         track_user(chat_id, username, "passive", user_id=str(user.id))
         logger.info(f"Marked @{username} as passive (left/kicked) in chat {chat_id}")
+        # UserPresenceLog will be updated by sync_users_sheet when status changes to LEFT
 
 
 def main():
@@ -71,12 +75,18 @@ def main():
     app.add_handler(CommandHandler("updateuser",   updateuser))
     app.add_handler(CommandHandler("listusers",    listusers))
     app.add_handler(CommandHandler("refreshusers", refreshusers))
+    app.add_handler(CommandHandler("adduser",      adduser))
     app.add_handler(CommandHandler("shareevent",   shareevent))
 
     # 4. Alias subsystem
     app.add_handler(CommandHandler("setalias",    setalias))
     app.add_handler(CommandHandler("removealias", removealias))
-    app.add_handler(CommandHandler("listalias",   listalias))
+    app.add_handler(CommandHandler("listaliases",  listalias))
+
+    # 5. Monitor subsystem
+    app.add_handler(CommandHandler("addmonitor",    addmonitor))
+    app.add_handler(CommandHandler("removemonitor", removemonitor))
+    app.add_handler(CommandHandler("listmonitors",  listmonitors))
 
     # 5. Text message router (extra player input + @everyone)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, global_text_router))

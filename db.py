@@ -47,13 +47,27 @@ def init_db(db_path: str = DB_PATH):
             going_data TEXT,
             notgoing_data TEXT,
             counters_data TEXT,
-            event_date TEXT DEFAULT NULL
+            event_date TEXT DEFAULT NULL,
+            is_cancelled INTEGER DEFAULT 0,
+            kicked_data TEXT DEFAULT '[]'
         )
     """)
 
+    # Migration: rename legacy 'chat_users' table to 'main_group_users' if a
+    # bot upgrading from before this rename still has the old table (and the
+    # new one doesn't exist yet) - this must run BEFORE the CREATE TABLE IF
+    # NOT EXISTS below, otherwise that would create an empty main_group_users
+    # and silently orphan all the old data.
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_users'")
+    has_legacy_table = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='main_group_users'")
+    has_new_table = cursor.fetchone() is not None
+    if has_legacy_table and not has_new_table:
+        cursor.execute("ALTER TABLE chat_users RENAME TO main_group_users")
+
     # Main registry of known users across chat environments
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chat_users (
+        CREATE TABLE IF NOT EXISTS main_group_users (
             chat_id TEXT,
             username TEXT,
             user_id TEXT DEFAULT NULL,
@@ -96,17 +110,26 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
+    # Monitored groups/channels for global user tracking
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS monitors (
+            chat_id TEXT PRIMARY KEY,
+            chat_type TEXT,
+            chat_name TEXT
+        )
+    """)
+
     # ── Migrations ────────────────────────────────────────────────────────────
 
-    # 1. Add `status` column to chat_users if missing (old schema)
-    cursor.execute("PRAGMA table_info(chat_users)")
-    chat_users_cols = [col[1] for col in cursor.fetchall()]
-    if "status" not in chat_users_cols:
-        cursor.execute("ALTER TABLE chat_users ADD COLUMN status TEXT DEFAULT 'active'")
+    # 1. Add `status` column to main_group_users if missing (old schema)
+    cursor.execute("PRAGMA table_info(main_group_users)")
+    main_group_users_cols = [col[1] for col in cursor.fetchall()]
+    if "status" not in main_group_users_cols:
+        cursor.execute("ALTER TABLE main_group_users ADD COLUMN status TEXT DEFAULT 'active'")
 
-    # 2. Add `user_id` column to chat_users if missing
-    if "user_id" not in chat_users_cols:
-        cursor.execute("ALTER TABLE chat_users ADD COLUMN user_id TEXT DEFAULT NULL")
+    # 2. Add `user_id` column to main_group_users if missing
+    if "user_id" not in main_group_users_cols:
+        cursor.execute("ALTER TABLE main_group_users ADD COLUMN user_id TEXT DEFAULT NULL")
 
     # 3. Add `event_date` column to events if missing
     cursor.execute("PRAGMA table_info(events)")
@@ -114,8 +137,20 @@ def init_db(db_path: str = DB_PATH):
     if "event_date" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN event_date TEXT DEFAULT NULL")
 
+    # 3b. Add `is_cancelled` column to events if missing
+    if "is_cancelled" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN is_cancelled INTEGER DEFAULT 0")
+
+    # 3c. Add `kicked_data` column to events if missing (task #2: tracks
+    # master-hub users who were Kicked during verification, so the Return
+    # button still shows even when they have 0 guests left - previously
+    # such a person vanished from the keyboard entirely once kicked, since
+    # they were neither in the going list nor the guest counters.)
+    if "kicked_data" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN kicked_data TEXT DEFAULT '[]'")
+
     # 4. Rename legacy status value 'frozen' → 'passive'
-    cursor.execute("UPDATE chat_users SET status = 'passive' WHERE status = 'frozen'")
+    cursor.execute("UPDATE main_group_users SET status = 'passive' WHERE status = 'frozen'")
 
     conn.commit()
     conn.close()
@@ -135,14 +170,14 @@ def track_user(chat_id: str, username: str, status: str = "active",
     cursor = conn.cursor()
     if user_id is not None:
         cursor.execute("""
-            INSERT INTO chat_users (chat_id, username, user_id, status) VALUES (?, ?, ?, ?)
+            INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES (?, ?, ?, ?)
             ON CONFLICT(chat_id, username) DO UPDATE
                 SET status = excluded.status,
-                    user_id = COALESCE(excluded.user_id, chat_users.user_id)
+                    user_id = COALESCE(excluded.user_id, main_group_users.user_id)
         """, (str(chat_id), username, str(user_id), status))
     else:
         cursor.execute("""
-            INSERT INTO chat_users (chat_id, username, status) VALUES (?, ?, ?)
+            INSERT INTO main_group_users (chat_id, username, status) VALUES (?, ?, ?)
             ON CONFLICT(chat_id, username) DO UPDATE SET status = excluded.status
         """, (str(chat_id), username, status))
     conn.commit()
