@@ -8,9 +8,15 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
-from config import DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, DEFAULT_CLOSE_ICON, logger
+from config import (
+    DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, DEFAULT_CLOSE_ICON, logger,
+    ICON_KICK, ICON_RETURN, ICON_PERSON, ICON_CHANNEL_PERSON,
+    ICON_GUEST_MINUS, ICON_GUEST_PLUS, ICON_ADD, ICON_REMOVE,
+    ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
+    ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
+)
 from utils import escape_markdown, now2ddmmyy, parse_event_date
-from db import track_user, DB_PATH
+from db import track_user, DB_PATH, get_connection
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet, log_user_presence
 
 # One lock per event_id so that two near-simultaneous button clicks on the
@@ -149,15 +155,15 @@ def create_event_keyboard(
             InlineKeyboardButton(f"{notgoing_icon} Not Going", callback_data=f"notgoing_{event_id}"),
         ])
         buttons.append([
-            InlineKeyboardButton("➕ ADD", callback_data=f"add_{event_id}"),
-            InlineKeyboardButton("➖ Remove", callback_data=f"sub_{event_id}"),
+            InlineKeyboardButton(f"{ICON_ADD} ADD", callback_data=f"add_{event_id}"),
+            InlineKeyboardButton(f"{ICON_REMOVE} Remove", callback_data=f"sub_{event_id}"),
         ])
         if not is_child:
             buttons.append([
                 InlineKeyboardButton(f"{DEFAULT_CLOSE_ICON} Verification Mode", callback_data=f"close_{event_id}"),
             ])
             buttons.append([
-                InlineKeyboardButton("🚫 Cancel Event", callback_data=f"cancel_{event_id}"),
+                InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel Event", callback_data=f"cancel_{event_id}"),
             ])
 
     elif is_open == 2 and not is_child:
@@ -177,13 +183,13 @@ def create_event_keyboard(
 
             if is_going:
                 buttons.append([
-                    InlineKeyboardButton(f"👤 {username}", callback_data="noop"),
-                    InlineKeyboardButton("❌ Kick",          callback_data=f"kick_{event_id}:{username}"),
+                    InlineKeyboardButton(f"{ICON_PERSON} {username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_KICK} Kick",          callback_data=f"kick_{event_id}:{username}"),
                 ])
             elif is_kicked:
                 buttons.append([
-                    InlineKeyboardButton(f"👤 {username}", callback_data="noop"),
-                    InlineKeyboardButton("↩️ Return",       callback_data=f"return_{event_id}:{username}"),
+                    InlineKeyboardButton(f"{ICON_PERSON} {username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_RETURN} Return",      callback_data=f"return_{event_id}:{username}"),
                 ])
             else:
                 # Guest-only contributor - never declared Going and was
@@ -198,8 +204,8 @@ def create_event_keyboard(
             guest_label = f"{guest_count}G: {username}" if guest_count > 0 else "0G"
             buttons.append([
                 InlineKeyboardButton(guest_label,  callback_data="noop"),
-                InlineKeyboardButton(" − ", callback_data=f"decgst_{event_id}:{username}"),
-                InlineKeyboardButton(" + ", callback_data=f"incgst_{event_id}:{username}"),
+                InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:{username}"),
+                InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:{username}"),
             ])
 
         # ── Child-chat participants ────────────────────────────────────────
@@ -209,13 +215,13 @@ def create_event_keyboard(
 
             if is_going:
                 buttons.append([
-                    InlineKeyboardButton(f"📢 {ch_username}", callback_data="noop"),
-                    InlineKeyboardButton("❌ Kick",            callback_data=f"kick_{event_id}:ch-{ch_username}"),
+                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_KICK} Kick",                     callback_data=f"kick_{event_id}:ch-{ch_username}"),
                 ])
             elif is_kicked:
                 buttons.append([
-                    InlineKeyboardButton(f"📢 {ch_username}", callback_data="noop"),
-                    InlineKeyboardButton("↩️ Return",          callback_data=f"return_{event_id}:ch-{ch_username}"),
+                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_RETURN} Return",                 callback_data=f"return_{event_id}:ch-{ch_username}"),
                 ])
             else:
                 if ch_guests <= 0:
@@ -224,15 +230,15 @@ def create_event_keyboard(
             guest_label = f"{ch_guests}G: {ch_username}" if ch_guests > 0 else "0G"
             buttons.append([
                 InlineKeyboardButton(guest_label,  callback_data="noop"),
-                InlineKeyboardButton(" − ", callback_data=f"decgst_{event_id}:ch-{ch_username}"),
-                InlineKeyboardButton(" + ", callback_data=f"incgst_{event_id}:ch-{ch_username}"),
+                InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:ch-{ch_username}"),
+                InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:ch-{ch_username}"),
             ])
 
         buttons.append([
-            InlineKeyboardButton("➕ Add Extra Player", callback_data=f"addext_{event_id}"),
+            InlineKeyboardButton(f"{ICON_ADD} Add Extra Player", callback_data=f"addext_{event_id}"),
         ])
         buttons.append([
-            InlineKeyboardButton("💾 Save & Close Event", callback_data=f"save_{event_id}"),
+            InlineKeyboardButton(f"{ICON_SAVE} Save & Close Event", callback_data=f"save_{event_id}"),
         ])
 
     return InlineKeyboardMarkup(buttons)
@@ -243,40 +249,107 @@ def create_event_keyboard(
 # ---------------------------------------------------------------------------
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "📖 *Available Commands*\n\n"
+    main_help = (
+        "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
         "/editevent \\[name\\] \\[\\-date \\.\\.\\.\\] \\- Edit the active event\n"
         "/notify \\- Ping users who haven't responded\n"
-        "/updateuser \\[username\\(s\\)\\] \\[\\-a\\|\\-active\\|\\-p\\|\\-passive\\] \\- Update user status \\(multiple users separated by commas\\)\n"
         "/refreshusers \\[\\-r\\|\\-g\\] \\- Sync user list with current group members\n"
-        "  • No flag: Sync with /listusers only\n"
-        "  • \\-r: Sync with Google Sheets Users tab for current group\n"
-        "  • \\-g: Global sync for all monitored groups/channels\n"
         "/listusers \\- Show all tracked users\n"
-        "/adduser \\[user\\_id\\|username\\] \\[user\\_id\\|username \\.\\.\\.\\] \\[\\-\\-chat\\_id chat\\_id\\] \\- Manually add users to tracked list\n\n"
-        "⚙️ *Alias Subsystem:*\n"
-        "/setalias \\[target\\_id\\] \\[aliasname\\] \\- Bind alias to chat ID\n"
-        "/removealias \\[aliasname\\] \\- Remove alias\n"
-        "/listaliases \\- Show all aliases\n\n"
-        "📢 *Distribution Control:*\n"
-        "/shareevent \\[target\\_alias/id\\] \\[\\-v \\| \\-h \\| \\-oc\\] \\- Share active event \\(defaults to \\-oc if no mode is given\\)\n\n"
-        "🔍 *Monitoring System:*\n"
-        "/addmonitor \\[chat\\_id\\] \\- Add group/channel to monitor list\n"
-        "/removemonitor \\[chat\\_id\\] \\- Remove from monitor list\n"
-        "/listmonitors \\- Show all monitored groups/channels\n\n"
-        "🗳 *Event Lifecycle Buttons \\(on the event post itself\\):*\n"
-        "  • Going / Not Going / ADD / Remove \\- open voting, available to everyone\n"
-        "  • 🔴 Verification Mode \\- admin only, locks voting and opens the roster review screen\n"
-        "  • 🚫 Cancel Event \\- admin only, sits right below Verification Mode; "
-        "cancels the event immediately \\(marks it Canceled in the Events sheet, writes nothing to EventUsers\\)\\. "
-        "It disappears once Verification Mode has been entered\\.\n"
-        "  • ❌ Kick / ↩️ Return \\- admin only, inside Verification Mode; toggles a person out of/back into the going list\n"
-        "  • − / \\+ \\- admin only, inside Verification Mode; adjusts a person's guest count\n"
-        "  • ➕ Add Extra Player \\- admin only, inside Verification Mode; adds someone by username who never clicked a button\n"
-        "  • 💾 Save & Close Event \\- admin only, inside Verification Mode; finalizes the event and exports everyone to EventUsers"
+        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n\n"
+        "📚 *More Info*"
     )
-    await update.message.reply_text(help_text, parse_mode="MarkdownV2")
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚙️ Alias Subsystem", callback_data="help_alias"),
+            InlineKeyboardButton("📢 Distribution Control", callback_data="help_distribution"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Monitoring System", callback_data="help_monitoring"),
+            InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
+        ],
+    ])
+    
+    await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
+
+
+async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    help_sections = {
+        "help_alias": (
+            "⚙️ *Alias Subsystem*\n\n"
+            "/setalias \\[target\\_id\\] \\[aliasname\\] \\- Bind alias to chat ID\n"
+            "/removealias \\[aliasname\\] \\- Remove alias\n"
+            "/listaliases \\- Show all aliases\n\n"
+            "Aliases let you use memorable names instead of numeric chat IDs when sharing events."
+        ),
+        "help_distribution": (
+            "📢 *Distribution Control*\n\n"
+            "/shareevent \\[target\\_alias/id\\] \\[\\-v \\| \\-h \\| \\-oc\\] \\- Share active event\n\n"
+            "Modes:\n"
+            "  • \\-v \\(visible\\): Show full event in child chat\n"
+            "  • \\-h \\(hidden\\): Hide event, only show going/notgoing counts\n"
+            "  • \\-oc \\(onlycount\\): Show only total going count\n\n"
+            "Defaults to \\-oc if no mode is given."
+        ),
+        "help_monitoring": (
+            "🔍 *Monitoring System*\n\n"
+            "/addmonitor \\[chat\\_id\\] \\- Add group/channel to monitor list\n"
+            "/removemonitor \\[chat\\_id\\] \\- Remove from monitor list\n"
+            "/listmonitors \\- Show all monitored groups/channels\n\n"
+            "Monitored chats are tracked for user presence and can be synced with /refreshusers -g."
+        ),
+        "help_lifecycle": (
+            f"🗳 *Event Lifecycle Buttons*\n\n"
+            f"  • Going / Not Going / ADD / Remove \\- open voting, available to everyone\n"
+            f"  • {DEFAULT_CLOSE_ICON} Verification Mode \\- admin only, locks voting and opens roster review\n"
+            f"  • {ICON_CANCEL_EVENT} Cancel Event \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
+            f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
+            f"  • − / \\+ \\- admin only, adjust guest count\n"
+            f"  • {ICON_ADD} Add Extra Player \\- admin only, add by username\n"
+            f"  • {ICON_SAVE} Save & Close Event \\- admin only, finalize and export to EventUsers"
+        ),
+    }
+    
+    section_text = help_sections.get(query.data, "Unknown section")
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back", callback_data="help_back")],
+    ])
+    
+    await query.edit_message_text(section_text, parse_mode="MarkdownV2", reply_markup=keyboard)
+
+
+async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    main_help = (
+        "📖 *Main Commands*\n\n"
+        "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
+        "/editevent \\[name\\] \\[\\-date \\.\\.\\.\\] \\- Edit the active event\n"
+        "/notify \\- Ping users who haven't responded\n"
+        "/refreshusers \\[\\-r\\|\\-g\\] \\- Sync user list with current group members\n"
+        "/listusers \\- Show all tracked users\n"
+        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n\n"
+        "📚 *More Info*"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚙️ Alias Subsystem", callback_data="help_alias"),
+            InlineKeyboardButton("📢 Distribution Control", callback_data="help_distribution"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Monitoring System", callback_data="help_monitoring"),
+            InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
+        ],
+    ])
+    
+    await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
 # ---------------------------------------------------------------------------
@@ -347,26 +420,23 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (alias_name,))
-    if cursor.fetchone():
-        await update.message.reply_text("Alias already exist", parse_mode="MarkdownV2")
-        conn.close()
-        return
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (alias_name,))
+        if cursor.fetchone():
+            await update.message.reply_text("Alias already exist", parse_mode="MarkdownV2")
+            return
 
-    cursor.execute("SELECT alias FROM chat_aliases WHERE chat_id = ?", (str(target_chat_id),))
-    if cursor.fetchone():
-        await update.message.reply_text(
-            "⚠️ This group or channel has already been added\. Please check its existing alias\.",
-            parse_mode="MarkdownV2",
-        )
-        conn.close()
-        return
+        cursor.execute("SELECT alias FROM chat_aliases WHERE chat_id = ?", (str(target_chat_id),))
+        if cursor.fetchone():
+            await update.message.reply_text(
+                f"{ICON_WARNING} This group or channel has already been added\. Please check its existing alias\.",
+                parse_mode="MarkdownV2",
+            )
+            return
 
-    cursor.execute("INSERT INTO chat_aliases (chat_id, alias) VALUES (?, ?)", (str(target_chat_id), alias_name))
-    conn.commit()
-    conn.close()
+        cursor.execute("INSERT INTO chat_aliases (chat_id, alias) VALUES (?, ?)", (str(target_chat_id), alias_name))
+        conn.commit()
 
     await update.message.reply_text(
         rf"✅ Alias `__{escape_markdown(alias_name)}__` mapped to node ID `{target_chat_id}`\.",
@@ -384,17 +454,15 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     alias_name = args[0].strip().lower()
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (alias_name,))
-    if not cursor.fetchone():
-        await update.message.reply_text("🔍 Alias not found\.", parse_mode="MarkdownV2")
-        conn.close()
-        return
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (alias_name,))
+        if not cursor.fetchone():
+            await update.message.reply_text("🔍 Alias not found\.", parse_mode="MarkdownV2")
+            return
 
-    cursor.execute("DELETE FROM chat_aliases WHERE alias = ?", (alias_name,))
-    conn.commit()
-    conn.close()
+        cursor.execute("DELETE FROM chat_aliases WHERE alias = ?", (alias_name,))
+        conn.commit()
     await update.message.reply_text(
         f"🗑️ Alias `__{escape_markdown(alias_name)}__` removed\.", parse_mode="MarkdownV2"
     )
@@ -402,11 +470,10 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows all active routing aliases."""
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT alias, chat_id FROM chat_aliases")
-    rows = cursor.fetchall()
-    conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT alias, chat_id FROM chat_aliases")
+        rows = cursor.fetchall()
 
     if not rows:
         await update.message.reply_text("📋 No aliases configured\.", parse_mode="MarkdownV2")
@@ -480,26 +547,25 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     event_id = str(uuid4())[:8]
 
     try:
-        conn   = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO events
-                (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                 is_open, going_data, notgoing_data, counters_data, event_date)
-            VALUES (?, ?, ?, ?, ?, ?, 1, '[]', '[]', '{}', ?)
-            """,
-            (event_id, chat_id, str(message.message_id),
-             event_name_raw, going_icon, notgoing_icon, event_date),
-        )
-        conn.commit()
-        conn.close()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO events
+                    (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+                     is_open, going_data, notgoing_data, counters_data, event_date)
+                VALUES (?, ?, ?, ?, ?, ?, 1, '[]', '[]', '{}', ?)
+                """,
+                (event_id, chat_id, str(message.message_id),
+                 event_name_raw, going_icon, notgoing_icon, event_date),
+            )
+            conn.commit()
     except Exception as e:
         logger.error(f"Failed to save new event: {e}")
         await message.reply_text("❌ Database error: could not create event\\.", parse_mode="MarkdownV2")
         return
 
-    date_line = f"🕐 {escape_markdown(event_date)}\n" if event_date else ""
+    date_line = f"{ICON_CLOCK} {escape_markdown(event_date)}\n" if event_date else ""
     text = (
         f"*{escape_markdown(event_name_raw)}*\n"
         f"{date_line}\n"
@@ -512,14 +578,13 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent_msg = await context.bot.send_message(
             chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="MarkdownV2"
         )
-        conn   = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE events SET message_id = ? WHERE event_id = ?",
-            (str(sent_msg.message_id), event_id),
-        )
-        conn.commit()
-        conn.close()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE events SET message_id = ? WHERE event_id = ?",
+                (str(sent_msg.message_id), event_id),
+            )
+            conn.commit()
     except Exception as e:
         logger.error(f"Failed to send event message: {e}")
 
@@ -549,24 +614,23 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT event_id, name, going_icon, notgoing_icon, event_date
-        FROM events
-        WHERE chat_id = ? AND is_open > 0
-        ORDER BY ROWID DESC LIMIT 1
-        """,
-        (chat_id,),
-    )
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        await update.message.reply_text(
-            "❌ No active event found to edit\\.", parse_mode="MarkdownV2"
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT event_id, name, going_icon, notgoing_icon, event_date
+            FROM events
+            WHERE chat_id = ? AND is_open > 0
+            ORDER BY ROWID DESC LIMIT 1
+            """,
+            (chat_id,),
         )
-        return
+        row = cursor.fetchone()
+        if not row:
+            await update.message.reply_text(
+                "❌ No active event found to edit\\.", parse_mode="MarkdownV2"
+            )
+            return
 
     event_id, current_name, current_gi, current_ni, current_date = row
     new_name, new_gi, new_ni, date_raw = parse_event_args(args)
@@ -666,7 +730,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not all_active:
         await message.reply_text(
-            "📊 No active users tracked in this chat\\.", parse_mode="MarkdownV2"
+            f"{ICON_STATS} No active users tracked in this chat\\.", parse_mode="MarkdownV2"
         )
         return
 
@@ -682,9 +746,9 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text_msg:
-        header = f"🔔 {escape_markdown(event_name)}: {escape_markdown(text_msg)}\n_Please submit your status_\n\n"
+        header = f"{ICON_NOTIFY} {escape_markdown(event_name)}: {escape_markdown(text_msg)}\n_Please submit your status_\n\n"
     else:
-        header = f"🔔 {escape_markdown(event_name)}\n_Please submit your status_\n\n"
+        header = f"{ICON_NOTIFY} {escape_markdown(event_name)}\n_Please submit your status_\n\n"
     users_list = "\n".join(pending)
     await message.reply_text(header + users_list, parse_mode="MarkdownV2")
 
@@ -760,42 +824,51 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, status FROM main_group_users WHERE chat_id = ?", (chat_id,))
-    rows = cursor.fetchall()
-    conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, status FROM main_group_users WHERE chat_id = ?", (chat_id,))
+        rows = cursor.fetchall()
 
     if not rows:
         await update.message.reply_text(
-            "📊 No users tracked for this chat\\.", parse_mode="MarkdownV2"
+            f"{ICON_STATS} No users tracked for this chat\\.", parse_mode="MarkdownV2"
         )
         return
 
     lines = [f"• @{escape_markdown(r[0])} \\(`{escape_markdown(r[1])}`\\)" for r in rows]
-    text  = "📊 *Tracked Users:*\n\n" + "\n".join(lines)
+    text  = f"{ICON_STATS} *Tracked Users:*\n\n" + "\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Manually adds users to the tracked user list (/listusers).
-    Usage: /adduser <user_id|username> [user_id|username ...] [--chat_id chat_id]
+    Usage: /adduser <user_id|username> [user_id|username ...] [--chat_id chat_id | --monitor name]
+
+    --chat_id / --monitor are how this feeds a monitored child group or
+    channel's entry in main_group_users (there's no other way to populate
+    it for a chat the bot doesn't otherwise see button clicks/messages in -
+    see /refreshusers -g, which reads exactly these rows per monitor
+    chat_id to sync the Google Sheets Users tab for that place).
+    --monitor is just a friendlier alternative to --chat_id: it resolves a
+    chat_name already registered via /addmonitor instead of requiring the
+    admin to look up and paste the raw numeric chat_id.
+
     Examples:
       /adduser 123456789
       /adduser username1 username2
       /adduser 123456789 --chat_id -1001234567890
-      /adduser username1 username2 --chat_id -1001234567890
+      /adduser username1 username2 --monitor "Downtown Channel"
     """
     args = context.args
     if len(args) < 1:
         await update.message.reply_text(
-            "❌ *Syntax error:* `/adduser <user_id|username> [user_id|username ...] [--chat_id chat_id]`\n\n"
+            "❌ *Syntax error:* `/adduser <user_id|username> [user_id|username ...] [--chat_id chat_id | --monitor name]`\n\n"
             "Examples:\n"
             "  `/adduser 123456789`\n"
             "  `/adduser username1 username2`\n"
             "  `/adduser 123456789 --chat_id -1001234567890`\n"
-            "  `/adduser username1 username2 --chat_id -1001234567890`",
+            "  `/adduser username1 username2 --monitor \"Downtown Channel\"`",
             parse_mode="MarkdownV2",
         )
         return
@@ -807,19 +880,33 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
         if member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("⛔️ Only admins can use /adduser\\.", parse_mode="MarkdownV2")
+            await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /adduser\\.", parse_mode="MarkdownV2")
             return
     except Exception as e:
         logger.error(f"adduser: admin check failed: {e}")
         return
 
-    # Parse --chat_id parameter
+    # Parse --chat_id / --monitor parameter
     target_chat_id = chat_id
     user_identifiers = []
     i = 0
     while i < len(args):
         if args[i] == "--chat_id" and i + 1 < len(args):
             target_chat_id = args[i + 1]
+            i += 2
+        elif args[i] == "--monitor" and i + 1 < len(args):
+            monitor_name = args[i + 1]
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT chat_id FROM monitors WHERE chat_name = ?", (monitor_name,))
+                monitor_row = cursor.fetchone()
+            if not monitor_row:
+                await update.message.reply_text(
+                    f"❌ No monitor named `{escape_markdown(monitor_name)}` found\\. Check `/listmonitors`\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+            target_chat_id = monitor_row[0]
             i += 2
         else:
             user_identifiers.append(args[i])
@@ -1012,15 +1099,14 @@ async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Lists all monitored groups/channels.
     """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_id, chat_type, chat_name FROM monitors")
-    rows = cursor.fetchall()
-    conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, chat_type, chat_name FROM monitors")
+        rows = cursor.fetchall()
 
     if not rows:
         await update.message.reply_text(
-            "📊 No monitors configured\\.",
+            f"{ICON_STATS} No monitors configured\\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -1033,7 +1119,7 @@ async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"id: `{escape_markdown(chat_id)}`"
         )
 
-    text = "📊 *Monitored Groups/Channels:*\n\n" + "\n\n".join(lines)
+    text = f"{ICON_STATS} *Monitored Groups/Channels:*\n\n" + "\n\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
@@ -1074,7 +1160,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id, user_id=update.effective_user.id
         )
         if member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("⛔️ Only admins can use /refreshusers\\.", parse_mode="MarkdownV2")
+            await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /refreshusers\\.", parse_mode="MarkdownV2")
             return
     except Exception as e:
         logger.error(f"refreshusers: admin check failed: {e}")
@@ -1164,7 +1250,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = []
     if removed:
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in removed)
-        lines.append(f"🧹 Removed \\(left or invalid\\): {mentions}")
+        lines.append(f"{ICON_CLEAN} Removed \\(left or invalid\\): {mentions}")
     if added:
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in added)
         lines.append(f"➕ Added \\(new admins found\\): {mentions}")
@@ -1175,10 +1261,10 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if root_sync or global_sync:
         try:
             await sync_users_sheet(chat_id, still_present)
-            lines.append("📊 Users tab in Google Sheets synced\\.")
+            lines.append(f"{ICON_STATS} Users tab in Google Sheets synced\\.")
         except Exception as e:
             logger.error(f"refreshusers: Users sheet sync failed: {e}")
-            lines.append("⚠️ Could not sync the Users tab in Google Sheets\\.")
+            lines.append(f"{ICON_WARNING} Could not sync the Users tab in Google Sheets\\.")
 
     # ── 4. Global sync: process all monitored groups/channels ─────────────
     if global_sync:
@@ -1189,7 +1275,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if monitors:
-            lines.append("\n🌍 *Global sync processing monitored groups/channels:*")
+            lines.append(f"\n{ICON_GLOBE} *Global sync processing monitored groups/channels:*")
             for monitor_chat_id, chat_type, chat_name in monitors:
                 try:
                     # Local sync for monitored group (remove departed, add admins)
@@ -1340,7 +1426,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
-            text="⚠️ Cannot share an event to the same group that owns it\\.",
+            text=f"{ICON_WARNING} Cannot share an event to the same group that owns it\\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -1353,7 +1439,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
-            text="⚠️ This group or channel has already been added\\.",
+            text=f"{ICON_WARNING} This group or channel has already been added\\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -1388,7 +1474,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"shareevent get_chat unexpected: {e}")
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
-            text="⚠️ Unexpected error reaching target chat\\.",
+            text=f"{ICON_WARNING} Unexpected error reaching target chat\\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -1423,14 +1509,14 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_member.status in ["left", "kicked"]:
             await context.bot.send_message(
                 chat_id=main_hub_chat_id,
-                text="⛔️ You are not a member of that chat\\.",
+                text=f"{ICON_ADMIN_ONLY} You are not a member of that chat\\.",
                 parse_mode="MarkdownV2",
             )
             return
         if user_member.status not in ["administrator", "creator"]:
             await context.bot.send_message(
                 chat_id=main_hub_chat_id,
-                text="⛔️ You need admin rights in the target chat to share there\\.",
+                text=f"{ICON_ADMIN_ONLY} You need admin rights in the target chat to share there\\.",
                 parse_mode="MarkdownV2",
             )
             return
@@ -1438,7 +1524,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"shareevent user check: {e}")
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
-            text="⚠️ Could not verify your membership in the target chat\\.",
+            text=f"{ICON_WARNING} Could not verify your membership in the target chat\\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -1446,7 +1532,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sent = await context.bot.send_message(
             chat_id=target_chat_api,
-            text=f"↪️ *SHARED: {escape_markdown(name)}*\n_Synchronising\\.\\.\\._",
+            text=f"{ICON_SHARED} *SHARED: {escape_markdown(name)}*\n_Synchronising\\.\\.\\._",
             parse_mode="MarkdownV2",
         )
         conn   = sqlite3.connect(DB_PATH)
@@ -1662,8 +1748,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     )
 
     # Header: changed wording
-    header      = "⚠️ *SQUAD VERIFICATION*\n_Review members before save_\n\n" if is_open == 2 else ""
-    date_line   = f"🕐 {escape_markdown(event_date)}\n" if event_date else ""
+    header      = f"{ICON_WARNING} *SQUAD VERIFICATION*\n_Review members before save_\n\n" if is_open == 2 else ""
+    date_line   = f"{ICON_CLOCK} {escape_markdown(event_date)}\n" if event_date else ""
     title_line  = f"*CANCELED {escape_markdown(name)}*" if is_cancelled else f"*{escape_markdown(name)}*"
 
     master_text = (
@@ -1671,7 +1757,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         f"{going_icon} *Going* \\({total_master_going}\\):\n{going_list_text}\n\n"
         f"{notgoing_icon} *Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
         f"{master_shares_block}\n\n"
-        f"📊 *TOTAL Going:* {global_total}"
+        f"{ICON_STATS} *TOTAL Going:* {global_total}"
     )
 
     # Keyboard buttons for master (verification mode needs child rows too)
@@ -1738,7 +1824,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         if mode == "-visible":
             child_text = (
-                f"↪️ *SHARED: {child_title_name}*\n\n"
+                f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n"
                 f"{going_icon} *Going from {escaped_main_title}* \\({current_post_total}\\):\n{going_list_text}\n\n"
             )
             for other_id, _, _ in shares:
@@ -1753,7 +1839,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         elif mode == "-onlycount":
             child_text = (
-                f"↪️ *SHARED: {child_title_name}*\n\n"
+                f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n"
                 f"{going_icon} *Going from {escaped_main_title}:* {current_post_total}\n\n"
             )
             for other_id, _, _ in shares:
@@ -1764,11 +1850,11 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             child_text += "\n"
 
         else:  # "-hidden"
-            child_text = f"↪️ *SHARED: {child_title_name}*\n\n_Data hidden by admin\\._\n\n"
+            child_text = f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n_Data hidden by admin\\._\n\n"
 
         child_text += (
             f"{going_icon} *Going here:* \\({c_info['count']}\\)\n{c_info['users_text']}\n\n"
-            f"📊 *Total Going \\(all groups\\):* {global_total}\n"
+            f"{ICON_STATS} *Total Going \\(all groups\\):* {global_total}\n"
         )
 
         child_keyboard = create_event_keyboard(
@@ -1930,7 +2016,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     conn.close()
                     try:
                         await query.answer(
-                            text="⚠️ You are already added to this event in another group/channel",
+                            text=f"{ICON_WARNING} You are already added to this event in another group/channel",
                             show_alert=True,
                         )
                     except Exception:
