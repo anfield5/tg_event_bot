@@ -10,7 +10,7 @@ from config import TELEGRAM_TOKEN, logger
 from db import init_db, track_user
 from sheets import log_user_presence
 from handlers import (
-    help_command,
+    help_command, help_callback_handler, help_back_handler,
     newevent, editevent,
     notify,
     updateuser, listusers, refreshusers, adduser,
@@ -63,6 +63,8 @@ def main():
 
     # 1. Inline button callbacks (must be first)
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(help_callback_handler, pattern="^help_"))
+    app.add_handler(CallbackQueryHandler(help_back_handler, pattern="^help_back$"))
 
     # 2. Chat member join/leave tracking
     app.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.CHAT_MEMBER))

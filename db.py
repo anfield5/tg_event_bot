@@ -2,8 +2,31 @@ import sqlite3
 import json
 import asyncio
 import functools
+from contextlib import contextmanager
 
 DB_PATH = "database.db"
+
+
+@contextmanager
+def get_connection(db_path: str = DB_PATH):
+    """
+    Small context-manager wrapper around sqlite3.connect() so call sites can
+    write:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(...)
+            conn.commit()
+    instead of the open/commit/close boilerplate repeated ~28 times across
+    handlers.py. Also guarantees the connection is closed even if an
+    exception is raised mid-query, which several existing call sites don't
+    (a raised exception between `sqlite3.connect()` and `conn.close()`
+    currently leaks the connection).
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 async def run_db(func, *args, **kwargs):
