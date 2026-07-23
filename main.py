@@ -61,10 +61,22 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # 1. Inline button callbacks (must be first)
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(CallbackQueryHandler(help_callback_handler, pattern="^help_"))
+    # 1. Inline button callbacks - pattern-specific handlers MUST be
+    # registered before the catch-all button_handler. PTB checks handlers in
+    # registration order within the same group and stops at the first one
+    # whose check passes; button_handler has no pattern (matches every
+    # callback_query), so if it were registered first it would swallow
+    # "help_*" callbacks before help_callback_handler/help_back_handler ever
+    # ran - which is exactly why the /help inline buttons did nothing.
+    #
+    # help_back_handler ("^help_back$") must ALSO come before
+    # help_callback_handler ("^help_"), since the broader "^help_" pattern
+    # matches "help_back" too - registered in the other order, the Back
+    # button would always fall through to help_callback_handler's "Unknown
+    # section" fallback instead of returning to the main help menu.
     app.add_handler(CallbackQueryHandler(help_back_handler, pattern="^help_back$"))
+    app.add_handler(CallbackQueryHandler(help_callback_handler, pattern="^help_"))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
     # 2. Chat member join/leave tracking
     app.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.CHAT_MEMBER))

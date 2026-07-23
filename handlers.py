@@ -251,10 +251,13 @@ def create_event_keyboard(
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     main_help = (
         "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
+        "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
+        "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
+        "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
         "/editevent \\[name\\] \\[\\-date \\.\\.\\.\\] \\- Edit the active event\n"
         "/notify \\- Ping users who haven't responded\n"
         "/refreshusers \\[\\-r\\|\\-g\\] \\- Sync user list with current group members\n"
+        "\\-r refreshes only the current group\\, \\-g refreshes all monitored groups\n"
         "/listusers \\- Show all tracked users\n"
         "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n\n"
         "📚 *More Info*"
@@ -284,7 +287,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/setalias \\[target\\_id\\] \\[aliasname\\] \\- Bind alias to chat ID\n"
             "/removealias \\[aliasname\\] \\- Remove alias\n"
             "/listaliases \\- Show all aliases\n\n"
-            "Aliases let you use memorable names instead of numeric chat IDs when sharing events."
+            "Aliases let you use memorable names instead of numeric chat IDs when sharing events"
         ),
         "help_distribution": (
             "📢 *Distribution Control*\n\n"
@@ -293,14 +296,14 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "  • \\-v \\(visible\\): Show full event in child chat\n"
             "  • \\-h \\(hidden\\): Hide event, only show going/notgoing counts\n"
             "  • \\-oc \\(onlycount\\): Show only total going count\n\n"
-            "Defaults to \\-oc if no mode is given."
+            "Defaults to \\-oc if no mode is given"
         ),
         "help_monitoring": (
             "🔍 *Monitoring System*\n\n"
             "/addmonitor \\[chat\\_id\\] \\- Add group/channel to monitor list\n"
             "/removemonitor \\[chat\\_id\\] \\- Remove from monitor list\n"
             "/listmonitors \\- Show all monitored groups/channels\n\n"
-            "Monitored chats are tracked for user presence and can be synced with /refreshusers -g."
+            "Monitored chats are tracked for user presence and can be synced with /refreshusers \\-g"
         ),
         "help_lifecycle": (
             f"🗳 *Event Lifecycle Buttons*\n\n"
@@ -340,11 +343,11 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⚙️ Alias Subsystem", callback_data="help_alias"),
-            InlineKeyboardButton("📢 Distribution Control", callback_data="help_distribution"),
+            InlineKeyboardButton("⚙️ Aliases", callback_data="help_alias"),
+            InlineKeyboardButton("📢 Distribution", callback_data="help_distribution"),
         ],
         [
-            InlineKeyboardButton("🔍 Monitoring System", callback_data="help_monitoring"),
+            InlineKeyboardButton("🔍 Monitoring", callback_data="help_monitoring"),
             InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
         ],
     ])
@@ -632,36 +635,34 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    event_id, current_name, current_gi, current_ni, current_date = row
-    new_name, new_gi, new_ni, date_raw = parse_event_args(args)
+        event_id, current_name, current_gi, current_ni, current_date = row
+        new_name, new_gi, new_ni, date_raw = parse_event_args(args)
 
-    updated_name = new_name   if new_name   else current_name
-    updated_gi   = new_gi     if new_gi     else current_gi
-    updated_ni   = new_ni     if new_ni     else current_ni
+        updated_name = new_name   if new_name   else current_name
+        updated_gi   = new_gi     if new_gi     else current_gi
+        updated_ni   = new_ni     if new_ni     else current_ni
 
-    # Date: update only if -date was explicitly supplied
-    updated_date = current_date
-    if date_raw is not None:
-        parsed = parse_event_date(date_raw)
-        if parsed is None:
-            conn.close()
-            await update.message.reply_text(
-                "❌ *Invalid date format\\.* Use `dd\\.mm\\.yyyy` or `dd\\.mm\\.yyyy HH:MM`\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-        updated_date = parsed
+        # Date: update only if -date was explicitly supplied
+        updated_date = current_date
+        if date_raw is not None:
+            parsed = parse_event_date(date_raw)
+            if parsed is None:
+                await update.message.reply_text(
+                    "❌ *Invalid date format\\.* Use `dd\\.mm\\.yyyy` or `dd\\.mm\\.yyyy HH:MM`\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+            updated_date = parsed
 
-    cursor.execute(
-        """
-        UPDATE events
-        SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?
-        WHERE event_id = ?
-        """,
-        (updated_name, updated_gi, updated_ni, updated_date, event_id),
-    )
-    conn.commit()
-    conn.close()
+        cursor.execute(
+            """
+            UPDATE events
+            SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?
+            WHERE event_id = ?
+            """,
+            (updated_name, updated_gi, updated_ni, updated_date, event_id),
+        )
+        conn.commit()
 
     await update.message.reply_text(
         "⚙️ *Event updated\\. Refreshing views\\.*", parse_mode="MarkdownV2"
@@ -698,35 +699,33 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Get custom message if provided
     text_msg = " ".join(args) if args else ""
 
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT event_id, name, going_data, notgoing_data
-        FROM events
-        WHERE chat_id = ? AND is_open = 1
-        ORDER BY ROWID DESC LIMIT 1
-        """,
-        (chat_id,),
-    )
-    event_row = cursor.fetchone()
-    if not event_row:
-        conn.close()
-        await message.reply_text(
-            "❌ No active event found\\.", parse_mode="MarkdownV2"
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT event_id, name, going_data, notgoing_data
+            FROM events
+            WHERE chat_id = ? AND is_open = 1
+            ORDER BY ROWID DESC LIMIT 1
+            """,
+            (chat_id,),
         )
-        return
+        event_row = cursor.fetchone()
+        if not event_row:
+            await message.reply_text(
+                "❌ No active event found\\.", parse_mode="MarkdownV2"
+            )
+            return
 
-    event_id, event_name, going_data, notgoing_data = event_row
-    going_users   = {u.split(" (")[0] for u in json.loads(going_data)}
-    notgoing_users = set(json.loads(notgoing_data))
-    decided_users  = going_users | notgoing_users
+        event_id, event_name, going_data, notgoing_data = event_row
+        going_users   = {u.split(" (")[0] for u in json.loads(going_data)}
+        notgoing_users = set(json.loads(notgoing_data))
+        decided_users  = going_users | notgoing_users
 
-    cursor.execute(
-        "SELECT username FROM main_group_users WHERE chat_id = ? AND status = 'active'", (chat_id,)
-    )
-    all_active = cursor.fetchall()
-    conn.close()
+        cursor.execute(
+            "SELECT username FROM main_group_users WHERE chat_id = ? AND status = 'active'", (chat_id,)
+        )
+        all_active = cursor.fetchall()
 
     if not all_active:
         await message.reply_text(
@@ -1034,14 +1033,13 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Add to database
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO monitors (chat_id, chat_type, chat_name) VALUES (?, ?, ?)",
-            (target_chat_id, chat_type, chat_name),
-        )
-        conn.commit()
-        conn.close()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO monitors (chat_id, chat_type, chat_name) VALUES (?, ?, ?)",
+                (target_chat_id, chat_type, chat_name),
+            )
+            conn.commit()
 
         await update.message.reply_text(
             f"✅ Added monitor: `{escape_markdown(chat_name)}` \\({chat_type}\\)",
@@ -1071,23 +1069,21 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target_chat_id = args[0]
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_name FROM monitors WHERE chat_id = ?", (target_chat_id,))
-    row = cursor.fetchone()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_name FROM monitors WHERE chat_id = ?", (target_chat_id,))
+        row = cursor.fetchone()
 
-    if not row:
-        conn.close()
-        await update.message.reply_text(
-            "❌ Monitor not found\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
+        if not row:
+            await update.message.reply_text(
+                "❌ Monitor not found\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
 
-    chat_name = row[0]
-    cursor.execute("DELETE FROM monitors WHERE chat_id = ?", (target_chat_id,))
-    conn.commit()
-    conn.close()
+        chat_name = row[0]
+        cursor.execute("DELETE FROM monitors WHERE chat_id = ?", (target_chat_id,))
+        conn.commit()
 
     await update.message.reply_text(
         f"✅ Removed monitor: `{escape_markdown(chat_name)}`",
@@ -1166,81 +1162,74 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"refreshusers: admin check failed: {e}")
         return
 
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT username, user_id, status FROM main_group_users WHERE chat_id = ?", (chat_id,)
-    )
-    rows = cursor.fetchall()
-    conn.close()
-
-    # ── 1. Remove confirmed-departed/invalid users, track who's still here ──
-    removed        = []
-    still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
-
-    for username, user_id, status in rows:
-        if not user_id:
-            # User without stored ID - keep them in list for now
-            # They might have been added via /adduser without verification
-            still_present.append((username, username))
-            continue
-        try:
-            m = await context.bot.get_chat_member(
-                chat_id=int(chat_id), user_id=int(user_id)
-            )
-            if m.status in ["left", "kicked"]:
-                removed.append(username)
-            else:
-                # Use the live Telegram username (public @handle preferred),
-                # not the possibly-stale one stored locally - this is what
-                # lets the Users sheet sync actually detect a name change.
-                live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
-                still_present.append((user_id, live_username))
-        except BadRequest as e:
-            # "User not found" / "Chat member not found" - this could mean:
-            # 1. User actually left the group
-            # 2. User was just re-added but bot hasn't cached them yet
-            # 3. Temporary API issue
-            # To avoid false positives for recently re-added users, keep them
-            # in the list. If they're truly gone, they'll be removed next time.
-            logger.error(f"refreshusers: BadRequest for user {username} (user_id={user_id}): {e}")
-            still_present.append((user_id, username))
-        except Exception as e:
-            # Any other error - keep them in list to avoid false removals
-            logger.error(f"refreshusers: Exception for user {username} (user_id={user_id}): {e}")
-            still_present.append((user_id, username))
-
-    if removed:
-        conn   = sqlite3.connect(DB_PATH)
+    with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.executemany(
-            "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
-            [(chat_id, u) for u in removed],
+        cursor.execute(
+            "SELECT username, user_id, status FROM main_group_users WHERE chat_id = ?", (chat_id,)
         )
-        conn.commit()
-        conn.close()
+        rows = cursor.fetchall()
 
-    # ── 2. Add missing chat administrators as 'active' ──────────────────────
-    added = []
-    try:
-        admins = await context.bot.get_chat_administrators(update.effective_chat.id)
-        conn   = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (chat_id,))
-        already_tracked = {r[0] for r in cursor.fetchall()}
-        conn.close()
+        # ── 1. Remove confirmed-departed/invalid users, track who's still here ──
+        removed        = []
+        still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
 
-        for admin_member in admins:
-            u = admin_member.user
-            if u.is_bot:
+        for username, user_id, status in rows:
+            if not user_id:
+                # User without stored ID - keep them in list for now
+                # They might have been added via /adduser without verification
+                still_present.append((username, username))
                 continue
-            uname = u.username or u.first_name or f"user{u.id}"
-            if uname not in already_tracked:
-                track_user(chat_id, uname, "active", user_id=str(u.id))
-                added.append(uname)
-            still_present.append((str(u.id), uname))
-    except Exception as e:
-        logger.error(f"refreshusers: could not fetch chat administrators: {e}")
+            try:
+                m = await context.bot.get_chat_member(
+                    chat_id=int(chat_id), user_id=int(user_id)
+                )
+                if m.status in ["left", "kicked"]:
+                    removed.append(username)
+                else:
+                    # Use the live Telegram username (public @handle preferred),
+                    # not the possibly-stale one stored locally - this is what
+                    # lets the Users sheet sync actually detect a name change.
+                    live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
+                    still_present.append((user_id, live_username))
+            except BadRequest as e:
+                # "User not found" / "Chat member not found" - this could mean:
+                # 1. User actually left the group
+                # 2. User was just re-added but bot hasn't cached them yet
+                # 3. Temporary API issue
+                # To avoid false positives for recently re-added users, keep them
+                # in the list. If they're truly gone, they'll be removed next time.
+                logger.error(f"refreshusers: BadRequest for user {username} (user_id={user_id}): {e}")
+                still_present.append((user_id, username))
+            except Exception as e:
+                # Any other error - keep them in list to avoid false removals
+                logger.error(f"refreshusers: Exception for user {username} (user_id={user_id}): {e}")
+                still_present.append((user_id, username))
+
+        if removed:
+            cursor.executemany(
+                "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
+                [(chat_id, u) for u in removed],
+            )
+            conn.commit()
+
+        # ── 2. Add missing chat administrators as 'active' ──────────────────────
+        added = []
+        try:
+            admins = await context.bot.get_chat_administrators(update.effective_chat.id)
+            cursor.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (chat_id,))
+            already_tracked = {r[0] for r in cursor.fetchall()}
+
+            for admin_member in admins:
+                u = admin_member.user
+                if u.is_bot:
+                    continue
+                uname = u.username or u.first_name or f"user{u.id}"
+                if uname not in already_tracked:
+                    track_user(chat_id, uname, "active", user_id=str(u.id))
+                    added.append(uname)
+                still_present.append((str(u.id), uname))
+        except Exception as e:
+            logger.error(f"refreshusers: could not fetch chat administrators: {e}")
 
     # Dedupe still_present by user_id (an admin who was already tracked
     # would otherwise appear twice - once from step 1, once from step 2).
@@ -1268,78 +1257,71 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── 4. Global sync: process all monitored groups/channels ─────────────
     if global_sync:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, chat_type, chat_name FROM monitors")
-        monitors = cursor.fetchall()
-        conn.close()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT chat_id, chat_type, chat_name FROM monitors")
+            monitors = cursor.fetchall()
 
         if monitors:
             lines.append(f"\n{ICON_GLOBE} *Global sync processing monitored groups/channels:*")
             for monitor_chat_id, chat_type, chat_name in monitors:
                 try:
-                    # Local sync for monitored group (remove departed, add admins)
-                    conn_mon = sqlite3.connect(DB_PATH)
-                    cursor_mon = conn_mon.cursor()
-                    cursor_mon.execute(
-                        "SELECT username, user_id, status FROM main_group_users WHERE chat_id = ?",
-                        (monitor_chat_id,),
-                    )
-                    monitor_rows = cursor_mon.fetchall()
-                    conn_mon.close()
-
-                    monitor_removed = []
-                    monitor_present = []
-
-                    for username, user_id, status in monitor_rows:
-                        if not user_id:
-                            monitor_removed.append(username)
-                            continue
-                        try:
-                            m = await context.bot.get_chat_member(
-                                chat_id=int(monitor_chat_id), user_id=int(user_id)
-                            )
-                            if m.status in ["left", "kicked"]:
-                                monitor_removed.append(username)
-                            else:
-                                live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
-                                monitor_present.append((user_id, live_username))
-                        except BadRequest:
-                            monitor_removed.append(username)
-                        except Exception:
-                            monitor_removed.append(username)
-
-                    if monitor_removed:
-                        conn_mon = sqlite3.connect(DB_PATH)
+                    with get_connection() as conn_mon:
                         cursor_mon = conn_mon.cursor()
-                        cursor_mon.executemany(
-                            "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
-                            [(monitor_chat_id, u) for u in monitor_removed],
+
+                        # Local sync for monitored group (remove departed, add admins)
+                        cursor_mon.execute(
+                            "SELECT username, user_id, status FROM main_group_users WHERE chat_id = ?",
+                            (monitor_chat_id,),
                         )
-                        conn_mon.commit()
-                        conn_mon.close()
+                        monitor_rows = cursor_mon.fetchall()
 
-                    # Add missing admins for monitored group
-                    monitor_added = []
-                    try:
-                        monitor_admins = await context.bot.get_chat_administrators(int(monitor_chat_id))
-                        conn_mon = sqlite3.connect(DB_PATH)
-                        cursor_mon = conn_mon.cursor()
-                        cursor_mon.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (monitor_chat_id,))
-                        monitor_tracked = {r[0] for r in cursor_mon.fetchall()}
-                        conn_mon.close()
+                        monitor_removed = []
+                        monitor_present = []
 
-                        for admin_member in monitor_admins:
-                            u = admin_member.user
-                            if u.is_bot:
+                        for username, user_id, status in monitor_rows:
+                            if not user_id:
+                                monitor_removed.append(username)
                                 continue
-                            uname = u.username or u.first_name or f"user{u.id}"
-                            if uname not in monitor_tracked:
-                                track_user(monitor_chat_id, uname, "active", user_id=str(u.id))
-                                monitor_added.append(uname)
-                            monitor_present.append((str(u.id), uname))
-                    except Exception as e:
-                        logger.error(f"Global sync: could not fetch admins for {chat_name}: {e}")
+                            try:
+                                m = await context.bot.get_chat_member(
+                                    chat_id=int(monitor_chat_id), user_id=int(user_id)
+                                )
+                                if m.status in ["left", "kicked"]:
+                                    monitor_removed.append(username)
+                                else:
+                                    live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
+                                    monitor_present.append((user_id, live_username))
+                            except BadRequest:
+                                monitor_removed.append(username)
+                            except Exception:
+                                monitor_removed.append(username)
+
+                        if monitor_removed:
+                            cursor_mon.executemany(
+                                "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
+                                [(monitor_chat_id, u) for u in monitor_removed],
+                            )
+                            conn_mon.commit()
+
+                        # Add missing admins for monitored group
+                        monitor_added = []
+                        try:
+                            monitor_admins = await context.bot.get_chat_administrators(int(monitor_chat_id))
+                            cursor_mon.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (monitor_chat_id,))
+                            monitor_tracked = {r[0] for r in cursor_mon.fetchall()}
+
+                            for admin_member in monitor_admins:
+                                u = admin_member.user
+                                if u.is_bot:
+                                    continue
+                                uname = u.username or u.first_name or f"user{u.id}"
+                                if uname not in monitor_tracked:
+                                    track_user(monitor_chat_id, uname, "active", user_id=str(u.id))
+                                    monitor_added.append(uname)
+                                monitor_present.append((str(u.id), uname))
+                        except Exception as e:
+                            logger.error(f"Global sync: could not fetch admins for {chat_name}: {e}")
 
                     # Dedupe monitor_present
                     monitor_present = list({str(uid): (uid, uname) for uid, uname in monitor_present}.values())
@@ -1395,56 +1377,51 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(args) > 1 and args[1].strip().lower() in MODE_MAP:
         mode = MODE_MAP[args[1].strip().lower()]
 
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT event_id, name, is_open, going_icon, notgoing_icon
-        FROM events
-        WHERE chat_id = ? AND is_open > 0
-        ORDER BY ROWID DESC LIMIT 1
-        """,
-        (str(main_hub_chat_id),),
-    )
-    event_row = cursor.fetchone()
-    if not event_row:
-        conn.close()
-        await context.bot.send_message(
-            chat_id=main_hub_chat_id,
-            text="❌ No active event found for this group\\.",
-            parse_mode="MarkdownV2",
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT event_id, name, is_open, going_icon, notgoing_icon
+            FROM events
+            WHERE chat_id = ? AND is_open > 0
+            ORDER BY ROWID DESC LIMIT 1
+            """,
+            (str(main_hub_chat_id),),
         )
-        return
+        event_row = cursor.fetchone()
+        if not event_row:
+            await context.bot.send_message(
+                chat_id=main_hub_chat_id,
+                text="❌ No active event found for this group\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
 
-    event_id, name, is_open, going_icon, notgoing_icon = event_row
+        event_id, name, is_open, going_icon, notgoing_icon = event_row
 
-    cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (target_input.lower(),))
-    alias_row        = cursor.fetchone()
-    target_chat_raw  = alias_row[0] if alias_row else target_input
+        cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (target_input.lower(),))
+        alias_row        = cursor.fetchone()
+        target_chat_raw  = alias_row[0] if alias_row else target_input
 
-    if str(target_chat_raw) == str(main_hub_chat_id):
-        conn.close()
-        await context.bot.send_message(
-            chat_id=main_hub_chat_id,
-            text=f"{ICON_WARNING} Cannot share an event to the same group that owns it\\.",
-            parse_mode="MarkdownV2",
+        if str(target_chat_raw) == str(main_hub_chat_id):
+            await context.bot.send_message(
+                chat_id=main_hub_chat_id,
+                text=f"{ICON_WARNING} Cannot share an event to the same group that owns it\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+
+        cursor.execute(
+            "SELECT message_id FROM event_shares WHERE event_id = ? AND chat_id = ?",
+            (event_id, str(target_chat_raw)),
         )
-        return
-
-    cursor.execute(
-        "SELECT message_id FROM event_shares WHERE event_id = ? AND chat_id = ?",
-        (event_id, str(target_chat_raw)),
-    )
-    if cursor.fetchone():
-        conn.close()
-        await context.bot.send_message(
-            chat_id=main_hub_chat_id,
-            text=f"{ICON_WARNING} This group or channel has already been added\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    conn.close()
+        if cursor.fetchone():
+            await context.bot.send_message(
+                chat_id=main_hub_chat_id,
+                text=f"{ICON_WARNING} This group or channel has already been added\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
 
     try:
         if str(target_chat_raw).lstrip("-").isdigit():
@@ -1535,18 +1512,17 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=f"{ICON_SHARED} *SHARED: {escape_markdown(name)}*\n_Synchronising\\.\\.\\._",
             parse_mode="MarkdownV2",
         )
-        conn   = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO event_shares
-                (event_id, chat_id, message_id, share_mode, chat_type)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (event_id, str(target_chat_api), str(sent.message_id), mode, chat_type_flag),
-        )
-        conn.commit()
-        conn.close()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO event_shares
+                    (event_id, chat_id, message_id, share_mode, chat_type)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (event_id, str(target_chat_api), str(sent.message_id), mode, chat_type_flag),
+            )
+            conn.commit()
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
             text="🚀 Event shared successfully\\.",
@@ -1577,13 +1553,12 @@ async def track_everyone_message(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     chat_id = str(update.effective_chat.id)
-    conn    = sqlite3.connect(DB_PATH)
-    cursor  = conn.cursor()
-    cursor.execute(
-        "SELECT username FROM main_group_users WHERE chat_id = ? AND status = 'active'", (chat_id,)
-    )
-    rows = cursor.fetchall()
-    conn.close()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT username FROM main_group_users WHERE chat_id = ? AND status = 'active'", (chat_id,)
+        )
+        rows = cursor.fetchall()
 
     mentions = [f"@{r[0]}" for r in rows if r[0]]
     if not mentions:
@@ -1645,45 +1620,52 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     Cascades layout changes to all downstream linked endpoints.
     Called after every state mutation.
     """
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT chat_id, message_id, name, going_icon, notgoing_icon,
-               is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data
-        FROM events WHERE event_id = ?
-        """,
-        (event_id,),
-    )
-    master = cursor.fetchone()
-    if not master:
-        conn.close()
-        return
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT chat_id, message_id, name, going_icon, notgoing_icon,
+                   is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data
+            FROM events WHERE event_id = ?
+            """,
+            (event_id,),
+        )
+        master = cursor.fetchone()
+        if not master:
+            return
 
-    (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
-     is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data) = master
+        (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
+         is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data) = master
 
-    master_going     = json.loads(going_data)
-    master_not_going = json.loads(notgoing_data)
-    master_counters  = json.loads(counters_data)
-    master_kicked    = set(json.loads(kicked_data or "[]"))
+        master_going     = json.loads(going_data)
+        master_not_going = json.loads(notgoing_data)
+        master_counters  = json.loads(counters_data)
+        master_kicked    = set(json.loads(kicked_data or "[]"))
 
-    cursor.execute(
-        "SELECT chat_id, message_id, share_mode FROM event_shares WHERE event_id = ?", (event_id,)
-    )
-    shares = cursor.fetchall()
+        cursor.execute(
+            "SELECT chat_id, message_id, share_mode FROM event_shares WHERE event_id = ?", (event_id,)
+        )
+        shares = cursor.fetchall()
+
+        # Fetch every share's event_users rows up front, while the
+        # connection is open, instead of re-querying inside the loop below -
+        # that loop also makes Telegram API calls (get_chat), which
+        # shouldn't happen while holding a DB connection open.
+        per_share_users = {}
+        for s_chat_id, _, _ in shares:
+            cursor.execute(
+                "SELECT username, status, guests FROM event_users "
+                "WHERE event_id = ? AND chat_id = ?",
+                (event_id, str(s_chat_id)),
+            )
+            per_share_users[str(s_chat_id)] = cursor.fetchall()
 
     child_data              = {}
     total_child_going       = 0
     child_addons_for_master = []
 
     for s_chat_id, _, _ in shares:
-        cursor.execute(
-            "SELECT username, status, guests FROM event_users "
-            "WHERE event_id = ? AND chat_id = ?",
-            (event_id, str(s_chat_id)),
-        )
-        users      = cursor.fetchall()
+        users      = per_share_users[str(s_chat_id)]
         users_list = []
         chat_sum   = 0
         for username, status, guests in users:
@@ -1715,8 +1697,6 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 f" \\({chat_sum}\\):\n" + "\n".join(users_list)
             )
             child_addons_for_master.append(block)
-
-    conn.close()
 
     master_shares_block = "".join(child_addons_for_master)
 
@@ -1753,7 +1733,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     title_line  = f"*CANCELED {escape_markdown(name)}*" if is_cancelled else f"*{escape_markdown(name)}*"
 
     master_text = (
-        f"{header}{title_line}\n{date_line}\n"
+        f"{header}{title_line}\n\n {date_line}\n"
         f"{going_icon} *Going* \\({total_master_going}\\):\n{going_list_text}\n\n"
         f"{notgoing_icon} *Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
         f"{master_shares_block}\n\n"
@@ -1761,15 +1741,14 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     )
 
     # Keyboard buttons for master (verification mode needs child rows too)
-    conn2   = sqlite3.connect(DB_PATH)
-    cursor2 = conn2.cursor()
-    cursor2.execute(
-        "SELECT username, guests, status FROM event_users "
-        "WHERE event_id = ? AND (guests > 0 OR status IN ('going', 'kicked'))",
-        (event_id,),
-    )
-    all_child_going_for_buttons = cursor2.fetchall()
-    conn2.close()
+    with get_connection() as conn2:
+        cursor2 = conn2.cursor()
+        cursor2.execute(
+            "SELECT username, guests, status FROM event_users "
+            "WHERE event_id = ? AND (guests > 0 OR status IN ('going', 'kicked'))",
+            (event_id,),
+        )
+        all_child_going_for_buttons = cursor2.fetchall()
 
     master_keyboard = create_event_keyboard(
         event_id, is_open, going_icon, notgoing_icon,
@@ -1824,7 +1803,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         if mode == "-visible":
             child_text = (
-                f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n"
+                f"{ICON_SHARED} *SHARED: {child_title_name}*\n"
+                f"{date_line} \n"
                 f"{going_icon} *Going from {escaped_main_title}* \\({current_post_total}\\):\n{going_list_text}\n\n"
             )
             for other_id, _, _ in shares:
@@ -1839,7 +1819,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         elif mode == "-onlycount":
             child_text = (
-                f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n"
+                f"{ICON_SHARED} *SHARED: {child_title_name}*\n"
+                f"{date_line} \n"
                 f"{going_icon} *Going from {escaped_main_title}:* {current_post_total}\n\n"
             )
             for other_id, _, _ in shares:
@@ -1850,7 +1831,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             child_text += "\n"
 
         else:  # "-hidden"
-            child_text = f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n_Data hidden by admin\\._\n\n"
+            child_text = (
+                f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n_Data hidden by admin\\._\n"
+                f"{date_line} \n"
+            )
 
         child_text += (
             f"{going_icon} *Going here:* \\({c_info['count']}\\)\n{c_info['users_text']}\n\n"
@@ -1912,6 +1896,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if callback_data == "noop":
         return
 
+    if callback_data.startswith("help_"):
+        # These belong to help_callback_handler/help_back_handler - should
+        # never reach here if those are registered before button_handler in
+        # main.py, but guard anyway rather than silently misparsing
+        # "help_alias" as action="help", event_id="alias".
+        return
+
     action = target_username = event_id = None
 
     try:
@@ -1948,302 +1939,289 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lock = get_event_lock(event_id)
     async with lock:
         try:
-            conn   = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT chat_id, message_id, name, going_icon, notgoing_icon,
-                       is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data
-                FROM events WHERE event_id = ?
-                """,
-                (event_id,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                conn.close()
-                return
-
-            (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
-             is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data) = row
-
-            going     = json.loads(going_data)
-            not_going = set(json.loads(notgoing_data))
-            counters  = json.loads(counters_data)
-            kicked    = json.loads(kicked_data or "[]")
-
-            if is_open == 0:
-                conn.close()
-                return
-
-            is_click_in_child  = (int(click_chat_id) != int(main_chat_id))
-            going_usernames    = {u.split(" (")[0] for u in going}
-
-            # Extract the real user_id from each "name (user_id)" master
-            # going-list entry, so cross-chat protection compares actual
-            # Telegram users rather than display-name strings. Comparing by
-            # name text was a bug: any two different people who happen to
-            # render with the same name (extremely common in a busy public
-            # channel full of subscribers without an @username, who all show
-            # up by first_name only) would falsely collide, silently
-            # blocking the second person's Going/Add/Sub click in every
-            # child chat.
-            master_going_user_ids = set()
-            for entry in going:
-                m = re.search(r'\((\d+)\)', entry)
-                if m:
-                    master_going_user_ids.add(m.group(1))
-
-            # ── Cross-chat protection ─────────────────────────────────────
-            if action in ["going", "add", "sub"]:
-                user_already_registered = False
-
-                if str(user_id) in master_going_user_ids and is_click_in_child:
-                    user_already_registered = True
-
+            with get_connection() as conn:
+                cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT chat_id FROM event_users WHERE event_id = ? AND user_id = ? AND status = 'going'",
-                    (event_id, str(user_id)),
+                    """
+                    SELECT chat_id, message_id, name, going_icon, notgoing_icon,
+                           is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data
+                    FROM events WHERE event_id = ?
+                    """,
+                    (event_id,),
                 )
-                for (recorded_chat_id,) in cursor.fetchall():
-                    if str(recorded_chat_id) != str(click_chat_id):
-                        user_already_registered = True
-                        break
-                    if not is_click_in_child:
-                        user_already_registered = True
-                        break
-
-                if user_already_registered:
-                    conn.close()
-                    try:
-                        await query.answer(
-                            text=f"{ICON_WARNING} You are already added to this event in another group/channel",
-                            show_alert=True,
-                        )
-                    except Exception:
-                        pass
+                row = cursor.fetchone()
+                if not row:
                     return
 
-            # ── Child-chat interaction ────────────────────────────────────
-            if is_click_in_child:
-                if action not in ["going", "notgoing", "add", "sub"]:
-                    conn.close()
+                (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
+                 is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data) = row
+
+                going     = json.loads(going_data)
+                not_going = set(json.loads(notgoing_data))
+                counters  = json.loads(counters_data)
+                kicked    = json.loads(kicked_data or "[]")
+
+                if is_open == 0:
                     return
 
-                cursor.execute(
-                    "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                    (event_id, click_chat_id, str(user_id)),
-                )
-                u_row          = cursor.fetchone()
-                current_status = u_row[0] if u_row else "none"
-                current_guests = u_row[1] if u_row else 0
+                is_click_in_child  = (int(click_chat_id) != int(main_chat_id))
+                going_usernames    = {u.split(" (")[0] for u in going}
 
-                if action == "going":
-                    # In child chats, Going should only set status to 'going', never toggle off
+                # Extract the real user_id from each "name (user_id)" master
+                # going-list entry, so cross-chat protection compares actual
+                # Telegram users rather than display-name strings. Comparing by
+                # name text was a bug: any two different people who happen to
+                # render with the same name (extremely common in a busy public
+                # channel full of subscribers without an @username, who all show
+                # up by first_name only) would falsely collide, silently
+                # blocking the second person's Going/Add/Sub click in every
+                # child chat.
+                master_going_user_ids = set()
+                for entry in going:
+                    m = re.search(r'\((\d+)\)', entry)
+                    if m:
+                        master_going_user_ids.add(m.group(1))
+
+                # ── Cross-chat protection ─────────────────────────────────────
+                if action in ["going", "add", "sub"]:
+                    user_already_registered = False
+
+                    if str(user_id) in master_going_user_ids and is_click_in_child:
+                        user_already_registered = True
+
                     cursor.execute(
-                        "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
-                        (event_id, click_chat_id, str(user_id), username_raw, current_guests),
+                        "SELECT chat_id FROM event_users WHERE event_id = ? AND user_id = ? AND status = 'going'",
+                        (event_id, str(user_id)),
                     )
-                    data_changed = True
-                elif action == "notgoing":
-                    if current_guests > 0:
+                    for (recorded_chat_id,) in cursor.fetchall():
+                        if str(recorded_chat_id) != str(click_chat_id):
+                            user_already_registered = True
+                            break
+                        if not is_click_in_child:
+                            user_already_registered = True
+                            break
+
+                    if user_already_registered:
+                        try:
+                            await query.answer(
+                                text=f"{ICON_WARNING} You are already added to this event in another group/channel",
+                                show_alert=True,
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                # ── Child-chat interaction ────────────────────────────────────
+                if is_click_in_child:
+                    if action not in ["going", "notgoing", "add", "sub"]:
+                        return
+
+                    cursor.execute(
+                        "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                        (event_id, click_chat_id, str(user_id)),
+                    )
+                    u_row          = cursor.fetchone()
+                    current_status = u_row[0] if u_row else "none"
+                    current_guests = u_row[1] if u_row else 0
+
+                    if action == "going":
+                        # In child chats, Going should only set status to 'going', never toggle off
                         cursor.execute(
-                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notgoing', ?)",
+                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
                             (event_id, click_chat_id, str(user_id), username_raw, current_guests),
                         )
-                    else:
-                        cursor.execute(
-                            "DELETE FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                            (event_id, click_chat_id, str(user_id)),
-                        )
-                    data_changed = True
-                elif action == "add":
-                    # NOTE: does NOT force status='going' - mirrors the main
-                    # hub, where Add Guest only ever touches the guest
-                    # counter and is completely independent of whether the
-                    # clicker themselves is going/not going/undeclared.
-                    preserved_status = current_status if current_status != "none" else ""
-                    cursor.execute(
-                        "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
-                        (event_id, click_chat_id, str(user_id), username_raw, preserved_status, current_guests + 1),
-                    )
-                    data_changed = True
-                elif action == "sub":
-                    # NOTE: In child chats, user must have status (going/notgoing)
-                    # Sub Guest only decrements guests, never removes the user
-                    if current_guests > 0:
-                        new_guests = current_guests - 1
-                        cursor.execute(
-                            "UPDATE event_users SET guests = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                            (new_guests, event_id, click_chat_id, str(user_id)),
-                        )
                         data_changed = True
-                    else:
-                        conn.close()
-                        return
-
-                conn.commit()
-                conn.close()
-
-                if data_changed:
-                    try:
-                        sheet_target = await get_sheet_for_chat(main_chat_id)
-                        ss           = await open_spreadsheet(sheet_target)
-                        ws           = await ss.worksheet("Actions")
-                        await ws.append_row([
-                            event_id, action.upper(), username_raw,
-                            str(user_id), now2ddmmyy(), str(click_chat_id),
-                        ])
-                    except Exception as e:
-                        logger.error(f"Sheets child action log failed: {e}")
-                    context.application.create_task(schedule_view_refresh(context, event_id))
-                return
-
-            # ── Admin-only actions guard ──────────────────────────────────
-            if action in ["close", "kick", "save", "incgst", "decgst", "addext", "cancel"]:
-                if not is_admin:
-                    conn.close()
-                    return
-
-            # ── Master open (is_open == 1) ────────────────────────────────
-            if is_open == 1:
-                if action == "going":
-                    if username_raw not in going_usernames:
-                        going.append(f"{username_raw} ({user_id})")
-                    not_going.discard(username_raw)
-                    # Store user_id for refreshusers
-                    track_user(click_chat_id, username_raw, "active", user_id=str(user_id))
-                    data_changed = True
-                elif action == "notgoing":
-                    going    = [u for u in going if u.split(" (")[0] != username_raw]
-                    not_going.add(username_raw)
-                    # NOTE: guests are intentionally left untouched here -
-                    # they're only ever added/removed via Add Guest/Sub
-                    # Guest, never as a side effect of opting out.
-                    data_changed = True
-                elif action == "add":
-                    counters[username_raw] = counters.get(username_raw, 0) + 1
-                    data_changed = True
-                elif action == "sub":
-                    if username_raw in counters:
-                        if counters[username_raw] > 1:
-                            counters[username_raw] -= 1
-                        else:
-                            # Don't remove from counters if user is in going list
-                            # Keep them with 0 guests if they're going
-                            if username_raw not in going_usernames:
-                                counters.pop(username_raw)
-                            else:
-                                counters[username_raw] = 0
-                        data_changed = True
-                    else:
-                        conn.close()
-                        return
-                elif action == "close":
-                    is_open      = 2
-                    data_changed = True
-                elif action == "cancel":
-                    is_open      = 0
-                    is_cancelled = 1
-                    data_changed = True
-
-            # ── Master verification (is_open == 2) ───────────────────────
-            elif is_open == 2:
-                if action == "addext":
-                    context.user_data["awaiting_extra_player_for"] = event_id
-                    conn.close()
-                    await query.message.reply_text(
-                        "📝 *Verification Mode:* Type the extra player's username:",
-                        parse_mode="MarkdownV2",
-                    )
-                    return
-
-                is_target_child  = target_username and target_username.startswith("ch-")
-                clean_target_usr = target_username.replace("ch-", "", 1) if is_target_child else target_username
-
-                if action == "kick" and target_username:
-                    if is_target_child:
-                        # 'kicked' is distinct from '' (guest-only, never
-                        # declared going) so the keyboard can tell the two
-                        # apart and only show Return for genuinely-kicked
-                        # people - see create_event_keyboard's docstring.
-                        cursor.execute(
-                            "UPDATE event_users SET status = 'kicked' WHERE event_id = ? AND username = ?",
-                            (event_id, clean_target_usr),
-                        )
-                    else:
-                        going = [u for u in going if u.split(" (")[0] != clean_target_usr]
-                        # Don't pop counters - guests should remain even after user is kicked
-                        if clean_target_usr not in kicked:
-                            kicked.append(clean_target_usr)
-                    data_changed = True
-
-                elif action == "return" and target_username:
-                    if is_target_child:
-                        # Set status back to 'going'
-                        cursor.execute(
-                            "UPDATE event_users SET status = 'going' WHERE event_id = ? AND username = ?",
-                            (event_id, clean_target_usr),
-                        )
-                    else:
-                        if clean_target_usr in kicked:
-                            kicked.remove(clean_target_usr)
-                        # Add user back to going list
-                        # Try to find if they have a stored user_id
-                        conn_check = sqlite3.connect(DB_PATH)
-                        cursor_check = conn_check.cursor()
-                        cursor_check.execute(
-                            "SELECT user_id FROM main_group_users WHERE username = ? AND chat_id = ?",
-                            (clean_target_usr, main_chat_id),
-                        )
-                        user_id_row = cursor_check.fetchone()
-                        conn_check.close()
-
-                        if user_id_row and user_id_row[0]:
-                            going.append(f"{clean_target_usr} ({user_id_row[0]})")
-                        else:
-                            going.append(clean_target_usr)
-                    data_changed = True
-
-                elif action == "incgst" and target_username:
-                    if is_target_child:
-                        cursor.execute(
-                            "UPDATE event_users SET guests = guests + 1 WHERE event_id = ? AND username = ?",
-                            (event_id, clean_target_usr),
-                        )
-                    else:
-                        counters[clean_target_usr] = counters.get(clean_target_usr, 0) + 1
-                    data_changed = True
-
-                elif action == "decgst" and target_username:
-                    if is_target_child:
-                        cursor.execute(
-                            "SELECT guests FROM event_users WHERE event_id = ? AND username = ?",
-                            (event_id, clean_target_usr),
-                        )
-                        cg_row = cursor.fetchone()
-                        if cg_row and cg_row[0] > 0:
+                    elif action == "notgoing":
+                        if current_guests > 0:
                             cursor.execute(
-                                "UPDATE event_users SET guests = guests - 1 WHERE event_id = ? AND username = ?",
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notgoing', ?)",
+                                (event_id, click_chat_id, str(user_id), username_raw, current_guests),
+                            )
+                        else:
+                            cursor.execute(
+                                "DELETE FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (event_id, click_chat_id, str(user_id)),
+                            )
+                        data_changed = True
+                    elif action == "add":
+                        # NOTE: does NOT force status='going' - mirrors the main
+                        # hub, where Add Guest only ever touches the guest
+                        # counter and is completely independent of whether the
+                        # clicker themselves is going/not going/undeclared.
+                        preserved_status = current_status if current_status != "none" else ""
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
+                            (event_id, click_chat_id, str(user_id), username_raw, preserved_status, current_guests + 1),
+                        )
+                        data_changed = True
+                    elif action == "sub":
+                        # NOTE: In child chats, user must have status (going/notgoing)
+                        # Sub Guest only decrements guests, never removes the user
+                        if current_guests > 0:
+                            new_guests = current_guests - 1
+                            cursor.execute(
+                                "UPDATE event_users SET guests = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (new_guests, event_id, click_chat_id, str(user_id)),
+                            )
+                            data_changed = True
+                        else:
+                            return
+
+                    conn.commit()
+
+                    if data_changed:
+                        try:
+                            sheet_target = await get_sheet_for_chat(main_chat_id)
+                            ss           = await open_spreadsheet(sheet_target)
+                            ws           = await ss.worksheet("Actions")
+                            await ws.append_row([
+                                event_id, action.upper(), username_raw,
+                                str(user_id), now2ddmmyy(), str(click_chat_id),
+                            ])
+                        except Exception as e:
+                            logger.error(f"Sheets child action log failed: {e}")
+                        context.application.create_task(schedule_view_refresh(context, event_id))
+                    return
+
+                # ── Admin-only actions guard ──────────────────────────────────
+                if action in ["close", "kick", "save", "incgst", "decgst", "addext", "cancel"]:
+                    if not is_admin:
+                        return
+
+                # ── Master open (is_open == 1) ────────────────────────────────
+                if is_open == 1:
+                    if action == "going":
+                        if username_raw not in going_usernames:
+                            going.append(f"{username_raw} ({user_id})")
+                        not_going.discard(username_raw)
+                        # Store user_id for refreshusers
+                        track_user(click_chat_id, username_raw, "active", user_id=str(user_id))
+                        data_changed = True
+                    elif action == "notgoing":
+                        going    = [u for u in going if u.split(" (")[0] != username_raw]
+                        not_going.add(username_raw)
+                        # NOTE: guests are intentionally left untouched here -
+                        # they're only ever added/removed via Add Guest/Sub
+                        # Guest, never as a side effect of opting out.
+                        data_changed = True
+                    elif action == "add":
+                        counters[username_raw] = counters.get(username_raw, 0) + 1
+                        data_changed = True
+                    elif action == "sub":
+                        if username_raw in counters:
+                            if counters[username_raw] > 1:
+                                counters[username_raw] -= 1
+                            else:
+                                # Don't remove from counters if user is in going list
+                                # Keep them with 0 guests if they're going
+                                if username_raw not in going_usernames:
+                                    counters.pop(username_raw)
+                                else:
+                                    counters[username_raw] = 0
+                            data_changed = True
+                        else:
+                            return
+                    elif action == "close":
+                        is_open      = 2
+                        data_changed = True
+                    elif action == "cancel":
+                        is_open      = 0
+                        is_cancelled = 1
+                        data_changed = True
+
+                # ── Master verification (is_open == 2) ───────────────────────
+                elif is_open == 2:
+                    if action == "addext":
+                        context.user_data["awaiting_extra_player_for"] = event_id
+                        await query.message.reply_text(
+                            "📝 *Verification Mode:* Type the extra player's username:",
+                            parse_mode="MarkdownV2",
+                        )
+                        return
+
+                    is_target_child  = target_username and target_username.startswith("ch-")
+                    clean_target_usr = target_username.replace("ch-", "", 1) if is_target_child else target_username
+
+                    if action == "kick" and target_username:
+                        if is_target_child:
+                            # 'kicked' is distinct from '' (guest-only, never
+                            # declared going) so the keyboard can tell the two
+                            # apart and only show Return for genuinely-kicked
+                            # people - see create_event_keyboard's docstring.
+                            cursor.execute(
+                                "UPDATE event_users SET status = 'kicked' WHERE event_id = ? AND username = ?",
                                 (event_id, clean_target_usr),
                             )
-                    else:
-                        if clean_target_usr in counters:
-                            if counters[clean_target_usr] > 1:
-                                counters[clean_target_usr] -= 1
+                        else:
+                            going = [u for u in going if u.split(" (")[0] != clean_target_usr]
+                            # Don't pop counters - guests should remain even after user is kicked
+                            if clean_target_usr not in kicked:
+                                kicked.append(clean_target_usr)
+                        data_changed = True
+
+                    elif action == "return" and target_username:
+                        if is_target_child:
+                            # Set status back to 'going'
+                            cursor.execute(
+                                "UPDATE event_users SET status = 'going' WHERE event_id = ? AND username = ?",
+                                (event_id, clean_target_usr),
+                            )
+                        else:
+                            if clean_target_usr in kicked:
+                                kicked.remove(clean_target_usr)
+                            # Add user back to going list
+                            # Try to find if they have a stored user_id
+                            cursor.execute(
+                                "SELECT user_id FROM main_group_users WHERE username = ? AND chat_id = ?",
+                                (clean_target_usr, main_chat_id),
+                            )
+                            user_id_row = cursor.fetchone()
+
+                            if user_id_row and user_id_row[0]:
+                                going.append(f"{clean_target_usr} ({user_id_row[0]})")
                             else:
-                                counters.pop(clean_target_usr)
-                    data_changed = True
+                                going.append(clean_target_usr)
+                        data_changed = True
 
-                elif action == "save":
-                    is_open      = 0
-                    data_changed = True
+                    elif action == "incgst" and target_username:
+                        if is_target_child:
+                            cursor.execute(
+                                "UPDATE event_users SET guests = guests + 1 WHERE event_id = ? AND username = ?",
+                                (event_id, clean_target_usr),
+                            )
+                        else:
+                            counters[clean_target_usr] = counters.get(clean_target_usr, 0) + 1
+                        data_changed = True
 
-            cursor.execute(
-                "UPDATE events SET is_open = ?, going_data = ?, notgoing_data = ?, counters_data = ?, is_cancelled = ?, kicked_data = ? WHERE event_id = ?",
-                (is_open, json.dumps(going), json.dumps(list(not_going)), json.dumps(counters), is_cancelled, json.dumps(kicked), event_id),
-            )
-            conn.commit()
-            conn.close()
+                    elif action == "decgst" and target_username:
+                        if is_target_child:
+                            cursor.execute(
+                                "SELECT guests FROM event_users WHERE event_id = ? AND username = ?",
+                                (event_id, clean_target_usr),
+                            )
+                            cg_row = cursor.fetchone()
+                            if cg_row and cg_row[0] > 0:
+                                cursor.execute(
+                                    "UPDATE event_users SET guests = guests - 1 WHERE event_id = ? AND username = ?",
+                                    (event_id, clean_target_usr),
+                                )
+                        else:
+                            if clean_target_usr in counters:
+                                if counters[clean_target_usr] > 1:
+                                    counters[clean_target_usr] -= 1
+                                else:
+                                    counters.pop(clean_target_usr)
+                        data_changed = True
+
+                    elif action == "save":
+                        is_open      = 0
+                        data_changed = True
+
+                cursor.execute(
+                    "UPDATE events SET is_open = ?, going_data = ?, notgoing_data = ?, counters_data = ?, is_cancelled = ?, kicked_data = ? WHERE event_id = ?",
+                    (is_open, json.dumps(going), json.dumps(list(not_going)), json.dumps(counters), is_cancelled, json.dumps(kicked), event_id),
+                )
+                conn.commit()
 
         except Exception as db_err:
             logger.error(f"SQLite transaction failure: {db_err}")
@@ -2290,27 +2268,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         master_going_ids.append(username)
 
                 # 2. Collect child going user_ids from event_users table
-                conn_eu   = sqlite3.connect(DB_PATH)
-                cursor_eu = conn_eu.cursor()
-                cursor_eu.execute(
-                    "SELECT user_id FROM event_users WHERE event_id = ? AND status = 'going'",
-                    (event_id,),
-                )
-                child_going_ids = [r[0] for r in cursor_eu.fetchall()]
-                conn_eu.close()
+                with get_connection() as conn_eu:
+                    cursor_eu = conn_eu.cursor()
+                    cursor_eu.execute(
+                        "SELECT user_id FROM event_users WHERE event_id = ? AND status = 'going'",
+                        (event_id,),
+                    )
+                    child_going_ids = [r[0] for r in cursor_eu.fetchall()]
 
-                all_going_ids = master_going_ids + child_going_ids
+                    all_going_ids = master_going_ids + child_going_ids
 
-                # 3. Compute total for Events sheet
-                # Include all child users (going + those with guests) and their guests
-                conn_t   = sqlite3.connect(DB_PATH)
-                cursor_t = conn_t.cursor()
-                cursor_t.execute(
-                    "SELECT status, guests FROM event_users WHERE event_id = ? AND (status = 'going' OR guests > 0)",
-                    (event_id,),
-                )
-                child_rows     = cursor_t.fetchall()
-                conn_t.close()
+                    # 3. Compute total for Events sheet
+                    # Include all child users (going + those with guests) and their guests
+                    cursor_eu.execute(
+                        "SELECT status, guests FROM event_users WHERE event_id = ? AND (status = 'going' OR guests > 0)",
+                        (event_id,),
+                    )
+                    child_rows = cursor_eu.fetchall()
                 # Count child users who are going, plus all their guests (including from non-going users)
                 child_going_count = sum(1 for status, guests in child_rows if status == 'going')
                 child_guests_total = sum(guests for status, guests in child_rows)
@@ -2399,73 +2373,73 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("❌ Invalid username.")
         return
 
-    try:
-        conn   = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT going_data, counters_data, notgoing_data FROM events WHERE event_id = ?", (event_id,)
-        )
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
+    lock = get_event_lock(event_id)
+    async with lock:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT going_data, counters_data, notgoing_data FROM events WHERE event_id = ?", (event_id,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return
+
+                going, counters = json.loads(row[0]), json.loads(row[1])
+                not_going       = json.loads(row[2])
+                if target_username not in {u.split(" (")[0] for u in going}:
+                    # Resolve the real Telegram user_id via main_group_users (the
+                    # /listusers table) - this is the only reliable source we have,
+                    # since Telegram's getChatMember requires a numeric user_id and
+                    # has no "look up by username" mode to fall back on.
+                    cursor.execute(
+                        "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+                        (chat_id, target_username),
+                    )
+                    user_row = cursor.fetchone()
+                    user_id = user_row[0] if user_row and user_row[0] else None
+
+                    if user_id:
+                        going.append(f"{target_username} ({user_id})")
+                    else:
+                        # No known id for this username - mark it explicitly rather
+                        # than fabricating a fake one, so this is easy to spot and
+                        # fix later (e.g. via /refreshusers) in EventUsers.
+                        going.append(f"{target_username} (no_id_in_main_group)")
+
+                # If this person had previously been marked Not Going, being added
+                # as an extra player means they're going now - they must not remain
+                # in the not-going list too.
+                if target_username in not_going:
+                    not_going.remove(target_username)
+
+                cursor.execute(
+                    "UPDATE events SET going_data = ?, counters_data = ?, notgoing_data = ? WHERE event_id = ?",
+                    (json.dumps(going), json.dumps(counters), json.dumps(not_going), event_id),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Extra player DB failure: {e}")
             return
 
-        going, counters = json.loads(row[0]), json.loads(row[1])
-        not_going       = json.loads(row[2])
-        if target_username not in {u.split(" (")[0] for u in going}:
-            # Resolve the real Telegram user_id via main_group_users (the
-            # /listusers table) - this is the only reliable source we have,
-            # since Telegram's getChatMember requires a numeric user_id and
-            # has no "look up by username" mode to fall back on.
-            cursor.execute(
-                "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
-                (chat_id, target_username),
-            )
-            user_row = cursor.fetchone()
-            user_id = user_row[0] if user_row and user_row[0] else None
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
-            if user_id:
-                going.append(f"{target_username} ({user_id})")
-            else:
-                # No known id for this username - mark it explicitly rather
-                # than fabricating a fake one, so this is easy to spot and
-                # fix later (e.g. via /refreshusers) in EventUsers.
-                going.append(f"{target_username} (no_id_in_main_group)")
-
-        # If this person had previously been marked Not Going, being added
-        # as an extra player means they're going now - they must not remain
-        # in the not-going list too.
-        if target_username in not_going:
-            not_going.remove(target_username)
-
-        cursor.execute(
-            "UPDATE events SET going_data = ?, counters_data = ?, notgoing_data = ? WHERE event_id = ?",
-            (json.dumps(going), json.dumps(counters), json.dumps(not_going), event_id),
-        )
-        conn.commit()
-        conn.close()
-
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-
-        try:
-            sheet_target = await get_sheet_for_chat(chat_id)
-            ss           = await open_spreadsheet(sheet_target)
-            ws           = await ss.worksheet("Actions")
-            # Record the user who clicked the button, not the added player
-            user_raw = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
-            await ws.append_row([
-                event_id, "ADD_EXTRA_PLAYER", user_raw, str(update.effective_user.id), now2ddmmyy(), str(chat_id),
-            ])
-        except Exception as e:
-            logger.error(f"Sheets extra player log failed: {e}")
-
-        context.application.create_task(schedule_view_refresh(context, event_id))
-
+    try:
+        sheet_target = await get_sheet_for_chat(chat_id)
+        ss           = await open_spreadsheet(sheet_target)
+        ws           = await ss.worksheet("Actions")
+        # Record the user who clicked the button, not the added player
+        user_raw = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+        await ws.append_row([
+            event_id, "ADD_EXTRA_PLAYER", user_raw, str(update.effective_user.id), now2ddmmyy(), str(chat_id),
+        ])
     except Exception as e:
-        logger.error(f"Extra player DB failure: {e}")
+        logger.error(f"Sheets extra player log failed: {e}")
+
+    context.application.create_task(schedule_view_refresh(context, event_id))
 
 
 # ---------------------------------------------------------------------------
