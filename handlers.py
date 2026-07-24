@@ -423,14 +423,22 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    hub_chat_id = str(update.effective_chat.id)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (alias_name,))
+        cursor.execute(
+            "SELECT chat_id FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (alias_name, hub_chat_id),
+        )
         if cursor.fetchone():
             await update.message.reply_text("Alias already exist", parse_mode="MarkdownV2")
             return
 
-        cursor.execute("SELECT alias FROM chat_aliases WHERE chat_id = ?", (str(target_chat_id),))
+        cursor.execute(
+            "SELECT alias FROM chat_aliases WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (str(target_chat_id), hub_chat_id),
+        )
         if cursor.fetchone():
             await update.message.reply_text(
                 f"{ICON_WARNING} This group or channel has already been added\. Please check its existing alias\.",
@@ -438,8 +446,24 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        cursor.execute("INSERT INTO chat_aliases (chat_id, alias) VALUES (?, ?)", (str(target_chat_id), alias_name))
-        conn.commit()
+        try:
+            cursor.execute(
+                "INSERT INTO chat_aliases (chat_id, alias, owner_chat_id) VALUES (?, ?, ?)",
+                (str(target_chat_id), alias_name, hub_chat_id),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # Uniqueness is scoped per-owner - UNIQUE(owner_chat_id, alias)
+            # and UNIQUE(owner_chat_id, chat_id) - so two different hubs can
+            # freely reuse the same alias name for different targets. The
+            # SELECT checks above already cover the common case; this is
+            # just a safety net against a race (two concurrent /setalias
+            # calls from the SAME hub for the same name/target).
+            await update.message.reply_text(
+                f"{ICON_WARNING} That alias name or target is already in use for this group\. Pick a different name\.",
+                parse_mode="MarkdownV2",
+            )
+            return
 
     await update.message.reply_text(
         rf"✅ Alias `__{escape_markdown(alias_name)}__` mapped to node ID `{target_chat_id}`\.",
@@ -456,15 +480,22 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    alias_name = args[0].strip().lower()
+    alias_name  = args[0].strip().lower()
+    hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (alias_name,))
+        cursor.execute(
+            "SELECT chat_id FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (alias_name, hub_chat_id),
+        )
         if not cursor.fetchone():
             await update.message.reply_text("🔍 Alias not found\.", parse_mode="MarkdownV2")
             return
 
-        cursor.execute("DELETE FROM chat_aliases WHERE alias = ?", (alias_name,))
+        cursor.execute(
+            "DELETE FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (alias_name, hub_chat_id),
+        )
         conn.commit()
     await update.message.reply_text(
         f"🗑️ Alias `__{escape_markdown(alias_name)}__` removed\.", parse_mode="MarkdownV2"
@@ -472,10 +503,14 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows all active routing aliases."""
+    """Shows all active routing aliases belonging to THIS hub group."""
+    hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT alias, chat_id FROM chat_aliases")
+        cursor.execute(
+            "SELECT alias, chat_id FROM chat_aliases WHERE owner_chat_id = ? OR owner_chat_id IS NULL",
+            (hub_chat_id,),
+        )
         rows = cursor.fetchall()
 
     if not rows:
@@ -838,7 +873,6 @@ async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text  = f"{ICON_STATS} *Tracked Users:*\n\n" + "\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
-
 async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Manually adds users to the tracked user list (/listusers).
@@ -872,6 +906,15 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    for arg in args:
+        if not arg.isdigit():
+            # if at least 1 user is specified by username (example, as @username)
+            await update.message.reply_text(
+                "❌ *Syntax error:* `/adduser` works only with user\\_ids",
+                parse_mode="MarkdownV2"
+            )
+            return
+
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
 
@@ -897,7 +940,10 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             monitor_name = args[i + 1]
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT chat_id FROM monitors WHERE chat_name = ?", (monitor_name,))
+                cursor.execute(
+                    "SELECT chat_id FROM monitors WHERE chat_name = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                    (monitor_name, chat_id),
+                )
                 monitor_row = cursor.fetchone()
             if not monitor_row:
                 await update.message.reply_text(
@@ -919,29 +965,63 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Check if identifier is a numeric user_id
             if identifier.lstrip("-").isdigit():
                 target_user_id = identifier
-                # Try to get username from Telegram
+                # Try to get user from Telegram
                 try:
-                    member = await context.bot.get_chat_member(target_chat_id, int(target_user_id))
+                    member = await context.bot.get_chat_member(int(target_chat_id), int(target_user_id))
                     username = member.user.username or member.user.first_name or f"user{target_user_id}"
                     track_user(target_chat_id, username, "active", user_id=target_user_id)
                     added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
                 except Exception as e:
                     # If can't get user from Telegram, fail - don't add without real user_id
-                    failed.append(f"{identifier}: {e}")
+                    failed.append(f"{escape_markdown(identifier)}: {escape_markdown(str(e))}")
             else:
-                # Treat as username, try to get user_id from Telegram
+                # Treat as username, try to find the user
                 target_username = identifier.lstrip("@")
+                found_user = None
+                
                 try:
-                    member = await context.bot.get_chat_member(
-                        chat_id=target_chat_id, username=target_username
-                    )
-                    resolved_user_id = str(member.user.id)
-                    resolved_username = member.user.username or member.user.first_name or target_username
-                    track_user(target_chat_id, resolved_username, "active", user_id=resolved_user_id)
-                    added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
+                    # First, try to find user among chat administrators
+                    # This works because we can get all admins and check their usernames
+                    admins = await context.bot.get_chat_administrators(target_chat_id)
+                    
+                    for admin in admins:
+                        if admin.user.username and admin.user.username.lower() == target_username.lower():
+                            found_user = admin.user
+                            break
+                    
+                    # If not found among admins, try to get user via @username
+                    # This only works for public users
+                    if not found_user:
+                        try:
+                            user_obj = await context.bot.get_chat(f"@{target_username}")
+                            if user_obj and user_obj.type == "user":
+                                found_user = user_obj
+                        except Exception:
+                            pass
+                    
+                    if found_user:
+                        resolved_user_id = str(found_user.id)
+                        resolved_username = found_user.username or found_user.first_name or target_username
+                        track_user(target_chat_id, resolved_username, "active", user_id=resolved_user_id)
+                        added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
+                    else:
+                        # If user not found via Telegram API, check local database
+                        with get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+                                (target_chat_id, target_username),
+                            )
+                            user_row = cursor.fetchone()
+                            if user_row and user_row[0]:
+                                # User exists in local DB, use stored user_id
+                                resolved_user_id = user_row[0]
+                                track_user(target_chat_id, target_username, "active", user_id=resolved_user_id)
+                                added.append(f"@{escape_markdown(target_username)} \\({resolved_user_id}\\)")
+                            else:
+                                failed.append(f"@{escape_markdown(target_username)}: User not found in chat or not reachable\\. Please use numeric user_id instead\\.")
                 except Exception as e:
-                    # If can't resolve, fail - don't add without real user_id
-                    failed.append(f"{identifier}: {e}")
+                    failed.append(f"@{escape_markdown(target_username)}: {escape_markdown(str(e))}")
         except Exception as e:
             failed.append(f"{escape_markdown(identifier)}: {escape_markdown(str(e))}")
 
@@ -955,8 +1035,10 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not lines:
         lines.append("❌ No users were added\\.")
 
-    await update.message.reply_text("\n".join(lines))
-
+    # Escape any remaining special characters in the final message
+    # The join is already escaped, but we need to ensure the entire message is safe
+    final_text = "\n".join(lines)
+    await update.message.reply_text(final_text, parse_mode="MarkdownV2")
 
 async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1036,8 +1118,19 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT OR REPLACE INTO monitors (chat_id, chat_type, chat_name) VALUES (?, ?, ?)",
-                (target_chat_id, chat_type, chat_name),
+                "SELECT owner_chat_id, chat_name FROM monitors WHERE chat_id = ?", (target_chat_id,)
+            )
+            existing = cursor.fetchone()
+            if existing and existing[0] and existing[0] != main_chat_id:
+                await update.message.reply_text(
+                    f"{ICON_WARNING} This group/channel is already monitored by a different hub group\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+
+            cursor.execute(
+                "INSERT OR REPLACE INTO monitors (chat_id, chat_type, chat_name, owner_chat_id) VALUES (?, ?, ?, ?)",
+                (target_chat_id, chat_type, chat_name, main_chat_id),
             )
             conn.commit()
 
@@ -1068,10 +1161,14 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target_chat_id = args[0]
+    hub_chat_id    = str(update.effective_chat.id)
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_name FROM monitors WHERE chat_id = ?", (target_chat_id,))
+        cursor.execute(
+            "SELECT chat_name FROM monitors WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (target_chat_id, hub_chat_id),
+        )
         row = cursor.fetchone()
 
         if not row:
@@ -1082,7 +1179,10 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         chat_name = row[0]
-        cursor.execute("DELETE FROM monitors WHERE chat_id = ?", (target_chat_id,))
+        cursor.execute(
+            "DELETE FROM monitors WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (target_chat_id, hub_chat_id),
+        )
         conn.commit()
 
     await update.message.reply_text(
@@ -1093,11 +1193,15 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Lists all monitored groups/channels.
+    Lists all monitored groups/channels belonging to THIS hub group.
     """
+    hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, chat_type, chat_name FROM monitors")
+        cursor.execute(
+            "SELECT chat_id, chat_type, chat_name FROM monitors WHERE owner_chat_id = ? OR owner_chat_id IS NULL",
+            (hub_chat_id,),
+        )
         rows = cursor.fetchall()
 
     if not rows:
@@ -1259,7 +1363,10 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if global_sync:
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT chat_id, chat_type, chat_name FROM monitors")
+            cursor.execute(
+                "SELECT chat_id, chat_type, chat_name FROM monitors WHERE owner_chat_id = ? OR owner_chat_id IS NULL",
+                (chat_id,),
+            )
             monitors = cursor.fetchall()
 
         if monitors:
@@ -1399,7 +1506,10 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         event_id, name, is_open, going_icon, notgoing_icon = event_row
 
-        cursor.execute("SELECT chat_id FROM chat_aliases WHERE alias = ?", (target_input.lower(),))
+        cursor.execute(
+            "SELECT chat_id FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (target_input.lower(), str(main_hub_chat_id)),
+        )
         alias_row        = cursor.fetchone()
         target_chat_raw  = alias_row[0] if alias_row else target_input
 

@@ -128,6 +128,44 @@ async def sync_users_sheet(chat_id, current_members: list):
         raise
 
 
+async def mark_user_left(chat_id, user_id):
+    """
+    Marks a single user as LEFT in the "Users" worksheet for this place_id
+    (chat_id), the instant ChatMemberHandler confirms they left/were kicked -
+    without needing the full current-membership snapshot that
+    sync_users_sheet()'s diff-based approach requires.
+
+    Mirrors the "MEMBER -> LEFT" branch of sync_users_sheet(): sets STATUS to
+    LEFT and DATE_end to today for the (USER_ID, PLACE_ID) row, then logs the
+    presence interval to UserPresenceLog (idempotent - log_user_presence_if_not_exists
+    skips it if already logged for that USER_ID/PLACE_ID/DATE_start).
+
+    No-op if there's no row for this (user_id, place_id) yet, or if it's
+    already LEFT.
+    """
+    try:
+        sheet_target = await get_sheet_for_chat(chat_id)
+        ss = await open_spreadsheet(sheet_target)
+        ws = await ss.worksheet("Users")
+        records = await ws.get_all_records()
+
+        for idx, r in enumerate(records, start=2):
+            if (str(r.get("USER_ID", "")).strip() == str(user_id)
+                    and str(r.get("PLACE_ID", "")).strip() == str(chat_id)):
+                status = str(r.get("STATUS", "")).strip().lower()
+                if status == "member":
+                    date_start = str(r.get("DATE_start", "")).strip()
+                    date_end = now2ddmmyy()
+                    await ws.update(f"D{idx}", [["LEFT"]])
+                    await ws.update(f"F{idx}", [[date_end]])
+                    await log_user_presence_if_not_exists(chat_id, user_id, chat_id, date_start, date_end)
+                # Already LEFT (or any other status) -> nothing to do
+                return
+        # No row for this (user_id, place_id) yet - nothing to mark
+    except Exception as e:
+        logger.error(f"Google Sheets Users mark-left failed for user {user_id} in chat {chat_id}: {repr(e)}")
+
+
 async def sync_event_users_sheet(chat_id, event_id, user_ids):
     """
     Writes all going user_ids (master + child chats) to the EventUsers sheet.
