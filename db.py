@@ -112,11 +112,24 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
-    # High-performance unique index table for child chat routing aliases
+    # High-performance unique index table for child chat routing aliases.
+    # owner_chat_id = the hub group that ran /setalias - aliases are scoped
+    # to the hub that created them, so /listalias and /shareevent's alias
+    # lookup only ever see aliases belonging to the group they're invoked
+    # from, not every hub's aliases across the whole deployment.
+    #
+    # Uniqueness is per-owner, not global: UNIQUE(owner_chat_id, alias) means
+    # two different hubs can both use the alias name "downtown" (pointing at
+    # two entirely different chats) without colliding. UNIQUE(owner_chat_id,
+    # chat_id) preserves the original "one alias per target per owner" rule.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chat_aliases (
-            chat_id TEXT PRIMARY KEY,
-            alias TEXT UNIQUE
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT,
+            alias TEXT,
+            owner_chat_id TEXT DEFAULT NULL,
+            UNIQUE(owner_chat_id, alias),
+            UNIQUE(owner_chat_id, chat_id)
         )
     """)
 
@@ -133,16 +146,71 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
-    # Monitored groups/channels for global user tracking
+    # Monitored groups/channels for global user tracking.
+    # owner_chat_id = the hub group that ran /addmonitor - same scoping
+    # rationale as chat_aliases.owner_chat_id above.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS monitors (
             chat_id TEXT PRIMARY KEY,
             chat_type TEXT,
-            chat_name TEXT
+            chat_name TEXT,
+            owner_chat_id TEXT DEFAULT NULL
         )
     """)
 
     # ── Migrations ────────────────────────────────────────────────────────────
+
+    # 0. Add `owner_chat_id` to chat_aliases/monitors if missing (pre-existing
+    # rows have no recorded owner - see the "OR owner_chat_id IS NULL"
+    # transitional clause used in every scoped query in handlers.py, which
+    # keeps such legacy rows visible everywhere until they're naturally
+    # re-created/re-claimed under the new per-hub scoping).
+    #
+    # 0b. Rebuild chat_aliases if it still has the OLD globally-unique
+    # 'alias' column (single-column UNIQUE, and 'chat_id' as PRIMARY KEY) -
+    # SQLite has no ALTER TABLE support for changing/dropping a UNIQUE
+    # constraint, so this requires a full table rebuild. Detects the legacy
+    # shape by checking for chat_id being the table's primary key (only true
+    # in the old schema; the new schema uses an autoincrement 'id' instead).
+    cursor.execute("PRAGMA table_info(chat_aliases)")
+    alias_table_cols = cursor.fetchall()
+    chat_id_is_pk = any(col[1] == "chat_id" and col[5] == 1 for col in alias_table_cols)
+    if chat_id_is_pk:
+        cursor.execute("ALTER TABLE chat_aliases RENAME TO chat_aliases_legacy")
+        cursor.execute("""
+            CREATE TABLE chat_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                alias TEXT,
+                owner_chat_id TEXT DEFAULT NULL,
+                UNIQUE(owner_chat_id, alias),
+                UNIQUE(owner_chat_id, chat_id)
+            )
+        """)
+        cursor.execute("PRAGMA table_info(chat_aliases_legacy)")
+        legacy_had_owner_col = "owner_chat_id" in [col[1] for col in cursor.fetchall()]
+        if legacy_had_owner_col:
+            cursor.execute("""
+                INSERT INTO chat_aliases (chat_id, alias, owner_chat_id)
+                SELECT chat_id, alias, owner_chat_id FROM chat_aliases_legacy
+            """)
+        else:
+            # Truly original schema, from before owner_chat_id existed at all -
+            # every row becomes an unowned (NULL) legacy row, same as the
+            # transitional handling everywhere else in this migration.
+            cursor.execute("""
+                INSERT INTO chat_aliases (chat_id, alias, owner_chat_id)
+                SELECT chat_id, alias, NULL FROM chat_aliases_legacy
+            """)
+        cursor.execute("DROP TABLE chat_aliases_legacy")
+
+    cursor.execute("PRAGMA table_info(chat_aliases)")
+    if "owner_chat_id" not in [col[1] for col in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE chat_aliases ADD COLUMN owner_chat_id TEXT DEFAULT NULL")
+
+    cursor.execute("PRAGMA table_info(monitors)")
+    if "owner_chat_id" not in [col[1] for col in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE monitors ADD COLUMN owner_chat_id TEXT DEFAULT NULL")
 
     # 1. Add `status` column to main_group_users if missing (old schema)
     cursor.execute("PRAGMA table_info(main_group_users)")
@@ -175,6 +243,38 @@ def init_db(db_path: str = DB_PATH):
     # 4. Rename legacy status value 'frozen' → 'passive'
     cursor.execute("UPDATE main_group_users SET status = 'passive' WHERE status = 'frozen'")
 
+    conn.commit()
+    conn.close()
+
+
+def delete_tracked_user(chat_id: str, user_id: str = None, username: str = None,
+                         db_path: str = None):
+    """
+    Removes a user's row from main_group_users entirely (as opposed to
+    track_user(), which only upserts/changes status) - used when
+    ChatMemberHandler confirms someone has left/been kicked, so they
+    immediately disappear from /listusers instead of lingering as 'passive'.
+
+    Prefers matching by user_id (stable across username changes); falls
+    back to matching by username if no user_id is available. Does nothing
+    if neither is provided.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    if user_id is None and username is None:
+        return
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    if user_id is not None:
+        cursor.execute(
+            "DELETE FROM main_group_users WHERE chat_id = ? AND user_id = ?",
+            (str(chat_id), str(user_id)),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
+            (str(chat_id), username),
+        )
     conn.commit()
     conn.close()
 
