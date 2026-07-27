@@ -78,17 +78,36 @@ def main():
 
     init_db()
 
-    request_kwargs = {"connect_timeout": 20.0, "read_timeout": 20.0}
+    proxy_kwargs = {}
     if TELEGRAM_PROXY:
-        request_kwargs["proxy"] = TELEGRAM_PROXY
+        proxy_kwargs["proxy"] = TELEGRAM_PROXY
         logger.info("Using proxy for Telegram API requests.")
-    request = HTTPXRequest(**request_kwargs)
+
+    # Two SEPARATE HTTPXRequest instances, each with its own connection
+    # pool - get_updates holds one connection open for a long time (long-
+    # polling waits for new updates), while every other call (sendMessage,
+    # editMessageText, etc.) needs its own pool so it's never blocked
+    # waiting on that long-lived connection. connection_pool_size is raised
+    # above PTB's default for the general-purpose request object since this
+    # bot edits several child-chat messages concurrently via asyncio.gather
+    # (see update_all_shared_views) - a too-small pool here causes exactly
+    # "Pool timeout: All connections in the connection pool are occupied."
+    request = HTTPXRequest(
+        connect_timeout=20.0, read_timeout=20.0,
+        connection_pool_size=16,
+        **proxy_kwargs,
+    )
+    get_updates_request = HTTPXRequest(
+        connect_timeout=20.0, read_timeout=20.0,
+        connection_pool_size=4,
+        **proxy_kwargs,
+    )
 
     app = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
         .request(request)
-        .get_updates_request(request)
+        .get_updates_request(get_updates_request)
         .post_init(_sync_control_sheet_on_startup)
         .build()
     )
