@@ -7,11 +7,11 @@ from telegram.ext import (
     filters,
 )
 from telegram.request import HTTPXRequest
-from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, logger
+from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
 from db import init_db, track_user
 from sheets import log_user_presence, sync_control_sheet_subconfig
 from handlers import (
-    help_command, help_callback_handler, help_back_handler,
+    help_command, help_callback_handler, help_back_handler, whoami,
     newevent, editevent,
     notify,
     updateuser, listusers, refreshusers, adduser,
@@ -138,6 +138,7 @@ def main():
 
     # 3. Core commands
     app.add_handler(CommandHandler("help",         help_command))
+    app.add_handler(CommandHandler("whoami",       whoami))
     app.add_handler(CommandHandler("newevent",     newevent))
     app.add_handler(CommandHandler("editevent",    editevent))
     app.add_handler(CommandHandler("notify",       notify))
@@ -165,6 +166,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, global_text_router))
 
     logger.info(f"Bot v{BOT_VERSION} started. Polling...")
+    logger.info(f"OWNER_USER_IDS configured: {OWNER_USER_IDS or '(empty - no owner-only commands will work)'}")
     app.run_polling(allowed_updates=["message", "callback_query", "chat_member"])
 
 

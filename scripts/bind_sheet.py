@@ -3,7 +3,7 @@ One-time helper to bind a Telegram group to its own Google Sheet in
 main_chat_settings, until a proper /setsheet command exists.
 
 Run once, from the project root, against your real database.db:
-    python3 scripts/bind_sheet.py 7180695982 <spreadsheet_id>
+    python3 scripts/bind_sheet.py -1001234567890 <spreadsheet_id>
 
 Pass the spreadsheet ID (the long string in the sheet's URL,
 https://docs.google.com/spreadsheets/d/<THIS PART>/edit), not the sheet's
