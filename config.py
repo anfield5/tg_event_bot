@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Bumped manually on each meaningful release; also used as the git tag.
+BOT_VERSION = "3.0.0"
+
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,12 +27,16 @@ TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 # Leave unset if Telegram is directly reachable - most deployments don't need this.
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY") or None
 
-# The bot owner's own Telegram user_id (a plain integer, e.g. 123456789 - NOT
-# a chat_id). Restricts owner-only commands like /setsub: subscription
-# control must NOT be gated by "is admin in this chat", since a group's own
-# admin could just promote themselves and grant themselves a free
-# subscription otherwise. Find your own user_id via @userinfobot on Telegram.
-OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0")) or None
+# One or more Telegram user_id's (plain integers, e.g. 123456789 - NOT chat
+# ID's) allowed to run owner-only commands like /setsub. Comma-separated in
+# .env, e.g. OWNER_USER_IDS=123456789,987654321
+# Restricts owner-only commands: subscription control must NOT be gated by
+# "is admin in this chat", since a group's own admin could just promote
+# themselves and grant themselves a free subscription otherwise. Find your
+# own user_id via @userinfobot on Telegram.
+OWNER_USER_IDS = {
+    int(uid) for uid in os.getenv("OWNER_USER_IDS", "").split(",") if uid.strip().isdigit()
+}
 
 # The single "Control" spreadsheet (separate from any hub's own event sheet)
 # where the bot mirrors main_chat_settings ("Main" tab, one row per hub -
@@ -42,7 +49,6 @@ CONTROL_SHEET_ID = os.getenv("CONTROL_SHEET_ID") or None
 # Free-tier limit: how many DISTINCT events a hub may /shareevent to the
 # same target group/channel before being told to upgrade.
 FREE_SHAREEVENT_LIMIT_PER_TARGET = 3
-GLOBAL_DEFAULT_SHEET = os.getenv("GOOGLE_SHEET_NAME")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 # ---------------------------------------------------------------------------
