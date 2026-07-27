@@ -37,6 +37,19 @@ def insert_event(db_path, event_id="ev1", chat_id="-100123",
     conn.close()
 
 
+def insert_premium(db_path, chat_id="-100123", days=30):
+    """Marks a hub as premium with a subs_date_end `days` in the future."""
+    from datetime import datetime, timedelta
+    end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO main_chat_settings (chat_id, type, subs_date_start, subs_date_end) VALUES (?, 'premium', ?, ?)",
+        (chat_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), end),
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_event(db_path, event_id="ev1"):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -49,7 +62,7 @@ def get_event(db_path, event_id="ev1"):
 def get_users(db_path, chat_id="-100123"):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, status FROM chat_users WHERE chat_id = ?", (chat_id,))
+    cursor.execute("SELECT username, status FROM main_group_users WHERE chat_id = ?", (chat_id,))
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -315,8 +328,8 @@ class TestNotify:
         # Insert an event + two users; neither has responded
         insert_event(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','alice',NULL,'active')")
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','bob',  NULL,'active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob',  NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -337,7 +350,7 @@ class TestNotify:
             going=json.dumps(["alice (111)"]),
         )
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -371,7 +384,7 @@ class TestUpdateuser:
     async def _run(self, db_path, args):
         """Helper: insert a known user then run /updateuser with given args."""
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -422,7 +435,7 @@ class TestUpdateuser:
 
     async def test_at_prefix_stripped_from_username(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -442,8 +455,8 @@ class TestListusers:
 
     async def test_shows_all_users(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','alice',NULL,'active')")
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','bob',  NULL,'passive')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob',  NULL,'passive')")
         conn.commit()
         conn.close()
 
@@ -473,6 +486,14 @@ class TestListusers:
 # ── /setalias, /removealias, /listalias ───────────────────────────────────────
 
 class TestAliasCommands:
+
+    @pytest.fixture(autouse=True)
+    def _premium_hub(self, db_path):
+        # These tests exercise the alias LOGIC itself, which is now
+        # premium-gated - make the default test hub (-100123) premium so
+        # the gate doesn't block them. Gating itself is covered separately
+        # in TestPremiumGating below.
+        insert_premium(db_path, chat_id="-100123")
 
     def _insert_alias(self, db_path, alias, chat_id="-200"):
         conn = sqlite3.connect(db_path)
@@ -571,6 +592,376 @@ class TestShareevent:
         row = cursor.fetchone()
         conn.close()
         assert row == ("-visible",)
+
+    async def test_free_tier_blocks_after_3_shares_to_same_target(self, db_path):
+        """
+        Free-tier hubs may share up to FREE_SHAREEVENT_LIMIT_PER_TARGET (3)
+        DISTINCT events to the same target chat - the 4th must be rejected
+        with the exact requested message.
+        """
+        for i in range(3):
+            insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                "VALUES (?, '-200', ?, '-oc', 'group')",
+                (f"ev{i}", str(i)),
+            )
+            conn.commit()
+            conn.close()
+
+        # A 4th, brand new event from the same hub, targeting the same chat
+        insert_event(db_path, event_id="ev_new", chat_id=MAIN_CHAT)
+        chat = make_chat(chat_id=int(MAIN_CHAT), chat_type="supergroup")
+        user = make_user(user_id=1, username="admin")
+        upd  = make_update(chat=chat, user=user)
+        ctx  = self._admin_context()
+        ctx.args = ["-200"]
+
+        await handlers.shareevent(upd, ctx)
+
+        # Must NOT have created a 4th share row
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM event_shares WHERE chat_id='-200'")
+        count = cursor.fetchone()[0]
+        conn.close()
+        assert count == 3, "the 4th share must have been rejected"
+
+        sent_text = ctx.bot.send_message.call_args.kwargs.get("text", "")
+        assert sent_text == "You used all free limit for /shareevent, move to premium subscription for more"
+
+    async def test_premium_tier_has_no_shareevent_limit(self, db_path):
+        insert_premium(db_path, chat_id=MAIN_CHAT)
+        for i in range(3):
+            insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                "VALUES (?, '-200', ?, '-oc', 'group')",
+                (f"ev{i}", str(i)),
+            )
+            conn.commit()
+            conn.close()
+
+        insert_event(db_path, event_id="ev_new", chat_id=MAIN_CHAT)
+        chat = make_chat(chat_id=int(MAIN_CHAT), chat_type="supergroup")
+        user = make_user(user_id=1, username="admin")
+        upd  = make_update(chat=chat, user=user)
+        ctx  = self._admin_context()
+        ctx.args = ["-200"]
+
+        await handlers.shareevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM event_shares WHERE chat_id='-200'")
+        count = cursor.fetchone()[0]
+        conn.close()
+        assert count == 4, "premium hubs must not be limited"
+
+    async def test_free_tier_limit_is_per_target_not_global(self, db_path):
+        """3 shares to target A must not block sharing to a DIFFERENT target B."""
+        for i in range(3):
+            insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                "VALUES (?, '-200', ?, '-oc', 'group')",
+                (f"ev{i}", str(i)),
+            )
+            conn.commit()
+            conn.close()
+
+        insert_event(db_path, event_id="ev_new", chat_id=MAIN_CHAT)
+        chat = make_chat(chat_id=int(MAIN_CHAT), chat_type="supergroup")
+        user = make_user(user_id=1, username="admin")
+        upd  = make_update(chat=chat, user=user)
+        ctx  = self._admin_context()
+        ctx.args = ["-300"]  # a different target
+
+        await handlers.shareevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM event_shares WHERE chat_id='-300'")
+        count = cursor.fetchone()[0]
+        conn.close()
+        assert count == 1, "a different target must have its own separate limit"
+
+
+# ── Premium gating: Aliases / Monitoring ───────────────────────────────────────
+
+class TestPremiumGating:
+    """
+    Aliases (/setalias, /removealias, /listalias) and Monitoring
+    (/addmonitor, /removemonitor, /listmonitors) are premium-only. Free
+    hubs must be blocked with an explanatory message; premium hubs proceed
+    normally (the underlying behavior itself is covered by TestAliasCommands
+    and stays unaffected).
+    """
+
+    FREE_CHAT_ID = "-100123"
+
+    async def _assert_blocked(self, msg):
+        msg.reply_text.assert_awaited_once()
+        reply = msg.reply_text.call_args.args[0]
+        assert "premium" in reply.lower()
+
+    async def test_setalias_blocked_on_free(self, db_path):
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(args=["-200", "downtown"])
+
+        await handlers.setalias(upd, ctx)
+        await self._assert_blocked(msg)
+
+        # And it must not have actually created anything
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM sub_groups")
+        count = cursor.fetchone()[0]
+        conn.close()
+        assert count == 0
+
+    async def test_removealias_blocked_on_free(self, db_path):
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(args=["downtown"])
+
+        await handlers.removealias(upd, ctx)
+        await self._assert_blocked(msg)
+
+    async def test_listalias_blocked_on_free(self, db_path):
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context()
+
+        await handlers.listalias(upd, ctx)
+        await self._assert_blocked(msg)
+
+    async def test_addmonitor_blocked_on_free(self, db_path):
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(args=["-200"])
+
+        await handlers.addmonitor(upd, ctx)
+        await self._assert_blocked(msg)
+
+    async def test_removemonitor_blocked_on_free(self, db_path):
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(args=["-200"])
+
+        await handlers.removemonitor(upd, ctx)
+        await self._assert_blocked(msg)
+
+    async def test_listmonitors_blocked_on_free(self, db_path):
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context()
+
+        await handlers.listmonitors(upd, ctx)
+        await self._assert_blocked(msg)
+
+    async def test_setalias_allowed_on_premium(self, db_path):
+        insert_premium(db_path, chat_id=self.FREE_CHAT_ID)
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(args=["-200", "downtown"])
+        ctx.bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup"))
+
+        await handlers.setalias(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT alias FROM sub_groups WHERE chat_id='-200'")
+        row = cursor.fetchone()
+        conn.close()
+        assert row == ("downtown",)
+
+    async def test_addmonitor_allowed_on_premium(self, db_path):
+        insert_premium(db_path, chat_id=self.FREE_CHAT_ID)
+        chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(args=["-200"])
+        bot_member = MagicMock(status="administrator")
+        ctx.bot.get_chat_member = AsyncMock(return_value=bot_member)
+        ctx.bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Downtown"))
+
+        await handlers.addmonitor(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_monitored FROM sub_groups WHERE chat_id='-200'")
+        row = cursor.fetchone()
+        conn.close()
+        assert row == (1,)
+
+
+# ── is_premium() ────────────────────────────────────────────────────────────
+
+class TestIsPremium:
+
+    def test_no_row_is_not_premium(self, db_path):
+        assert handlers.is_premium("-999") is False
+
+    def test_free_type_is_not_premium(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_chat_settings (chat_id, type) VALUES ('-100','free')")
+        conn.commit()
+        conn.close()
+        assert handlers.is_premium("-100") is False
+
+    def test_premium_with_future_end_date_is_premium(self, db_path):
+        insert_premium(db_path, chat_id="-100", days=30)
+        assert handlers.is_premium("-100") is True
+
+    def test_premium_with_past_end_date_is_not_premium(self, db_path):
+        insert_premium(db_path, chat_id="-100", days=-1)
+        assert handlers.is_premium("-100") is False
+
+    def test_premium_type_but_null_end_date_is_not_premium(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_chat_settings (chat_id, type) VALUES ('-100','premium')")
+        conn.commit()
+        conn.close()
+        assert handlers.is_premium("-100") is False
+
+
+# ── /setsub ──────────────────────────────────────────────────────────────────
+
+class TestSetsub:
+
+    OWNER_ID = 555
+
+    async def test_non_owner_is_silently_ignored(self, db_path):
+        with patch("handlers.OWNER_USER_ID", self.OWNER_ID):
+            chat = make_chat()
+            user = make_user(user_id=999)  # not the owner
+            msg  = make_message(chat=chat)
+            upd  = make_update(chat=chat, user=user, message=msg)
+            ctx  = make_context(args=["-100", "on", "30"])
+
+            await handlers.setsub(upd, ctx)
+
+            msg.reply_text.assert_not_awaited()
+
+    async def test_owner_can_turn_on(self, db_path):
+        with patch("handlers.OWNER_USER_ID", self.OWNER_ID), \
+             patch("handlers.sync_control_sheet_main", new_callable=AsyncMock):
+            chat = make_chat()
+            user = make_user(user_id=self.OWNER_ID)
+            msg  = make_message(chat=chat)
+            upd  = make_update(chat=chat, user=user, message=msg)
+            ctx  = make_context(args=["-100", "on", "30"])
+            ctx.bot.get_chat = AsyncMock(return_value=MagicMock(title="Some Group", username=None))
+
+            await handlers.setsub(upd, ctx)
+
+            assert handlers.is_premium("-100") is True
+
+    async def test_owner_can_turn_off(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        with patch("handlers.OWNER_USER_ID", self.OWNER_ID), \
+             patch("handlers.sync_control_sheet_main", new_callable=AsyncMock):
+            chat = make_chat()
+            user = make_user(user_id=self.OWNER_ID)
+            msg  = make_message(chat=chat)
+            upd  = make_update(chat=chat, user=user, message=msg)
+            ctx  = make_context(args=["-100", "off"])
+            ctx.bot.get_chat = AsyncMock(return_value=MagicMock(title="Some Group", username=None))
+
+            await handlers.setsub(upd, ctx)
+
+            assert handlers.is_premium("-100") is False
+
+    async def test_extending_active_subscription_stacks_not_resets(self, db_path):
+        insert_premium(db_path, chat_id="-100", days=10)
+        with patch("handlers.OWNER_USER_ID", self.OWNER_ID), \
+             patch("handlers.sync_control_sheet_main", new_callable=AsyncMock):
+            chat = make_chat()
+            user = make_user(user_id=self.OWNER_ID)
+            msg  = make_message(chat=chat)
+            upd  = make_update(chat=chat, user=user, message=msg)
+            ctx  = make_context(args=["-100", "on", "5"])
+            ctx.bot.get_chat = AsyncMock(return_value=MagicMock(title="Some Group", username=None))
+
+            await handlers.setsub(upd, ctx)
+
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT subs_date_end FROM main_chat_settings WHERE chat_id='-100'")
+            end_str = cursor.fetchone()[0]
+            conn.close()
+            from datetime import datetime
+            end = datetime.strptime(end_str, "%Y-%m-%d %H:%M:%S")
+            days_left = (end - datetime.now()).days
+            assert days_left >= 14, "extending must stack on top of the existing 10 days, not reset to 5"
+
+
+# ── /help (tier-aware keyboard) ─────────────────────────────────────────────
+
+class TestHelpTierAwareKeyboard:
+
+    async def test_free_hub_shows_locked_alias_and_monitoring_buttons(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        flat = [btn for row in keyboard.inline_keyboard for btn in row]
+        alias_btn   = next(b for b in flat if "Alias" in b.text)
+        monitor_btn = next(b for b in flat if "Monitoring" in b.text)
+        assert "(premium)" in alias_btn.text
+        assert "(premium)" in monitor_btn.text
+        assert alias_btn.callback_data == "noop"
+        assert monitor_btn.callback_data == "noop"
+
+    async def test_premium_hub_shows_active_alias_and_monitoring_buttons(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        flat = [btn for row in keyboard.inline_keyboard for btn in row]
+        alias_btn   = next(b for b in flat if "Alias" in b.text)
+        monitor_btn = next(b for b in flat if "Monitoring" in b.text)
+        assert "(premium)" not in alias_btn.text
+        assert "(premium)" not in monitor_btn.text
+        assert alias_btn.callback_data == "help_alias"
+        assert monitor_btn.callback_data == "help_monitoring"
+
+    async def test_distribution_and_lifecycle_buttons_always_active(self, db_path):
+        """These two sections are free for everyone, regardless of tier."""
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        flat = [btn for row in keyboard.inline_keyboard for btn in row]
+        dist_btn = next(b for b in flat if "Distribution" in b.text)
+        life_btn = next(b for b in flat if "Lifecycle" in b.text)
+        assert dist_btn.callback_data == "help_distribution"
+        assert life_btn.callback_data == "help_lifecycle"
 
 
 # ── button_handler: username without id-suffix ────────────────────────────────
@@ -678,12 +1069,12 @@ class TestRefreshusers:
     async def test_removes_user_who_left(self, db_path):
         """
         Regression test: refreshusers must actually DELETE a departed user
-        from chat_users (so they disappear from /listusers), not just mark
+        from main_group_users (so they disappear from /listusers), not just mark
         them 'passive'. Marking-passive-only was the previous behavior and
         is exactly why "the list wasn't cleaned" was reported.
         """
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','alice','111','active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice','111','active')")
         conn.commit()
         conn.close()
 
@@ -709,7 +1100,7 @@ class TestRefreshusers:
 
     async def test_kicked_user_is_also_removed(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','bob','222','active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob','222','active')")
         conn.commit()
         conn.close()
 
@@ -731,7 +1122,7 @@ class TestRefreshusers:
 
     async def test_still_present_user_is_not_removed(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','carol','333','active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','carol','333','active')")
         conn.commit()
         conn.close()
 
@@ -754,7 +1145,7 @@ class TestRefreshusers:
     async def test_users_without_id_are_skipped_not_removed(self, db_path):
         # Insert a user without a user_id
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','bob',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -807,7 +1198,7 @@ class TestRefreshusers:
 
     async def test_does_not_duplicate_already_tracked_admin(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','existingadmin','555','passive')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','existingadmin','555','passive')")
         conn.commit()
         conn.close()
 
@@ -909,7 +1300,7 @@ class TestRefreshusers:
     async def test_root_flag_archives_changed_username(self, db_path):
         """A changed USER_NAME must be archived (comma-joined) and updated, not overwritten silently."""
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','oldname','111','active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','oldname','111','active')")
         conn.commit()
         conn.close()
 
@@ -944,7 +1335,7 @@ class TestRefreshusers:
 
     async def test_root_flag_appends_further_archived_names_with_comma(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','secondname','111','active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','secondname','111','active')")
         conn.commit()
         conn.close()
 
@@ -976,7 +1367,7 @@ class TestRefreshusers:
     async def test_root_flag_marks_departed_user_as_left_in_sheet(self, db_path):
         """A Users-sheet row for this PLACE_ID whose person is confirmed gone must get STATUS=Left."""
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_users VALUES ('-100123','gone','222','active')")
+        conn.execute("INSERT INTO main_group_users VALUES ('-100123','gone','222','active')")
         conn.commit()
         conn.close()
 

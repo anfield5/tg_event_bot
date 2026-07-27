@@ -2,6 +2,7 @@ import json
 import re
 import sqlite3
 import asyncio
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -14,10 +15,14 @@ from config import (
     ICON_GUEST_MINUS, ICON_GUEST_PLUS, ICON_ADD, ICON_REMOVE,
     ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
+    OWNER_USER_ID, CONTROL_SHEET_ID, FREE_SHAREEVENT_LIMIT_PER_TARGET,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date
 from db import track_user, DB_PATH, get_connection
-from sheets import get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet, log_user_presence
+from sheets import (
+    get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet,
+    log_user_presence, sync_control_sheet_main, sync_control_sheet_subconfig,
+)
 
 # One lock per event_id so that two near-simultaneous button clicks on the
 # same event can't interleave their read-modify-write and silently drop one.
@@ -252,6 +257,29 @@ def create_event_keyboard(
 # /help
 # ---------------------------------------------------------------------------
 
+def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
+    """
+    Aliases/Monitoring buttons are shown either as normal (premium hub) or
+    as an inert '(premium)'-labeled button (free hub) - tapping the free
+    version does nothing (callback_data='noop', already ignored globally by
+    button_handler) rather than opening a section that just repeats "this
+    is premium-only" at you.
+    """
+    premium = is_premium(chat_id)
+    alias_btn = InlineKeyboardButton(
+        "⚙️ Alias Subsystem" if premium else "⚙️ Alias Subsystem (premium)",
+        callback_data="help_alias" if premium else "noop",
+    )
+    monitor_btn = InlineKeyboardButton(
+        "🔍 Monitoring System" if premium else "🔍 Monitoring System (premium)",
+        callback_data="help_monitoring" if premium else "noop",
+    )
+    return InlineKeyboardMarkup([
+        [alias_btn, InlineKeyboardButton("📢 Distribution Control", callback_data="help_distribution")],
+        [monitor_btn, InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle")],
+    ])
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     main_help = (
         "📖 *Main Commands*\n\n"
@@ -266,25 +294,24 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n\n"
         "📚 *More Info*"
     )
-    
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚙️ Alias Subsystem", callback_data="help_alias"),
-            InlineKeyboardButton("📢 Distribution Control", callback_data="help_distribution"),
-        ],
-        [
-            InlineKeyboardButton("🔍 Monitoring System", callback_data="help_monitoring"),
-            InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
-        ],
-    ])
-    
+
+    keyboard = _build_main_help_keyboard(update.effective_chat.id)
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
 async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+
+    # Defensive: these two sections are premium-only. The free-tier keyboard
+    # never sends these callback_data values in the first place (it sends
+    # "noop" instead), but re-check here too in case the tier changed
+    # between the button being shown and being tapped.
+    if query.data in ("help_alias", "help_monitoring") and not is_premium(update.effective_chat.id):
+        await query.answer("This section is premium-only.", show_alert=True)
+        return
+
     await query.answer()
-    
+
     help_sections = {
         "help_alias": (
             "⚙️ *Alias Subsystem*\n\n"
@@ -333,7 +360,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+
     main_help = (
         "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
@@ -344,18 +371,8 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n\n"
         "📚 *More Info*"
     )
-    
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚙️ Aliases", callback_data="help_alias"),
-            InlineKeyboardButton("📢 Distribution", callback_data="help_distribution"),
-        ],
-        [
-            InlineKeyboardButton("🔍 Monitoring", callback_data="help_monitoring"),
-            InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
-        ],
-    ])
-    
+
+    keyboard = _build_main_help_keyboard(update.effective_chat.id)
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
@@ -365,6 +382,9 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Binds a custom alias to a Telegram Chat ID."""
+    if not await require_premium(update, "Aliases"):
+        return
+
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
@@ -489,6 +509,9 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Removes an alias from the routing table."""
+    if not await require_premium(update, "Aliases"):
+        return
+
     args = context.args
     if not args:
         await update.message.reply_text(
@@ -529,6 +552,9 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows all active routing aliases belonging to THIS hub group."""
+    if not await require_premium(update, "Aliases"):
+        return
+
     hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -1030,6 +1056,9 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     The bot must be added to the group/channel and the user must be admin in both
     the main group and the monitored group/channel.
     """
+    if not await require_premium(update, "Monitoring"):
+        return
+
     args = context.args
     if len(args) < 1:
         await update.message.reply_text(
@@ -1142,6 +1171,9 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Removes a group/channel from monitoring.
     Usage: /removemonitor id_channel or /removemonitor id_group
     """
+    if not await require_premium(update, "Monitoring"):
+        return
+
     args = context.args
     if len(args) < 1:
         await update.message.reply_text(
@@ -1195,6 +1227,9 @@ async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Lists all monitored groups/channels belonging to THIS hub group.
     """
+    if not await require_premium(update, "Monitoring"):
+        return
+
     hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -1221,6 +1256,214 @@ async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = f"{ICON_STATS} *Monitored Groups/Channels:*\n\n" + "\n\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
+
+
+# ---------------------------------------------------------------------------
+# Subscription (owner-controlled, manual payment confirmation)
+# ---------------------------------------------------------------------------
+
+SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
+# isn't relied upon anywhere - always parsed via strptime, but kept
+# unambiguous/sortable as a matter of hygiene for anyone reading the DB directly.
+
+
+def is_premium(chat_id: str) -> bool:
+    """
+    True if this hub currently has an active premium subscription.
+    Auto-expires: type='premium' with a subs_date_end in the past is treated
+    as NOT premium, without needing any background job to flip the flag back -
+    the flag only ever matters at the moment a premium-gated command runs.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT type, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
+            (str(chat_id),),
+        )
+        row = cursor.fetchone()
+
+    if not row or row[0] != "premium" or not row[1]:
+        return False
+    try:
+        return datetime.strptime(row[1], SUBS_DATE_FORMAT) > datetime.now()
+    except ValueError:
+        return False
+
+
+# Source of truth for both /help's wording and the Control Sheet's
+# "sub_config" tab (sheets.sync_control_sheet_subconfig mirrors this list
+# verbatim) - keeping ONE list means the sheet can never silently drift from
+# what the bot actually enforces.
+FEATURE_MATRIX = [
+    # (feature label,                 free,       premium)
+    ("/newevent",                     "available", "available"),
+    ("/editevent",                    "available", "available"),
+    ("/listusers",                    "available", "available"),
+    ("/notify",                       "available", "available"),
+    ("/shareevent (per target group/channel)", "limited (3)", "available"),
+    ("Aliases (/setalias etc.)",      "not available", "available"),
+    ("Monitoring (/addmonitor etc.)", "not available", "available"),
+]
+
+
+async def require_premium(update: Update, feature_label: str) -> bool:
+    """
+    Call at the top of a premium-only command. Returns True if the
+    invoking chat's hub is premium (caller proceeds normally); otherwise
+    sends the upgrade message and returns False (caller should just return).
+    """
+    chat_id = str(update.effective_chat.id)
+    if is_premium(chat_id):
+        return True
+    await update.message.reply_text(
+        f"{ICON_WARNING} *{escape_markdown(feature_label)}* is a premium\\-only feature\\. "
+        f"Use /setsub info or contact the bot owner to upgrade\\.",
+        parse_mode="MarkdownV2",
+    )
+    return False
+
+
+async def _push_control_sheet_main():
+    """Reads all of main_chat_settings and pushes it to the Control Sheet's 'Main' tab."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT chat_id, chat_name, type, sheet_id, subs_date_start, subs_date_end FROM main_chat_settings"
+        )
+        rows = cursor.fetchall()
+    await sync_control_sheet_main(rows)
+
+
+async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only. The simplest possible manual subscription control - no
+    payment automation at all, since payment is confirmed by hand (crypto,
+    checked by the bot owner) anyway:
+
+      /setsub <chat_id> on <days>   - activate/extend premium by <days>
+      /setsub <chat_id> off         - deactivate premium immediately
+
+    Deliberately gated on the bot owner's own Telegram user_id
+    (OWNER_USER_ID), NOT on "is admin in this chat" - a hub's own admin
+    could otherwise just grant themselves a free subscription.
+
+    After every change, pushes the updated main_chat_settings to the Control
+    Sheet's "Main" tab, so you can see every group's status there without
+    needing to run any command.
+    """
+    if not OWNER_USER_ID or update.effective_user.id != OWNER_USER_ID:
+        return  # silent - don't reveal this command exists to non-owners
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "❌ *Syntax:* `/setsub <chat_id> on <days>` or `/setsub <chat_id> off`",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    target_chat_id = args[0]
+    mode           = args[1].lower()
+
+    # Best-effort: snapshot the group's display name for the Control Sheet,
+    # so it shows something more useful than a bare numeric chat_id. Not
+    # fatal if this fails (e.g. bot isn't in that chat) - falls back to None.
+    chat_name = None
+    try:
+        chat_obj  = await context.bot.get_chat(int(target_chat_id))
+        chat_name = chat_obj.title or chat_obj.username
+    except Exception as e:
+        logger.error(f"setsub: could not fetch chat name for {target_chat_id}: {e}")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT type, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
+            (target_chat_id,),
+        )
+        existing = cursor.fetchone()
+
+        if mode == "off":
+            if existing:
+                cursor.execute(
+                    "UPDATE main_chat_settings SET type = 'free', chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
+                    (chat_name, target_chat_id),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO main_chat_settings (chat_id, chat_name, type) VALUES (?, ?, 'free')",
+                    (target_chat_id, chat_name),
+                )
+            conn.commit()
+            await update.message.reply_text(
+                f"✅ Subscription turned *off* for `{escape_markdown(target_chat_id)}`\\.",
+                parse_mode="MarkdownV2",
+            )
+            await _push_control_sheet_main()
+            return
+
+        if mode == "on":
+            if len(args) < 3 or not args[2].isdigit():
+                await update.message.reply_text(
+                    "❌ *Syntax:* `/setsub <chat_id> on <days>`", parse_mode="MarkdownV2"
+                )
+                return
+            days = int(args[2])
+
+            # Extending an still-active subscription adds to its CURRENT end
+            # date, not to "now" - otherwise renewing a few days early would
+            # throw away the remaining days instead of stacking on top.
+            base = datetime.now()
+            if existing and existing[0] == "premium" and existing[1]:
+                try:
+                    prior_end = datetime.strptime(existing[1], SUBS_DATE_FORMAT)
+                    if prior_end > base:
+                        base = prior_end
+                except ValueError:
+                    pass
+
+            new_end = (base + timedelta(days=days)).strftime(SUBS_DATE_FORMAT)
+            new_start = existing[1] if existing and existing[0] == "premium" and existing[1] else datetime.now().strftime(SUBS_DATE_FORMAT)
+
+            if existing:
+                cursor.execute(
+                    "UPDATE main_chat_settings SET type = 'premium', subs_date_start = ?, subs_date_end = ?, chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
+                    (new_start, new_end, chat_name, target_chat_id),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO main_chat_settings (chat_id, chat_name, type, subs_date_start, subs_date_end) VALUES (?, ?, 'premium', ?, ?)",
+                    (target_chat_id, chat_name, new_start, new_end),
+                )
+            conn.commit()
+            await update.message.reply_text(
+                f"✅ Subscription *on* for `{escape_markdown(target_chat_id)}` until `{escape_markdown(new_end)}`\\.",
+                parse_mode="MarkdownV2",
+            )
+            await _push_control_sheet_main()
+            return
+
+    await update.message.reply_text(
+        "❌ *Syntax:* `/setsub <chat_id> on <days>` or `/setsub <chat_id> off`",
+        parse_mode="MarkdownV2",
+    )
+
+
+async def syncgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only. Manually pushes the current main_chat_settings and the
+    free/premium feature matrix to the Control Sheet, without needing to
+    change anyone's subscription first (e.g. right after setting up
+    CONTROL_SHEET_ID for the first time).
+    """
+    if not OWNER_USER_ID or update.effective_user.id != OWNER_USER_ID:
+        return
+
+    await _push_control_sheet_main()
+    await sync_control_sheet_subconfig(FEATURE_MATRIX)
+    await update.message.reply_text(
+        "✅ Control Sheet synced \\(Main \\+ sub\\_config\\)\\.", parse_mode="MarkdownV2"
+    )
 
 
 async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1520,6 +1763,23 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2",
             )
             return
+
+        if not is_premium(main_hub_chat_id):
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM event_shares es
+                JOIN events e ON es.event_id = e.event_id
+                WHERE e.chat_id = ? AND es.chat_id = ?
+                """,
+                (str(main_hub_chat_id), str(target_chat_raw)),
+            )
+            (share_count,) = cursor.fetchone()
+            if share_count >= FREE_SHAREEVENT_LIMIT_PER_TARGET:
+                await context.bot.send_message(
+                    chat_id=main_hub_chat_id,
+                    text="You used all free limit for /shareevent, move to premium subscription for more",
+                )
+                return
 
         cursor.execute(
             "SELECT message_id FROM event_shares WHERE event_id = ? AND chat_id = ?",
