@@ -2,26 +2,30 @@ import json
 import re
 import sqlite3
 import asyncio
-from datetime import datetime, timedelta
 from uuid import uuid4
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
+from keyboard import create_event_keyboard
+from subscription import (
+    is_premium, require_premium, setsub, syncgroups,
+    FEATURE_MATRIX, SUBS_DATE_FORMAT, _push_control_sheet_main,
+)
+
 from config import (
     DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, DEFAULT_CLOSE_ICON, logger,
-    ICON_KICK, ICON_RETURN, ICON_PERSON, ICON_CHANNEL_PERSON,
-    ICON_GUEST_MINUS, ICON_GUEST_PLUS, ICON_ADD, ICON_REMOVE,
+    ICON_KICK, ICON_RETURN, ICON_ADD,
     ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
-    OWNER_USER_ID, CONTROL_SHEET_ID, FREE_SHAREEVENT_LIMIT_PER_TARGET,
+    FREE_SHAREEVENT_LIMIT_PER_TARGET,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date
 from db import track_user, DB_PATH, get_connection
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet,
-    log_user_presence, sync_control_sheet_main, sync_control_sheet_subconfig,
+    log_user_presence,
 )
 
 # One lock per event_id so that two near-simultaneous button clicks on the
@@ -122,135 +126,8 @@ def parse_user_args(args: list) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Inline keyboard builder
+# Inline keyboard builder (moved to keyboard.py)
 # ---------------------------------------------------------------------------
-
-def create_event_keyboard(
-    event_id: str,
-    event_status: int,
-    going_icon: str,
-    notgoing_icon: str,
-    going_list: list = None,
-    counters: dict = None,
-    is_child: bool = False,
-    child_users_rows: list = None,
-    kicked_users: set = None,
-) -> InlineKeyboardMarkup:
-    """
-    Generates dynamic inline keyboards.
-
-    event_status == -1  → empty keyboard (event canceled)
-    event_status == 2   → empty keyboard (event closed)
-    event_status == 0   → Going / Not Going / Add & Sub guest / Close button
-    event_status == 1   → Verification mode:
-                    Each participant is rendered over TWO rows:
-                        Row A: [👤 name]          [❌ Kick]
-                        Row B: [N G.]  [➖]  [➕]
-                    NOTE: Telegram's Bot API has no way to set a custom
-                    color on button text - the ➕/➖ (Heavy Plus/Minus Sign)
-                    glyphs are used bare here because most emoji fonts
-                    (including Telegram's own) already render them in an
-                    orange/rust tone by default; there's no way to force a
-                    different or more saturated orange beyond that.
-    """
-    if event_status in (-1, 2):
-        return InlineKeyboardMarkup([])
-
-    buttons = []
-
-    if event_status == 0:
-        buttons.append([
-            InlineKeyboardButton(f"{going_icon} Going",        callback_data=f"going_{event_id}"),
-            InlineKeyboardButton(f"{notgoing_icon} Not Going", callback_data=f"notgoing_{event_id}"),
-        ])
-        buttons.append([
-            InlineKeyboardButton(f"{ICON_ADD} ADD", callback_data=f"add_{event_id}"),
-            InlineKeyboardButton(f"{ICON_REMOVE} Remove", callback_data=f"sub_{event_id}"),
-        ])
-        if not is_child:
-            buttons.append([
-                InlineKeyboardButton(f"{DEFAULT_CLOSE_ICON} Verification Mode", callback_data=f"close_{event_id}"),
-            ])
-            buttons.append([
-                InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel Event", callback_data=f"cancel_{event_id}"),
-            ])
-
-    elif event_status == 1 and not is_child:
-        # ── Master participants ────────────────────────────────────────────
-        going_list        = going_list or []
-        counters          = counters or {}
-        child_users_rows  = child_users_rows or []
-        kicked_users      = kicked_users or set()
-
-        going_usernames     = {entry.split(" (")[0] for entry in going_list}
-        all_relevant_users  = going_usernames | kicked_users | set(counters.keys())
-
-        for username in sorted(all_relevant_users):
-            guest_count = counters.get(username, 0)
-            is_going    = username in going_usernames
-            is_kicked   = username in kicked_users
-
-            if is_going:
-                buttons.append([
-                    InlineKeyboardButton(f"{ICON_PERSON} {username}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_KICK} Kick",          callback_data=f"kick_{event_id}:{username}"),
-                ])
-            elif is_kicked:
-                buttons.append([
-                    InlineKeyboardButton(f"{ICON_PERSON} {username}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_RETURN} Return",      callback_data=f"return_{event_id}:{username}"),
-                ])
-            else:
-                # Guest-only contributor - never declared Going and was
-                # never Kicked either, so there's no "membership" here for
-                # an admin to Kick/Return - only the guest count row shows.
-                if guest_count <= 0:
-                    continue
-
-            # Row B: guest count + ➖ + ➕ (➖ before ➕; these glyphs render
-            # orange by default in most emoji fonts - see docstring above)
-            # Show "2G from username" format for clarity
-            guest_label = f"{guest_count}G: {username}" if guest_count > 0 else "0G"
-            buttons.append([
-                InlineKeyboardButton(guest_label,  callback_data="noop"),
-                InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:{username}"),
-                InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:{username}"),
-            ])
-
-        # ── Child-chat participants ────────────────────────────────────────
-        for ch_username, ch_guests, ch_status in child_users_rows:
-            is_going  = ch_status == "going"
-            is_kicked = ch_status == "kicked"
-
-            if is_going:
-                buttons.append([
-                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_username}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_KICK} Kick",                     callback_data=f"kick_{event_id}:ch-{ch_username}"),
-                ])
-            elif is_kicked:
-                buttons.append([
-                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_username}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_RETURN} Return",                 callback_data=f"return_{event_id}:ch-{ch_username}"),
-                ])
-            else:
-                if ch_guests <= 0:
-                    continue
-
-            guest_label = f"{ch_guests}G: {ch_username}" if ch_guests > 0 else "0G"
-            buttons.append([
-                InlineKeyboardButton(guest_label,  callback_data="noop"),
-                InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:ch-{ch_username}"),
-                InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:ch-{ch_username}"),
-            ])
-
-        buttons.append([
-            InlineKeyboardButton(f"{ICON_ADD} Add Extra Player", callback_data=f"addext_{event_id}"),
-        ])
-        buttons.append([
-            InlineKeyboardButton(f"{ICON_SAVE} Save & Close Event", callback_data=f"save_{event_id}"),
-        ])
-
-    return InlineKeyboardMarkup(buttons)
 
 
 # ---------------------------------------------------------------------------
@@ -267,15 +144,15 @@ def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
     """
     premium = is_premium(chat_id)
     alias_btn = InlineKeyboardButton(
-        "⚙️ Alias Subsystem" if premium else "⚙️ Alias Subsystem (premium)",
+        "⚙️ Aliases" if premium else "⚙️ Aliases (premium)",
         callback_data="help_alias" if premium else "noop",
     )
     monitor_btn = InlineKeyboardButton(
-        "🔍 Monitoring System" if premium else "🔍 Monitoring System (premium)",
+        "🔍 Monitoring" if premium else "🔍 Monitoring (premium)",
         callback_data="help_monitoring" if premium else "noop",
     )
     return InlineKeyboardMarkup([
-        [alias_btn, InlineKeyboardButton("📢 Distribution Control", callback_data="help_distribution")],
+        [alias_btn, InlineKeyboardButton("📢 Distribution", callback_data="help_distribution")],
         [monitor_btn, InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle")],
     ])
 
@@ -678,17 +555,22 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to send event message: {e}")
 
-    # Log to Google Sheets Events tab
+    # Log to Google Sheets Events tab (premium hubs only - free hubs write
+    # nothing to Sheets at all, silently and by design)
     # Columns: EVENT_ID, EVENT_NAME, CREATED_AT, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT
-    try:
+    if is_premium(chat_id):
         sheet_target = await get_sheet_for_chat(chat_id)
-        ss = await open_spreadsheet(sheet_target)
-        ws = await ss.worksheet("Events")
-        await ws.append_row([
-            event_id, event_name_raw, now2ddmmyy(), user_raw, event_date or "", "", "OPEN", 0,
-        ])
-    except Exception as e:
-        logger.error(f"Failed to log event creation to Google Sheets: {e}")
+        if not sheet_target:
+            await message.reply_text("Please specify google sheet for save")
+        else:
+            try:
+                ss = await open_spreadsheet(sheet_target)
+                ws = await ss.worksheet("Events")
+                await ws.append_row([
+                    event_id, event_name_raw, now2ddmmyy(), user_raw, event_date or "", "", "OPEN", 0,
+                ])
+            except Exception as e:
+                logger.error(f"Failed to log event creation to Google Sheets: {e}")
 
 
 async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -759,6 +641,8 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Sync updated name/date to Google Sheets Events tab
     try:
         sheet_target = await get_sheet_for_chat(chat_id)
+        if not sheet_target:
+            return
         ss = await open_spreadsheet(sheet_target)
         ws = await ss.worksheet("Events")
         records = await ws.get_all_records()
@@ -1262,208 +1146,9 @@ async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Subscription (owner-controlled, manual payment confirmation)
 # ---------------------------------------------------------------------------
 
-SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
-# isn't relied upon anywhere - always parsed via strptime, but kept
-# unambiguous/sortable as a matter of hygiene for anyone reading the DB directly.
-
-
-def is_premium(chat_id: str) -> bool:
-    """
-    True if this hub currently has an active premium subscription.
-    Auto-expires: type='premium' with a subs_date_end in the past is treated
-    as NOT premium, without needing any background job to flip the flag back -
-    the flag only ever matters at the moment a premium-gated command runs.
-    """
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT type, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
-            (str(chat_id),),
-        )
-        row = cursor.fetchone()
-
-    if not row or row[0] != "premium" or not row[1]:
-        return False
-    try:
-        return datetime.strptime(row[1], SUBS_DATE_FORMAT) > datetime.now()
-    except ValueError:
-        return False
-
-
-# Source of truth for both /help's wording and the Control Sheet's
-# "sub_config" tab (sheets.sync_control_sheet_subconfig mirrors this list
-# verbatim) - keeping ONE list means the sheet can never silently drift from
-# what the bot actually enforces.
-FEATURE_MATRIX = [
-    # (feature label,                 free,       premium)
-    ("/newevent",                     "available", "available"),
-    ("/editevent",                    "available", "available"),
-    ("/listusers",                    "available", "available"),
-    ("/notify",                       "available", "available"),
-    ("/shareevent (per target group/channel)", "limited (3)", "available"),
-    ("Aliases (/setalias etc.)",      "not available", "available"),
-    ("Monitoring (/addmonitor etc.)", "not available", "available"),
-]
-
-
-async def require_premium(update: Update, feature_label: str) -> bool:
-    """
-    Call at the top of a premium-only command. Returns True if the
-    invoking chat's hub is premium (caller proceeds normally); otherwise
-    sends the upgrade message and returns False (caller should just return).
-    """
-    chat_id = str(update.effective_chat.id)
-    if is_premium(chat_id):
-        return True
-    await update.message.reply_text(
-        f"{ICON_WARNING} *{escape_markdown(feature_label)}* is a premium\\-only feature\\. "
-        f"Use /setsub info or contact the bot owner to upgrade\\.",
-        parse_mode="MarkdownV2",
-    )
-    return False
-
-
-async def _push_control_sheet_main():
-    """Reads all of main_chat_settings and pushes it to the Control Sheet's 'Main' tab."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT chat_id, chat_name, type, sheet_id, subs_date_start, subs_date_end FROM main_chat_settings"
-        )
-        rows = cursor.fetchall()
-    await sync_control_sheet_main(rows)
-
-
-async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Owner-only. The simplest possible manual subscription control - no
-    payment automation at all, since payment is confirmed by hand (crypto,
-    checked by the bot owner) anyway:
-
-      /setsub <chat_id> on <days>   - activate/extend premium by <days>
-      /setsub <chat_id> off         - deactivate premium immediately
-
-    Deliberately gated on the bot owner's own Telegram user_id
-    (OWNER_USER_ID), NOT on "is admin in this chat" - a hub's own admin
-    could otherwise just grant themselves a free subscription.
-
-    After every change, pushes the updated main_chat_settings to the Control
-    Sheet's "Main" tab, so you can see every group's status there without
-    needing to run any command.
-    """
-    if not OWNER_USER_ID or update.effective_user.id != OWNER_USER_ID:
-        return  # silent - don't reveal this command exists to non-owners
-
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text(
-            "❌ *Syntax:* `/setsub <chat_id> on <days>` or `/setsub <chat_id> off`",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    target_chat_id = args[0]
-    mode           = args[1].lower()
-
-    # Best-effort: snapshot the group's display name for the Control Sheet,
-    # so it shows something more useful than a bare numeric chat_id. Not
-    # fatal if this fails (e.g. bot isn't in that chat) - falls back to None.
-    chat_name = None
-    try:
-        chat_obj  = await context.bot.get_chat(int(target_chat_id))
-        chat_name = chat_obj.title or chat_obj.username
-    except Exception as e:
-        logger.error(f"setsub: could not fetch chat name for {target_chat_id}: {e}")
-
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT type, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
-            (target_chat_id,),
-        )
-        existing = cursor.fetchone()
-
-        if mode == "off":
-            if existing:
-                cursor.execute(
-                    "UPDATE main_chat_settings SET type = 'free', chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
-                    (chat_name, target_chat_id),
-                )
-            else:
-                cursor.execute(
-                    "INSERT INTO main_chat_settings (chat_id, chat_name, type) VALUES (?, ?, 'free')",
-                    (target_chat_id, chat_name),
-                )
-            conn.commit()
-            await update.message.reply_text(
-                f"✅ Subscription turned *off* for `{escape_markdown(target_chat_id)}`\\.",
-                parse_mode="MarkdownV2",
-            )
-            await _push_control_sheet_main()
-            return
-
-        if mode == "on":
-            if len(args) < 3 or not args[2].isdigit():
-                await update.message.reply_text(
-                    "❌ *Syntax:* `/setsub <chat_id> on <days>`", parse_mode="MarkdownV2"
-                )
-                return
-            days = int(args[2])
-
-            # Extending an still-active subscription adds to its CURRENT end
-            # date, not to "now" - otherwise renewing a few days early would
-            # throw away the remaining days instead of stacking on top.
-            base = datetime.now()
-            if existing and existing[0] == "premium" and existing[1]:
-                try:
-                    prior_end = datetime.strptime(existing[1], SUBS_DATE_FORMAT)
-                    if prior_end > base:
-                        base = prior_end
-                except ValueError:
-                    pass
-
-            new_end = (base + timedelta(days=days)).strftime(SUBS_DATE_FORMAT)
-            new_start = existing[1] if existing and existing[0] == "premium" and existing[1] else datetime.now().strftime(SUBS_DATE_FORMAT)
-
-            if existing:
-                cursor.execute(
-                    "UPDATE main_chat_settings SET type = 'premium', subs_date_start = ?, subs_date_end = ?, chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
-                    (new_start, new_end, chat_name, target_chat_id),
-                )
-            else:
-                cursor.execute(
-                    "INSERT INTO main_chat_settings (chat_id, chat_name, type, subs_date_start, subs_date_end) VALUES (?, ?, 'premium', ?, ?)",
-                    (target_chat_id, chat_name, new_start, new_end),
-                )
-            conn.commit()
-            await update.message.reply_text(
-                f"✅ Subscription *on* for `{escape_markdown(target_chat_id)}` until `{escape_markdown(new_end)}`\\.",
-                parse_mode="MarkdownV2",
-            )
-            await _push_control_sheet_main()
-            return
-
-    await update.message.reply_text(
-        "❌ *Syntax:* `/setsub <chat_id> on <days>` or `/setsub <chat_id> off`",
-        parse_mode="MarkdownV2",
-    )
-
-
-async def syncgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Owner-only. Manually pushes the current main_chat_settings and the
-    free/premium feature matrix to the Control Sheet, without needing to
-    change anyone's subscription first (e.g. right after setting up
-    CONTROL_SHEET_ID for the first time).
-    """
-    if not OWNER_USER_ID or update.effective_user.id != OWNER_USER_ID:
-        return
-
-    await _push_control_sheet_main()
-    await sync_control_sheet_subconfig(FEATURE_MATRIX)
-    await update.message.reply_text(
-        "✅ Control Sheet synced \\(Main \\+ sub\\_config\\)\\.", parse_mode="MarkdownV2"
-    )
+# ---------------------------------------------------------------------------
+# Subscription (moved to subscription.py)
+# ---------------------------------------------------------------------------
 
 
 async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2442,12 +2127,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if data_changed:
                         try:
                             sheet_target = await get_sheet_for_chat(main_chat_id)
-                            ss           = await open_spreadsheet(sheet_target)
-                            ws           = await ss.worksheet("Actions")
-                            await ws.append_row([
-                                event_id, action.upper(), username_raw,
-                                str(user_id), now2ddmmyy(), str(click_chat_id),
-                            ])
+                            if sheet_target:
+                                ss = await open_spreadsheet(sheet_target)
+                                ws = await ss.worksheet("Actions")
+                                await ws.append_row([
+                                    event_id, action.upper(), username_raw,
+                                    str(user_id), now2ddmmyy(), str(click_chat_id),
+                                ])
                         except Exception as e:
                             logger.error(f"Sheets child action log failed: {e}")
                         context.application.create_task(schedule_view_refresh(context, event_id))
@@ -2600,18 +2286,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data_changed:
             try:
                 sheet_target = await get_sheet_for_chat(main_chat_id)
-                ss           = await open_spreadsheet(sheet_target)
-                ws           = await ss.worksheet("Actions")
-                if action == "incgst":
-                    logged_action = "ADD_editmode"
-                elif action == "decgst":
-                    logged_action = "SUB_editmode"
-                else:
-                    logged_action = action.upper()
-                await ws.append_row([
-                    event_id, logged_action, username_raw,
-                    str(user_id), now2ddmmyy(), str(click_chat_id),
-                ])
+                if sheet_target:
+                    ss           = await open_spreadsheet(sheet_target)
+                    ws           = await ss.worksheet("Actions")
+                    if action == "incgst":
+                        logged_action = "ADD_editmode"
+                    elif action == "decgst":
+                        logged_action = "SUB_editmode"
+                    else:
+                        logged_action = action.upper()
+                    await ws.append_row([
+                        event_id, logged_action, username_raw,
+                        str(user_id), now2ddmmyy(), str(click_chat_id),
+                    ])
             except Exception as e:
                 logger.error(f"Sheets master action log failed: {e}")
 
@@ -2622,63 +2309,65 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 sheet_target = await get_sheet_for_chat(main_chat_id)
                 ss           = await open_spreadsheet(sheet_target)
+                if not ss:
+                    pass  # free tier / no sheet configured / expired - SQLite-only save, nothing more to do
+                else:
+                    # 1. Collect master going user_ids (stored as "username (user_id)").
+                    #    Entries added via "Add Extra Player" should have user_id
+                    #    If no user_id is available, use username as fallback
+                    master_going_ids = []
+                    for entry in going:
+                        m = re.search(r'\(([^)]+)\)', entry)
+                        if m:
+                            master_going_ids.append(m.group(1))
+                        else:
+                            # Extra player without user_id - use username as user_id
+                            username = entry.split(" (")[0]
+                            master_going_ids.append(username)
 
-                # 1. Collect master going user_ids (stored as "username (user_id)").
-                #    Entries added via "Add Extra Player" should have user_id
-                #    If no user_id is available, use username as fallback
-                master_going_ids = []
-                for entry in going:
-                    m = re.search(r'\(([^)]+)\)', entry)
-                    if m:
-                        master_going_ids.append(m.group(1))
-                    else:
-                        # Extra player without user_id - use username as user_id
-                        username = entry.split(" (")[0]
-                        master_going_ids.append(username)
+                    # 2. Collect child going user_ids from event_users table
+                    with get_connection() as conn_eu:
+                        cursor_eu = conn_eu.cursor()
+                        cursor_eu.execute(
+                            "SELECT user_id FROM event_users WHERE event_id = ? AND status = 'going'",
+                            (event_id,),
+                        )
+                        child_going_ids = [r[0] for r in cursor_eu.fetchall()]
 
-                # 2. Collect child going user_ids from event_users table
-                with get_connection() as conn_eu:
-                    cursor_eu = conn_eu.cursor()
-                    cursor_eu.execute(
-                        "SELECT user_id FROM event_users WHERE event_id = ? AND status = 'going'",
-                        (event_id,),
+                        all_going_ids = master_going_ids + child_going_ids
+
+                        # 3. Compute total for Events sheet
+                        # Include all child users (going + those with guests) and their guests
+                        cursor_eu.execute(
+                            "SELECT status, guests FROM event_users WHERE event_id = ? AND (status = 'going' OR guests > 0)",
+                            (event_id,),
+                        )
+                        child_rows = cursor_eu.fetchall()
+                    # Count child users who are going, plus all their guests (including from non-going users)
+                    child_going_count = sum(1 for status, guests in child_rows if status == 'going')
+                    child_guests_total = sum(guests for status, guests in child_rows)
+                    # Master: going users + all guests (including from non-going users)
+                    total_going    = len(going) + sum(counters.values()) + child_going_count + child_guests_total
+
+                    # 4. Update Events sheet row
+                    ws      = await ss.worksheet("Events")
+                    records = await ws.get_all_records()
+                    found   = False
+                    for idx, r in enumerate(records, start=2):
+                        if str(r.get("EVENT_ID")) == str(event_id):
+                            await ws.update(f"F{idx}:H{idx}", [[now2ddmmyy(), "CLOSED", total_going]])
+                            found = True
+                            break
+                    if not found:
+                        await ws.append_row([
+                            event_id, name, now2ddmmyy(), username_raw,
+                            event_date or "", now2ddmmyy(), "CLOSED", total_going,
+                        ])
+
+                    # 5. Write all going user_ids to EventUsers sheet
+                    context.application.create_task(
+                        sync_event_users_sheet(main_chat_id, event_id, all_going_ids)
                     )
-                    child_going_ids = [r[0] for r in cursor_eu.fetchall()]
-
-                    all_going_ids = master_going_ids + child_going_ids
-
-                    # 3. Compute total for Events sheet
-                    # Include all child users (going + those with guests) and their guests
-                    cursor_eu.execute(
-                        "SELECT status, guests FROM event_users WHERE event_id = ? AND (status = 'going' OR guests > 0)",
-                        (event_id,),
-                    )
-                    child_rows = cursor_eu.fetchall()
-                # Count child users who are going, plus all their guests (including from non-going users)
-                child_going_count = sum(1 for status, guests in child_rows if status == 'going')
-                child_guests_total = sum(guests for status, guests in child_rows)
-                # Master: going users + all guests (including from non-going users)
-                total_going    = len(going) + sum(counters.values()) + child_going_count + child_guests_total
-
-                # 4. Update Events sheet row
-                ws      = await ss.worksheet("Events")
-                records = await ws.get_all_records()
-                found   = False
-                for idx, r in enumerate(records, start=2):
-                    if str(r.get("EVENT_ID")) == str(event_id):
-                        await ws.update(f"F{idx}:H{idx}", [[now2ddmmyy(), "CLOSED", total_going]])
-                        found = True
-                        break
-                if not found:
-                    await ws.append_row([
-                        event_id, name, now2ddmmyy(), username_raw,
-                        event_date or "", now2ddmmyy(), "CLOSED", total_going,
-                    ])
-
-                # 5. Write all going user_ids to EventUsers sheet
-                context.application.create_task(
-                    sync_event_users_sheet(main_chat_id, event_id, all_going_ids)
-                )
 
             except Exception as e:
                 logger.error(f"Sheets save pipeline failed: {e}")
@@ -2688,24 +2377,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 sheet_target = await get_sheet_for_chat(main_chat_id)
                 ss           = await open_spreadsheet(sheet_target)
-
-                ws      = await ss.worksheet("Events")
-                records = await ws.get_all_records()
-                found   = False
-                for idx, r in enumerate(records, start=2):
-                    if str(r.get("EVENT_ID")) == str(event_id):
-                        # Update existing row to CANCELED
-                        await ws.update(f"F{idx}:H{idx}", [[now2ddmmyy(), "CANCELED", 0]])
-                        found = True
-                        break
-                if not found:
-                    # Only append if row doesn't exist
-                    await ws.append_row([
-                        event_id, name, now2ddmmyy(), username_raw,
-                        event_date or "", now2ddmmyy(), "CANCELED", 0,
-                    ])
-                # Intentionally NOT calling sync_event_users_sheet here -
-                # a cancelled event must not write anything to EventUsers.
+                if not ss:
+                    pass  # free tier / no sheet configured / expired - SQLite-only cancel, nothing more to do
+                else:
+                    ws      = await ss.worksheet("Events")
+                    records = await ws.get_all_records()
+                    found   = False
+                    for idx, r in enumerate(records, start=2):
+                        if str(r.get("EVENT_ID")) == str(event_id):
+                            # Update existing row to CANCELED
+                            await ws.update(f"F{idx}:H{idx}", [[now2ddmmyy(), "CANCELED", 0]])
+                            found = True
+                            break
+                    if not found:
+                        # Only append if row doesn't exist
+                        await ws.append_row([
+                            event_id, name, now2ddmmyy(), username_raw,
+                            event_date or "", now2ddmmyy(), "CANCELED", 0,
+                        ])
+                    # Intentionally NOT calling sync_event_users_sheet here -
+                    # a cancelled event must not write anything to EventUsers.
             except Exception as e:
                 logger.error(f"Sheets cancel pipeline failed: {e}")
 
@@ -2798,13 +2489,14 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
 
     try:
         sheet_target = await get_sheet_for_chat(chat_id)
-        ss           = await open_spreadsheet(sheet_target)
-        ws           = await ss.worksheet("Actions")
-        # Record the user who clicked the button, not the added player
-        user_raw = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
-        await ws.append_row([
-            event_id, "ADD_EXTRA_PLAYER", user_raw, str(update.effective_user.id), now2ddmmyy(), str(chat_id),
-        ])
+        if sheet_target:
+            ss           = await open_spreadsheet(sheet_target)
+            ws           = await ss.worksheet("Actions")
+            # Record the user who clicked the button, not the added player
+            user_raw = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+            await ws.append_row([
+                event_id, "ADD_EXTRA_PLAYER", user_raw, str(update.effective_user.id), now2ddmmyy(), str(chat_id),
+            ])
     except Exception as e:
         logger.error(f"Sheets extra player log failed: {e}")
 

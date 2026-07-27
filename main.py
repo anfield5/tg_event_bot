@@ -7,9 +7,9 @@ from telegram.ext import (
     filters,
 )
 from telegram.request import HTTPXRequest
-from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, logger
+from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, logger
 from db import init_db, track_user
-from sheets import log_user_presence
+from sheets import log_user_presence, sync_control_sheet_subconfig
 from handlers import (
     help_command, help_callback_handler, help_back_handler,
     newevent, editevent,
@@ -18,11 +18,11 @@ from handlers import (
     shareevent,
     setalias, removealias, listalias,
     addmonitor, removemonitor, listmonitors,
-    setsub, syncgroups,
     track_everyone_message,
     button_handler,
     global_text_router,
 )
+from subscription import setsub, syncgroups, _push_control_sheet_main, FEATURE_MATRIX
 
 
 async def on_chat_member_update(update, context):
@@ -54,6 +54,23 @@ async def on_chat_member_update(update, context):
         # UserPresenceLog will be updated by sync_users_sheet when status changes to LEFT
 
 
+async def _sync_control_sheet_on_startup(application):
+    """
+    Runs once after the bot finishes initializing. If CONTROL_SHEET_ID is
+    configured, pushes the current main_chat_settings + feature matrix to
+    the Control Sheet right away - otherwise the sheet would stay empty
+    until the first /setsub call or a manual /syncgroups.
+    """
+    if not CONTROL_SHEET_ID:
+        return
+    try:
+        await _push_control_sheet_main()
+        await sync_control_sheet_subconfig(FEATURE_MATRIX)
+        logger.info("Control Sheet synced at startup.")
+    except Exception as e:
+        logger.error(f"Control Sheet startup sync failed: {e}")
+
+
 def main():
     if not TELEGRAM_TOKEN:
         logger.error("BOT_TOKEN is required in environment variables!")
@@ -67,7 +84,14 @@ def main():
         logger.info("Using proxy for Telegram API requests.")
     request = HTTPXRequest(**request_kwargs)
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(request).get_updates_request(request).build()
+    app = (
+        ApplicationBuilder()
+        .token(TELEGRAM_TOKEN)
+        .request(request)
+        .get_updates_request(request)
+        .post_init(_sync_control_sheet_on_startup)
+        .build()
+    )
 
     # 1. Inline button callbacks - pattern-specific handlers MUST be
     # registered before the catch-all button_handler. PTB checks handlers in
@@ -117,7 +141,7 @@ def main():
     # 5. Text message router (extra player input + @everyone)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, global_text_router))
 
-    logger.info("Bot started. Polling...")
+    logger.info(f"Bot v{BOT_VERSION} started. Polling...")
     app.run_polling(allowed_updates=["message", "callback_query", "chat_member"])
 
 

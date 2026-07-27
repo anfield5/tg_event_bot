@@ -1,7 +1,8 @@
 import json
 import gspread_asyncio
+from datetime import datetime
 from google.oauth2.service_account import Credentials
-from config import GOOGLE_CREDENTIALS_JSON, GLOBAL_DEFAULT_SHEET, CONTROL_SHEET_ID, logger
+from config import GOOGLE_CREDENTIALS_JSON, CONTROL_SHEET_ID, logger
 from utils import now2ddmmyy
 import sqlite3
 
@@ -18,6 +19,12 @@ agcm = gspread_asyncio.AsyncioGspreadClientManager(get_credentials)
 # Drive API, which is slow and eats into API quota.
 _spreadsheet_cache = {}
 
+# Matches subscription.SUBS_DATE_FORMAT - duplicated here (rather than
+# imported) to avoid a sheets<->subscription circular import, since
+# subscription.py already imports sync_control_sheet_main/subconfig FROM
+# this module.
+_SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 
 async def open_spreadsheet(sheet_id):
     """
@@ -27,10 +34,13 @@ async def open_spreadsheet(sheet_id):
     to know which one gc.open(name) would return. The spreadsheet ID (the
     long string in the sheet's URL) IS globally unique, so this can never
     resolve to the wrong customer's data.
-    NOTE: GLOBAL_DEFAULT_SHEET (the env var used as a fallback when a chat
-    has no explicit binding in main_chat_settings) must now hold a
-    spreadsheet ID too, not a title, since it's passed straight through here.
+
+    Returns None (no network call at all) if sheet_id is falsy - the normal,
+    expected case for a free-tier hub or a premium hub that hasn't
+    configured a sheet yet. Callers must check for a None return.
     """
+    if not sheet_id:
+        return None
     if sheet_id in _spreadsheet_cache:
         return _spreadsheet_cache[sheet_id]
     gc = await agcm.authorize()
@@ -40,18 +50,46 @@ async def open_spreadsheet(sheet_id):
 
 
 async def get_sheet_for_chat(chat_id):
+    """
+    Resolves which spreadsheet ID this chat's hub should write to - or None
+    if it shouldn't write to Sheets at all right now:
+      - free tier              -> None (no Sheets writes for free hubs, period)
+      - premium, no sheet_id   -> None (nothing configured yet to write to)
+      - premium, has sheet_id  -> that sheet_id
+    """
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT sheet_id FROM main_chat_settings WHERE chat_id = ?", (str(chat_id),))
+    cursor.execute(
+        "SELECT type, sheet_id, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
+        (str(chat_id),),
+    )
     row = cursor.fetchone()
     conn.close()
-    return row[0] if row and row[0] else GLOBAL_DEFAULT_SHEET
+
+    if not row:
+        return None  # unregistered hub defaults to free - no Sheets writes
+
+    chat_type, sheet_id, subs_date_end = row
+    if chat_type != "premium":
+        return None
+
+    if not subs_date_end:
+        return None
+    try:
+        if datetime.strptime(subs_date_end, _SUBS_DATE_FORMAT) <= datetime.now():
+            return None  # premium subscription expired - treat as free
+    except ValueError:
+        return None
+
+    return sheet_id or None
 
 
 async def log_action_to_google(chat_id, event_id, action_name, username, user_id):
+    sheet_target = await get_sheet_for_chat(chat_id)
+    ss = await open_spreadsheet(sheet_target)
+    if not ss:
+        return  # free tier / no sheet configured / subscription expired - nothing to write
     try:
-        sheet_target = await get_sheet_for_chat(chat_id)
-        ss = await open_spreadsheet(sheet_target)
         ws = await ss.worksheet("Actions")
         # Layout: EVENT_ID, ACTION, USER_NAME, USER_ID, DATE
         await ws.append_row([event_id, action_name, username, str(user_id), now2ddmmyy()])
@@ -82,9 +120,11 @@ async def sync_users_sheet(chat_id, current_members: list):
         STATUS is set to "LEFT" and DATE_end is set to current date
         (their row/history is kept, not deleted).
     """
+    sheet_target = await get_sheet_for_chat(chat_id)
+    ss = await open_spreadsheet(sheet_target)
+    if not ss:
+        return  # free tier / no sheet configured / subscription expired - nothing to write
     try:
-        sheet_target = await get_sheet_for_chat(chat_id)
-        ss = await open_spreadsheet(sheet_target)
         ws = await ss.worksheet("Users")
         records = await ws.get_all_records()
 
@@ -136,7 +176,6 @@ async def sync_users_sheet(chat_id, current_members: list):
                 # If status is already LEFT, do nothing
     except Exception as e:
         logger.error(f"Google Sheets Users synchronization failed: {repr(e)}")
-        raise
 
 
 async def sync_event_users_sheet(chat_id, event_id, user_ids):
@@ -145,9 +184,11 @@ async def sync_event_users_sheet(chat_id, event_id, user_ids):
     Expects user_ids as a flat list of string IDs.
     Columns: EVENT_ID, USER_ID
     """
+    sheet_target = await get_sheet_for_chat(chat_id)
+    ss = await open_spreadsheet(sheet_target)
+    if not ss:
+        return  # free tier / no sheet configured / subscription expired - nothing to write
     try:
-        sheet_target = await get_sheet_for_chat(chat_id)
-        ss = await open_spreadsheet(sheet_target)
         ws = await ss.worksheet("EventUsers")
         rows_to_append = [[event_id, str(uid)] for uid in user_ids if uid]
         if rows_to_append:
@@ -164,9 +205,11 @@ async def log_user_presence(chat_id, user_id, date_start, date_end):
     group or the main group.
     Columns: USER_ID, PLACE_ID, DATE_start, DATE_end
     """
+    sheet_target = await get_sheet_for_chat(chat_id)
+    ss = await open_spreadsheet(sheet_target)
+    if not ss:
+        return  # free tier / no sheet configured / subscription expired - nothing to write
     try:
-        sheet_target = await get_sheet_for_chat(chat_id)
-        ss = await open_spreadsheet(sheet_target)
         ws = await ss.worksheet("UserPresenceLog")
         await ws.append_row([str(user_id), str(chat_id), date_start, date_end])
     except Exception as e:
@@ -178,9 +221,11 @@ async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start
     group or the main group.
     Columns: USER_ID, PLACE_ID, DATE_start, DATE_end
     """
+    sheet_target = await get_sheet_for_chat(chat_id)
+    ss = await open_spreadsheet(sheet_target)
+    if not ss:
+        return  # free tier / no sheet configured / subscription expired - nothing to write
     try:
-        sheet_target = await get_sheet_for_chat(chat_id)
-        ss = await open_spreadsheet(sheet_target)
         ws = await ss.worksheet("UserPresenceLog")
         records = await ws.get_all_records()
 
