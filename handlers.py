@@ -32,6 +32,9 @@ def get_event_lock(event_id: str) -> asyncio.Lock:
     return lock
 
 
+# events.event_status: -1 canceled / 0 open / 1 verification / 2 closed
+
+
 # ---------------------------------------------------------------------------
 # Share-mode alias map
 # ---------------------------------------------------------------------------
@@ -119,7 +122,7 @@ def parse_user_args(args: list) -> list:
 
 def create_event_keyboard(
     event_id: str,
-    is_open: int,
+    event_status: int,
     going_icon: str,
     notgoing_icon: str,
     going_list: list = None,
@@ -131,9 +134,10 @@ def create_event_keyboard(
     """
     Generates dynamic inline keyboards.
 
-    is_open == 0  → empty keyboard (event closed)
-    is_open == 1  → Going / Not Going / Add & Sub guest / Close button
-    is_open == 2  → Verification mode:
+    event_status == -1  → empty keyboard (event canceled)
+    event_status == 2   → empty keyboard (event closed)
+    event_status == 0   → Going / Not Going / Add & Sub guest / Close button
+    event_status == 1   → Verification mode:
                     Each participant is rendered over TWO rows:
                         Row A: [👤 name]          [❌ Kick]
                         Row B: [N G.]  [➖]  [➕]
@@ -144,12 +148,12 @@ def create_event_keyboard(
                     orange/rust tone by default; there's no way to force a
                     different or more saturated orange beyond that.
     """
-    if is_open == 0:
+    if event_status in (-1, 2):
         return InlineKeyboardMarkup([])
 
     buttons = []
 
-    if is_open == 1:
+    if event_status == 0:
         buttons.append([
             InlineKeyboardButton(f"{going_icon} Going",        callback_data=f"going_{event_id}"),
             InlineKeyboardButton(f"{notgoing_icon} Not Going", callback_data=f"notgoing_{event_id}"),
@@ -166,7 +170,7 @@ def create_event_keyboard(
                 InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel Event", callback_data=f"cancel_{event_id}"),
             ])
 
-    elif is_open == 2 and not is_child:
+    elif event_status == 1 and not is_child:
         # ── Master participants ────────────────────────────────────────────
         going_list        = going_list or []
         counters          = counters or {}
@@ -428,7 +432,7 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_id FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT chat_id FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (alias_name, hub_chat_id),
         )
         if cursor.fetchone():
@@ -436,10 +440,11 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         cursor.execute(
-            "SELECT alias FROM chat_aliases WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT alias FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (str(target_chat_id), hub_chat_id),
         )
-        if cursor.fetchone():
+        existing_row = cursor.fetchone()
+        if existing_row and existing_row[0] is not None:
             await update.message.reply_text(
                 f"{ICON_WARNING} This group or channel has already been added\. Please check its existing alias\.",
                 parse_mode="MarkdownV2",
@@ -447,10 +452,21 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            cursor.execute(
-                "INSERT INTO chat_aliases (chat_id, alias, owner_chat_id) VALUES (?, ?, ?)",
-                (str(target_chat_id), alias_name, hub_chat_id),
-            )
+            if existing_row is not None:
+                # A sub_groups row already exists for this (owner, chat_id)
+                # pair - it just came from /addmonitor (is_monitored=1,
+                # alias still NULL). Set the alias on that same row instead
+                # of inserting a second one, which would violate
+                # UNIQUE(owner_chat_id, chat_id).
+                cursor.execute(
+                    "UPDATE sub_groups SET alias = ? WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                    (alias_name, str(target_chat_id), hub_chat_id),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES (?, ?, ?)",
+                    (str(target_chat_id), alias_name, hub_chat_id),
+                )
             conn.commit()
         except sqlite3.IntegrityError:
             # Uniqueness is scoped per-owner - UNIQUE(owner_chat_id, alias)
@@ -485,17 +501,26 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_id FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT is_monitored FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (alias_name, hub_chat_id),
         )
-        if not cursor.fetchone():
+        row = cursor.fetchone()
+        if not row:
             await update.message.reply_text("🔍 Alias not found\.", parse_mode="MarkdownV2")
             return
 
-        cursor.execute(
-            "DELETE FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (alias_name, hub_chat_id),
-        )
+        if row[0]:
+            # This chat is also monitored - only clear the alias, keep the
+            # row (and its monitoring) intact.
+            cursor.execute(
+                "UPDATE sub_groups SET alias = NULL WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                (alias_name, hub_chat_id),
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                (alias_name, hub_chat_id),
+            )
         conn.commit()
     await update.message.reply_text(
         f"🗑️ Alias `__{escape_markdown(alias_name)}__` removed\.", parse_mode="MarkdownV2"
@@ -508,7 +533,8 @@ async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT alias, chat_id FROM chat_aliases WHERE owner_chat_id = ? OR owner_chat_id IS NULL",
+            "SELECT alias, chat_id FROM sub_groups WHERE alias IS NOT NULL "
+            "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (hub_chat_id,),
         )
         rows = cursor.fetchall()
@@ -591,8 +617,8 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 """
                 INSERT INTO events
                     (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                     is_open, going_data, notgoing_data, counters_data, event_date)
-                VALUES (?, ?, ?, ?, ?, ?, 1, '[]', '[]', '{}', ?)
+                     event_status, going_data, notgoing_data, counters_data, event_date)
+                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?)
                 """,
                 (event_id, chat_id, str(message.message_id),
                  event_name_raw, going_icon, notgoing_icon, event_date),
@@ -658,7 +684,7 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """
             SELECT event_id, name, going_icon, notgoing_icon, event_date
             FROM events
-            WHERE chat_id = ? AND is_open > 0
+            WHERE chat_id = ? AND event_status IN (0, 1)
             ORDER BY ROWID DESC LIMIT 1
             """,
             (chat_id,),
@@ -740,7 +766,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """
             SELECT event_id, name, going_data, notgoing_data
             FROM events
-            WHERE chat_id = ? AND is_open = 1
+            WHERE chat_id = ? AND event_status = 0
             ORDER BY ROWID DESC LIMIT 1
             """,
             (chat_id,),
@@ -873,6 +899,7 @@ async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text  = f"{ICON_STATS} *Tracked Users:*\n\n" + "\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
+
 async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Manually adds users to the tracked user list (/listusers).
@@ -906,15 +933,6 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    for arg in args:
-        if not arg.isdigit():
-            # if at least 1 user is specified by username (example, as @username)
-            await update.message.reply_text(
-                "❌ *Syntax error:* `/adduser` works only with user\\_ids",
-                parse_mode="MarkdownV2"
-            )
-            return
-
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
 
@@ -941,7 +959,8 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT chat_id FROM monitors WHERE chat_name = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                    "SELECT chat_id FROM sub_groups WHERE chat_name = ? AND is_monitored = 1 "
+                    "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                     (monitor_name, chat_id),
                 )
                 monitor_row = cursor.fetchone()
@@ -965,63 +984,29 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Check if identifier is a numeric user_id
             if identifier.lstrip("-").isdigit():
                 target_user_id = identifier
-                # Try to get user from Telegram
+                # Try to get username from Telegram
                 try:
-                    member = await context.bot.get_chat_member(int(target_chat_id), int(target_user_id))
+                    member = await context.bot.get_chat_member(target_chat_id, int(target_user_id))
                     username = member.user.username or member.user.first_name or f"user{target_user_id}"
                     track_user(target_chat_id, username, "active", user_id=target_user_id)
                     added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
                 except Exception as e:
                     # If can't get user from Telegram, fail - don't add without real user_id
-                    failed.append(f"{escape_markdown(identifier)}: {escape_markdown(str(e))}")
+                    failed.append(f"{identifier}: {e}")
             else:
-                # Treat as username, try to find the user
+                # Treat as username, try to get user_id from Telegram
                 target_username = identifier.lstrip("@")
-                found_user = None
-                
                 try:
-                    # First, try to find user among chat administrators
-                    # This works because we can get all admins and check their usernames
-                    admins = await context.bot.get_chat_administrators(target_chat_id)
-                    
-                    for admin in admins:
-                        if admin.user.username and admin.user.username.lower() == target_username.lower():
-                            found_user = admin.user
-                            break
-                    
-                    # If not found among admins, try to get user via @username
-                    # This only works for public users
-                    if not found_user:
-                        try:
-                            user_obj = await context.bot.get_chat(f"@{target_username}")
-                            if user_obj and user_obj.type == "user":
-                                found_user = user_obj
-                        except Exception:
-                            pass
-                    
-                    if found_user:
-                        resolved_user_id = str(found_user.id)
-                        resolved_username = found_user.username or found_user.first_name or target_username
-                        track_user(target_chat_id, resolved_username, "active", user_id=resolved_user_id)
-                        added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
-                    else:
-                        # If user not found via Telegram API, check local database
-                        with get_connection() as conn:
-                            cursor = conn.cursor()
-                            cursor.execute(
-                                "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
-                                (target_chat_id, target_username),
-                            )
-                            user_row = cursor.fetchone()
-                            if user_row and user_row[0]:
-                                # User exists in local DB, use stored user_id
-                                resolved_user_id = user_row[0]
-                                track_user(target_chat_id, target_username, "active", user_id=resolved_user_id)
-                                added.append(f"@{escape_markdown(target_username)} \\({resolved_user_id}\\)")
-                            else:
-                                failed.append(f"@{escape_markdown(target_username)}: User not found in chat or not reachable\\. Please use numeric user_id instead\\.")
+                    member = await context.bot.get_chat_member(
+                        chat_id=target_chat_id, username=target_username
+                    )
+                    resolved_user_id = str(member.user.id)
+                    resolved_username = member.user.username or member.user.first_name or target_username
+                    track_user(target_chat_id, resolved_username, "active", user_id=resolved_user_id)
+                    added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
                 except Exception as e:
-                    failed.append(f"@{escape_markdown(target_username)}: {escape_markdown(str(e))}")
+                    # If can't resolve, fail - don't add without real user_id
+                    failed.append(f"{identifier}: {e}")
         except Exception as e:
             failed.append(f"{escape_markdown(identifier)}: {escape_markdown(str(e))}")
 
@@ -1035,10 +1020,8 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not lines:
         lines.append("❌ No users were added\\.")
 
-    # Escape any remaining special characters in the final message
-    # The join is already escaped, but we need to ensure the entire message is safe
-    final_text = "\n".join(lines)
-    await update.message.reply_text(final_text, parse_mode="MarkdownV2")
+    await update.message.reply_text("\n".join(lines))
+
 
 async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1118,20 +1101,27 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT owner_chat_id, chat_name FROM monitors WHERE chat_id = ?", (target_chat_id,)
+                "SELECT id FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                (target_chat_id, main_chat_id),
             )
             existing = cursor.fetchone()
-            if existing and existing[0] and existing[0] != main_chat_id:
-                await update.message.reply_text(
-                    f"{ICON_WARNING} This group/channel is already monitored by a different hub group\\.",
-                    parse_mode="MarkdownV2",
-                )
-                return
 
-            cursor.execute(
-                "INSERT OR REPLACE INTO monitors (chat_id, chat_type, chat_name, owner_chat_id) VALUES (?, ?, ?, ?)",
-                (target_chat_id, chat_type, chat_name, main_chat_id),
-            )
+            if existing:
+                # A sub_groups row already exists for this (owner, chat_id)
+                # pair - possibly an alias-only row from /setalias. Turn on
+                # monitoring on that same row instead of inserting a second
+                # one, which would violate UNIQUE(owner_chat_id, chat_id).
+                cursor.execute(
+                    "UPDATE sub_groups SET is_monitored = 1, chat_type = ?, chat_name = ? "
+                    "WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                    (chat_type, chat_name, target_chat_id, main_chat_id),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO sub_groups (chat_id, chat_type, chat_name, owner_chat_id, is_monitored) "
+                    "VALUES (?, ?, ?, ?, 1)",
+                    (target_chat_id, chat_type, chat_name, main_chat_id),
+                )
             conn.commit()
 
         await update.message.reply_text(
@@ -1166,7 +1156,8 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_name FROM monitors WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT chat_name, alias FROM sub_groups WHERE chat_id = ? AND is_monitored = 1 "
+            "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (target_chat_id, hub_chat_id),
         )
         row = cursor.fetchone()
@@ -1178,11 +1169,20 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        chat_name = row[0]
-        cursor.execute(
-            "DELETE FROM monitors WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (target_chat_id, hub_chat_id),
-        )
+        chat_name, alias = row
+        if alias is not None:
+            # This chat is also aliased - only turn off monitoring, keep
+            # the row (and its alias) intact.
+            cursor.execute(
+                "UPDATE sub_groups SET is_monitored = 0 WHERE chat_id = ? "
+                "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                (target_chat_id, hub_chat_id),
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                (target_chat_id, hub_chat_id),
+            )
         conn.commit()
 
     await update.message.reply_text(
@@ -1199,7 +1199,7 @@ async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_id, chat_type, chat_name FROM monitors WHERE owner_chat_id = ? OR owner_chat_id IS NULL",
+            "SELECT chat_id, chat_type, chat_name FROM sub_groups WHERE is_monitored = 1 AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (hub_chat_id,),
         )
         rows = cursor.fetchall()
@@ -1364,7 +1364,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT chat_id, chat_type, chat_name FROM monitors WHERE owner_chat_id = ? OR owner_chat_id IS NULL",
+                "SELECT chat_id, chat_type, chat_name FROM sub_groups WHERE is_monitored = 1 AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                 (chat_id,),
             )
             monitors = cursor.fetchall()
@@ -1488,9 +1488,9 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT event_id, name, is_open, going_icon, notgoing_icon
+            SELECT event_id, name, event_status, going_icon, notgoing_icon
             FROM events
-            WHERE chat_id = ? AND is_open > 0
+            WHERE chat_id = ? AND event_status IN (0, 1)
             ORDER BY ROWID DESC LIMIT 1
             """,
             (str(main_hub_chat_id),),
@@ -1504,10 +1504,10 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        event_id, name, is_open, going_icon, notgoing_icon = event_row
+        event_id, name, event_status, going_icon, notgoing_icon = event_row
 
         cursor.execute(
-            "SELECT chat_id FROM chat_aliases WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT chat_id FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (target_input.lower(), str(main_hub_chat_id)),
         )
         alias_row        = cursor.fetchone()
@@ -1735,7 +1735,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         cursor.execute(
             """
             SELECT chat_id, message_id, name, going_icon, notgoing_icon,
-                   is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data
+                   event_status, going_data, notgoing_data, counters_data, event_date, kicked_data
             FROM events WHERE event_id = ?
             """,
             (event_id,),
@@ -1745,7 +1745,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             return
 
         (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
-         is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data) = master
+         event_status, going_data, notgoing_data, counters_data, event_date, kicked_data) = master
 
         master_going     = json.loads(going_data)
         master_not_going = json.loads(notgoing_data)
@@ -1838,9 +1838,9 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     )
 
     # Header: changed wording
-    header      = f"{ICON_WARNING} *SQUAD VERIFICATION*\n_Review members before save_\n\n" if is_open == 2 else ""
+    header      = f"{ICON_WARNING} *SQUAD VERIFICATION*\n_Review members before save_\n\n" if event_status == 1 else ""
     date_line   = f"{ICON_CLOCK} {escape_markdown(event_date)}\n" if event_date else ""
-    title_line  = f"*CANCELED {escape_markdown(name)}*" if is_cancelled else f"*{escape_markdown(name)}*"
+    title_line  = f"*CANCELED {escape_markdown(name)}*" if event_status == -1 else f"*{escape_markdown(name)}*"
 
     master_text = (
         f"{header}{title_line}\n\n {date_line}\n"
@@ -1861,7 +1861,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         all_child_going_for_buttons = cursor2.fetchall()
 
     master_keyboard = create_event_keyboard(
-        event_id, is_open, going_icon, notgoing_icon,
+        event_id, event_status, going_icon, notgoing_icon,
         master_going, master_counters,
         is_child=False,
         child_users_rows=all_child_going_for_buttons,
@@ -1904,7 +1904,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     main_title          = await _get_title(main_chat_id)
     escaped_main_title  = escape_markdown(main_title)
-    child_title_name    = f"CANCELED {escape_markdown(name)}" if is_cancelled else escape_markdown(name)
+    child_title_name    = f"CANCELED {escape_markdown(name)}" if event_status == -1 else escape_markdown(name)
     for s_chat_id, _, _ in shares:
         await _get_title(s_chat_id)
 
@@ -1952,7 +1952,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         )
 
         child_keyboard = create_event_keyboard(
-            event_id, is_open, going_icon, notgoing_icon, is_child=True
+            event_id, event_status, going_icon, notgoing_icon, is_child=True
         )
         try:
             await context.bot.edit_message_text(
@@ -2044,7 +2044,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_admin = False
 
     data_changed = False
-    is_open      = 1
+    event_status = 0
 
     lock = get_event_lock(event_id)
     async with lock:
@@ -2054,7 +2054,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cursor.execute(
                     """
                     SELECT chat_id, message_id, name, going_icon, notgoing_icon,
-                           is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data
+                           event_status, going_data, notgoing_data, counters_data, event_date, kicked_data
                     FROM events WHERE event_id = ?
                     """,
                     (event_id,),
@@ -2064,14 +2064,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
-                 is_open, going_data, notgoing_data, counters_data, event_date, is_cancelled, kicked_data) = row
+                 event_status, going_data, notgoing_data, counters_data, event_date, kicked_data) = row
 
                 going     = json.loads(going_data)
                 not_going = set(json.loads(notgoing_data))
                 counters  = json.loads(counters_data)
                 kicked    = json.loads(kicked_data or "[]")
 
-                if is_open == 0:
+                if event_status in (2, -1):
                     return
 
                 is_click_in_child  = (int(click_chat_id) != int(main_chat_id))
@@ -2198,8 +2198,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if not is_admin:
                         return
 
-                # ── Master open (is_open == 1) ────────────────────────────────
-                if is_open == 1:
+                # ── Master open (event_status == 0) ───────────────────────────
+                if event_status == 0:
                     if action == "going":
                         if username_raw not in going_usernames:
                             going.append(f"{username_raw} ({user_id})")
@@ -2232,15 +2232,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             return
                     elif action == "close":
-                        is_open      = 2
+                        event_status = 1
                         data_changed = True
                     elif action == "cancel":
-                        is_open      = 0
-                        is_cancelled = 1
+                        event_status = -1
                         data_changed = True
 
-                # ── Master verification (is_open == 2) ───────────────────────
-                elif is_open == 2:
+                # ── Master verification (event_status == 1) ───────────────────
+                elif event_status == 1:
                     if action == "addext":
                         context.user_data["awaiting_extra_player_for"] = event_id
                         await query.message.reply_text(
@@ -2324,12 +2323,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         data_changed = True
 
                     elif action == "save":
-                        is_open      = 0
+                        event_status = 2
                         data_changed = True
 
                 cursor.execute(
-                    "UPDATE events SET is_open = ?, going_data = ?, notgoing_data = ?, counters_data = ?, is_cancelled = ?, kicked_data = ? WHERE event_id = ?",
-                    (is_open, json.dumps(going), json.dumps(list(not_going)), json.dumps(counters), is_cancelled, json.dumps(kicked), event_id),
+                    "UPDATE events SET event_status = ?, going_data = ?, notgoing_data = ?, counters_data = ?, kicked_data = ? WHERE event_id = ?",
+                    (event_status, json.dumps(going), json.dumps(list(not_going)), json.dumps(counters), json.dumps(kicked), event_id),
                 )
                 conn.commit()
 
@@ -2458,7 +2457,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles raw text when an admin is expected to type an extra player's username
-    during verification mode (is_open == 2).
+    during verification mode (event_status == 1).
     """
     event_id = context.user_data.get("awaiting_extra_player_for")
     if not event_id:

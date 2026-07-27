@@ -49,15 +49,48 @@ def init_db(db_path: str = DB_PATH):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Storage for mapping chats to specific Google Sheets
+    # Migration: rename legacy 'chat_settings' -> 'main_chat_settings' if the
+    # old table exists and the new one doesn't. This MUST run before the
+    # CREATE TABLE IF NOT EXISTS below - unlike a same-named-table migration
+    # (e.g. events, where "IF NOT EXISTS" naturally no-ops against the
+    # pre-existing table), main_chat_settings is a NEW name, so "IF NOT
+    # EXISTS" would happily create a fresh EMPTY table alongside the still-
+    # existing old one, and this rename would then find "the new table
+    # already exists" and skip itself, orphaning all the old data.
+    #
+    # sheet_name (a title, not guaranteed unique across different Google
+    # accounts) becomes sheet_id (the spreadsheet's actual ID, which IS
+    # globally unique) - existing values get carried over into sheet_id
+    # as-is; they'll need updating to real spreadsheet IDs by whoever
+    # manages each hub's binding, since a title can't be mechanically
+    # converted to an ID.
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_settings'")
+    has_legacy_chat_settings = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='main_chat_settings'")
+    has_new_chat_settings = cursor.fetchone() is not None
+    if has_legacy_chat_settings and not has_new_chat_settings:
+        cursor.execute("ALTER TABLE chat_settings RENAME TO main_chat_settings")
+        cursor.execute("ALTER TABLE main_chat_settings RENAME COLUMN sheet_name TO sheet_id")
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN type TEXT DEFAULT 'free'")
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_start TEXT DEFAULT NULL")
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_end TEXT DEFAULT NULL")
+
+    # Per-hub settings: which Google Sheet this hub writes to (by spreadsheet
+    # ID, not name - names aren't guaranteed unique across different Google
+    # accounts/files, only the ID is), subscription tier, and subscription
+    # window.
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chat_settings (
+        CREATE TABLE IF NOT EXISTS main_chat_settings (
             chat_id TEXT PRIMARY KEY,
-            sheet_name TEXT
+            type TEXT DEFAULT 'free',
+            sheet_id TEXT UNIQUE,
+            subs_date_start TEXT DEFAULT NULL,
+            subs_date_end TEXT DEFAULT NULL
         )
     """)
 
-    # Storage for active voting events within the system
+    # Storage for active voting events within the system.
+    # event_status: -1 canceled / 0 open / 1 verification / 2 closed
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS events (
             event_id TEXT PRIMARY KEY,
@@ -66,12 +99,11 @@ def init_db(db_path: str = DB_PATH):
             name TEXT,
             going_icon TEXT,
             notgoing_icon TEXT,
-            is_open INTEGER,
+            event_status INTEGER DEFAULT 0,
             going_data TEXT,
             notgoing_data TEXT,
             counters_data TEXT,
             event_date TEXT DEFAULT NULL,
-            is_cancelled INTEGER DEFAULT 0,
             kicked_data TEXT DEFAULT '[]'
         )
     """)
@@ -112,22 +144,96 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
-    # High-performance unique index table for child chat routing aliases.
-    # owner_chat_id = the hub group that ran /setalias - aliases are scoped
-    # to the hub that created them, so /listalias and /shareevent's alias
-    # lookup only ever see aliases belonging to the group they're invoked
-    # from, not every hub's aliases across the whole deployment.
+    # Migration: merge legacy chat_aliases + monitors into sub_groups, if
+    # sub_groups doesn't exist yet and at least one of the two legacy tables
+    # does. Same "must run before CREATE TABLE IF NOT EXISTS" reasoning as
+    # main_chat_settings above - sub_groups is a brand new table name.
+    # A chat present in BOTH legacy tables under the same owner becomes ONE
+    # sub_groups row with both alias and is_monitored set, instead of two
+    # disconnected facts.
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sub_groups'")
+    has_sub_groups = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_aliases'")
+    has_chat_aliases = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='monitors'")
+    has_monitors = cursor.fetchone() is not None
+
+    if not has_sub_groups and (has_chat_aliases or has_monitors):
+        cursor.execute("""
+            CREATE TABLE sub_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                owner_chat_id TEXT DEFAULT NULL,
+                alias TEXT DEFAULT NULL,
+                is_monitored INTEGER DEFAULT 0,
+                chat_type TEXT DEFAULT NULL,
+                chat_name TEXT DEFAULT NULL,
+                UNIQUE(owner_chat_id, alias),
+                UNIQUE(owner_chat_id, chat_id)
+            )
+        """)
+
+        if has_chat_aliases:
+            cursor.execute("PRAGMA table_info(chat_aliases)")
+            alias_has_owner = "owner_chat_id" in [c[1] for c in cursor.fetchall()]
+            if alias_has_owner:
+                cursor.execute("SELECT chat_id, alias, owner_chat_id FROM chat_aliases")
+            else:
+                cursor.execute("SELECT chat_id, alias, NULL FROM chat_aliases")
+            for chat_id, alias, owner_chat_id in cursor.fetchall():
+                cursor.execute(
+                    "INSERT INTO sub_groups (chat_id, owner_chat_id, alias) VALUES (?, ?, ?)",
+                    (chat_id, owner_chat_id, alias),
+                )
+
+        if has_monitors:
+            cursor.execute("PRAGMA table_info(monitors)")
+            monitors_has_owner = "owner_chat_id" in [c[1] for c in cursor.fetchall()]
+            if monitors_has_owner:
+                cursor.execute("SELECT chat_id, chat_type, chat_name, owner_chat_id FROM monitors")
+            else:
+                cursor.execute("SELECT chat_id, chat_type, chat_name, NULL FROM monitors")
+            for chat_id, chat_type, chat_name, owner_chat_id in cursor.fetchall():
+                # Match NULL-to-NULL correctly (SQL '=' never matches NULL).
+                cursor.execute(
+                    "UPDATE sub_groups SET is_monitored = 1, chat_type = ?, chat_name = ? "
+                    "WHERE chat_id = ? AND (owner_chat_id IS ?)",
+                    (chat_type, chat_name, chat_id, owner_chat_id),
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        "INSERT INTO sub_groups (chat_id, owner_chat_id, is_monitored, chat_type, chat_name) "
+                        "VALUES (?, ?, 1, ?, ?)",
+                        (chat_id, owner_chat_id, chat_type, chat_name),
+                    )
+
+        if has_chat_aliases:
+            cursor.execute("DROP TABLE chat_aliases")
+        if has_monitors:
+            cursor.execute("DROP TABLE monitors")
+
+    # Every OTHER chat a hub has a relationship with: an alias target, a
+    # monitored group/channel, or both at once. Replaces the old separate
+    # chat_aliases/monitors tables, which described the same underlying
+    # relationship ("this hub relates to that chat") in two disconnected
+    # places - a chat could be aliased in one table and monitored in the
+    # other with no link between the two facts.
     #
-    # Uniqueness is per-owner, not global: UNIQUE(owner_chat_id, alias) means
-    # two different hubs can both use the alias name "downtown" (pointing at
-    # two entirely different chats) without colliding. UNIQUE(owner_chat_id,
-    # chat_id) preserves the original "one alias per target per owner" rule.
+    # owner_chat_id = the hub group that ran /setalias or /addmonitor -
+    # scoped per-owner, not global: UNIQUE(owner_chat_id, alias) means two
+    # different hubs can both use the alias name "downtown" (pointing at two
+    # entirely different chats) without colliding. UNIQUE(owner_chat_id,
+    # chat_id) means one row per (hub, target chat) pair - a chat can be
+    # aliased, monitored, or both, but always through the same single row.
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chat_aliases (
+        CREATE TABLE IF NOT EXISTS sub_groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id TEXT,
-            alias TEXT,
             owner_chat_id TEXT DEFAULT NULL,
+            alias TEXT DEFAULT NULL,
+            is_monitored INTEGER DEFAULT 0,
+            chat_type TEXT DEFAULT NULL,
+            chat_name TEXT DEFAULT NULL,
             UNIQUE(owner_chat_id, alias),
             UNIQUE(owner_chat_id, chat_id)
         )
@@ -146,71 +252,28 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
-    # Monitored groups/channels for global user tracking.
-    # owner_chat_id = the hub group that ran /addmonitor - same scoping
-    # rationale as chat_aliases.owner_chat_id above.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS monitors (
-            chat_id TEXT PRIMARY KEY,
-            chat_type TEXT,
-            chat_name TEXT,
-            owner_chat_id TEXT DEFAULT NULL
-        )
-    """)
-
     # ── Migrations ────────────────────────────────────────────────────────────
 
-    # 0. Add `owner_chat_id` to chat_aliases/monitors if missing (pre-existing
-    # rows have no recorded owner - see the "OR owner_chat_id IS NULL"
-    # transitional clause used in every scoped query in handlers.py, which
-    # keeps such legacy rows visible everywhere until they're naturally
-    # re-created/re-claimed under the new per-hub scoping).
-    #
-    # 0b. Rebuild chat_aliases if it still has the OLD globally-unique
-    # 'alias' column (single-column UNIQUE, and 'chat_id' as PRIMARY KEY) -
-    # SQLite has no ALTER TABLE support for changing/dropping a UNIQUE
-    # constraint, so this requires a full table rebuild. Detects the legacy
-    # shape by checking for chat_id being the table's primary key (only true
-    # in the old schema; the new schema uses an autoincrement 'id' instead).
-    cursor.execute("PRAGMA table_info(chat_aliases)")
-    alias_table_cols = cursor.fetchall()
-    chat_id_is_pk = any(col[1] == "chat_id" and col[5] == 1 for col in alias_table_cols)
-    if chat_id_is_pk:
-        cursor.execute("ALTER TABLE chat_aliases RENAME TO chat_aliases_legacy")
-        cursor.execute("""
-            CREATE TABLE chat_aliases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id TEXT,
-                alias TEXT,
-                owner_chat_id TEXT DEFAULT NULL,
-                UNIQUE(owner_chat_id, alias),
-                UNIQUE(owner_chat_id, chat_id)
-            )
-        """)
-        cursor.execute("PRAGMA table_info(chat_aliases_legacy)")
-        legacy_had_owner_col = "owner_chat_id" in [col[1] for col in cursor.fetchall()]
-        if legacy_had_owner_col:
-            cursor.execute("""
-                INSERT INTO chat_aliases (chat_id, alias, owner_chat_id)
-                SELECT chat_id, alias, owner_chat_id FROM chat_aliases_legacy
-            """)
-        else:
-            # Truly original schema, from before owner_chat_id existed at all -
-            # every row becomes an unowned (NULL) legacy row, same as the
-            # transitional handling everywhere else in this migration.
-            cursor.execute("""
-                INSERT INTO chat_aliases (chat_id, alias, owner_chat_id)
-                SELECT chat_id, alias, NULL FROM chat_aliases_legacy
-            """)
-        cursor.execute("DROP TABLE chat_aliases_legacy")
+    # -1. Add any of main_chat_settings' newer columns if still missing
+    # (covers a main_chat_settings that already existed under its new name
+    # but predates one of these columns).
+    cursor.execute("PRAGMA table_info(main_chat_settings)")
+    mcs_cols = [col[1] for col in cursor.fetchall()]
+    if "type" not in mcs_cols:
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN type TEXT DEFAULT 'free'")
+    if "subs_date_start" not in mcs_cols:
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_start TEXT DEFAULT NULL")
+    if "subs_date_end" not in mcs_cols:
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_end TEXT DEFAULT NULL")
 
-    cursor.execute("PRAGMA table_info(chat_aliases)")
-    if "owner_chat_id" not in [col[1] for col in cursor.fetchall()]:
-        cursor.execute("ALTER TABLE chat_aliases ADD COLUMN owner_chat_id TEXT DEFAULT NULL")
-
-    cursor.execute("PRAGMA table_info(monitors)")
-    if "owner_chat_id" not in [col[1] for col in cursor.fetchall()]:
-        cursor.execute("ALTER TABLE monitors ADD COLUMN owner_chat_id TEXT DEFAULT NULL")
+    # 0b. Add `chat_type`/`chat_name` to sub_groups if it exists from an
+    # earlier version of this same migration that predates them.
+    cursor.execute("PRAGMA table_info(sub_groups)")
+    sg_cols = [c[1] for c in cursor.fetchall()]
+    if "chat_type" not in sg_cols:
+        cursor.execute("ALTER TABLE sub_groups ADD COLUMN chat_type TEXT DEFAULT NULL")
+    if "chat_name" not in sg_cols:
+        cursor.execute("ALTER TABLE sub_groups ADD COLUMN chat_name TEXT DEFAULT NULL")
 
     # 1. Add `status` column to main_group_users if missing (old schema)
     cursor.execute("PRAGMA table_info(main_group_users)")
@@ -228,53 +291,61 @@ def init_db(db_path: str = DB_PATH):
     if "event_date" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN event_date TEXT DEFAULT NULL")
 
-    # 3b. Add `is_cancelled` column to events if missing
-    if "is_cancelled" not in events_cols:
-        cursor.execute("ALTER TABLE events ADD COLUMN is_cancelled INTEGER DEFAULT 0")
-
-    # 3c. Add `kicked_data` column to events if missing (task #2: tracks
-    # master-hub users who were Kicked during verification, so the Return
-    # button still shows even when they have 0 guests left - previously
-    # such a person vanished from the keyboard entirely once kicked, since
-    # they were neither in the going list nor the guest counters.)
+    # 3c. Add `kicked_data` column to events if missing (tracks master-hub
+    # users who were Kicked during verification, so the Return button still
+    # shows even when they have 0 guests left - previously such a person
+    # vanished from the keyboard entirely once kicked, since they were
+    # neither in the going list nor the guest counters.)
     if "kicked_data" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN kicked_data TEXT DEFAULT '[]'")
+
+    # 3d. Rebuild events if it still has the old separate is_open/is_cancelled
+    # columns instead of the unified event_status - SQLite can't merge two
+    # columns into one via ALTER TABLE, so this requires a full table
+    # rebuild, translating values as it copies:
+    #   is_cancelled=1        -> event_status = -1
+    #   is_open=1 (open)      -> event_status = 0
+    #   is_open=2 (verify)    -> event_status = 1
+    #   is_open=0 (closed)    -> event_status = 2
+    if "is_open" in events_cols:
+        has_is_cancelled = "is_cancelled" in events_cols
+        cursor.execute("ALTER TABLE events RENAME TO events_legacy")
+        cursor.execute("""
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY,
+                chat_id TEXT,
+                message_id TEXT,
+                name TEXT,
+                going_icon TEXT,
+                notgoing_icon TEXT,
+                event_status INTEGER DEFAULT 0,
+                going_data TEXT,
+                notgoing_data TEXT,
+                counters_data TEXT,
+                event_date TEXT DEFAULT NULL,
+                kicked_data TEXT DEFAULT '[]'
+            )
+        """)
+        is_cancelled_expr = "is_cancelled" if has_is_cancelled else "0"
+        cursor.execute(f"""
+            INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+                                 event_status, going_data, notgoing_data, counters_data, event_date, kicked_data)
+            SELECT event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+                   CASE
+                       WHEN {is_cancelled_expr} = 1 THEN -1
+                       WHEN is_open = 1 THEN 0
+                       WHEN is_open = 2 THEN 1
+                       WHEN is_open = 0 THEN 2
+                       ELSE 0
+                   END,
+                   going_data, notgoing_data, counters_data, event_date, kicked_data
+            FROM events_legacy
+        """)
+        cursor.execute("DROP TABLE events_legacy")
 
     # 4. Rename legacy status value 'frozen' → 'passive'
     cursor.execute("UPDATE main_group_users SET status = 'passive' WHERE status = 'frozen'")
 
-    conn.commit()
-    conn.close()
-
-
-def delete_tracked_user(chat_id: str, user_id: str = None, username: str = None,
-                         db_path: str = None):
-    """
-    Removes a user's row from main_group_users entirely (as opposed to
-    track_user(), which only upserts/changes status) - used when
-    ChatMemberHandler confirms someone has left/been kicked, so they
-    immediately disappear from /listusers instead of lingering as 'passive'.
-
-    Prefers matching by user_id (stable across username changes); falls
-    back to matching by username if no user_id is available. Does nothing
-    if neither is provided.
-    """
-    if db_path is None:
-        db_path = DB_PATH
-    if user_id is None and username is None:
-        return
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    if user_id is not None:
-        cursor.execute(
-            "DELETE FROM main_group_users WHERE chat_id = ? AND user_id = ?",
-            (str(chat_id), str(user_id)),
-        )
-    else:
-        cursor.execute(
-            "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
-            (str(chat_id), username),
-        )
     conn.commit()
     conn.close()
 
