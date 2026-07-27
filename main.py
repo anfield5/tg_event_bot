@@ -6,7 +6,8 @@ from telegram.ext import (
     ChatMemberHandler,
     filters,
 )
-from config import TELEGRAM_TOKEN, logger
+from telegram.request import HTTPXRequest
+from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, logger
 from db import init_db, track_user
 from sheets import log_user_presence
 from handlers import (
@@ -17,6 +18,7 @@ from handlers import (
     shareevent,
     setalias, removealias, listalias,
     addmonitor, removemonitor, listmonitors,
+    setsub, syncgroups,
     track_everyone_message,
     button_handler,
     global_text_router,
@@ -59,7 +61,13 @@ def main():
 
     init_db()
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    request_kwargs = {"connect_timeout": 20.0, "read_timeout": 20.0}
+    if TELEGRAM_PROXY:
+        request_kwargs["proxy"] = TELEGRAM_PROXY
+        logger.info("Using proxy for Telegram API requests.")
+    request = HTTPXRequest(**request_kwargs)
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(request).get_updates_request(request).build()
 
     # 1. Inline button callbacks - pattern-specific handlers MUST be
     # registered before the catch-all button_handler. PTB checks handlers in
@@ -101,6 +109,10 @@ def main():
     app.add_handler(CommandHandler("addmonitor",    addmonitor))
     app.add_handler(CommandHandler("removemonitor", removemonitor))
     app.add_handler(CommandHandler("listmonitors",  listmonitors))
+
+    # 6. Subscription control (owner-only, checked inside setsub itself)
+    app.add_handler(CommandHandler("setsub", setsub))
+    app.add_handler(CommandHandler("syncgroups", syncgroups))
 
     # 5. Text message router (extra player input + @everyone)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, global_text_router))

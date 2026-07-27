@@ -16,6 +16,32 @@ DEFAULT_NOTGOING_ICON = "❌"
 DEFAULT_CLOSE_ICON = "🔴"
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+# Optional: set only if api.telegram.org is blocked/throttled on this network
+# (common cause of httpx.ReadTimeout/TimedOut on the very first getMe() call,
+# before any bot logic even runs). Examples:
+#   TELEGRAM_PROXY=socks5://127.0.0.1:1080
+#   TELEGRAM_PROXY=http://user:pass@host:port
+# Leave unset if Telegram is directly reachable - most deployments don't need this.
+TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY") or None
+
+# The bot owner's own Telegram user_id (a plain integer, e.g. 123456789 - NOT
+# a chat_id). Restricts owner-only commands like /setsub: subscription
+# control must NOT be gated by "is admin in this chat", since a group's own
+# admin could just promote themselves and grant themselves a free
+# subscription otherwise. Find your own user_id via @userinfobot on Telegram.
+OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0")) or None
+
+# The single "Control" spreadsheet (separate from any hub's own event sheet)
+# where the bot mirrors main_chat_settings ("Main" tab, one row per hub -
+# for you to see every group using the bot and its subscription status at a
+# glance) and the free/premium feature matrix ("sub_config" tab, static
+# reference data). This sheet must be shared with the SAME service account
+# (GOOGLE_CREDENTIALS_JSON) as every other sheet the bot writes to.
+CONTROL_SHEET_ID = os.getenv("CONTROL_SHEET_ID") or None
+
+# Free-tier limit: how many DISTINCT events a hub may /shareevent to the
+# same target group/channel before being told to upgrade.
+FREE_SHAREEVENT_LIMIT_PER_TARGET = 3
 GLOBAL_DEFAULT_SHEET = os.getenv("GOOGLE_SHEET_NAME")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 

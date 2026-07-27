@@ -1,7 +1,7 @@
 import json
 import gspread_asyncio
 from google.oauth2.service_account import Credentials
-from config import GOOGLE_CREDENTIALS_JSON, GLOBAL_DEFAULT_SHEET, logger
+from config import GOOGLE_CREDENTIALS_JSON, GLOBAL_DEFAULT_SHEET, CONTROL_SHEET_ID, logger
 from utils import now2ddmmyy
 import sqlite3
 
@@ -194,3 +194,53 @@ async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start
         await ws.append_row([str(user_id), str(place_id), str(date_start), str(date_end)])
     except Exception as e:
         logger.error(f"Google Sheets UserPresenceLog check failed: {repr(e)}")
+
+
+async def sync_control_sheet_main(rows: list):
+    """
+    Overwrites the "Main" tab of the Control Sheet (CONTROL_SHEET_ID) with
+    the current contents of main_chat_settings, so the bot owner can see
+    every group using the bot and its subscription status in one place,
+    without needing a Telegram command or a separate web dashboard.
+
+    This is a ONE-WAY push (SQLite -> Sheet). Editing a cell in the Sheet by
+    hand does NOT change anything back in SQLite - /setsub remains the only
+    way to actually change a subscription. This tab is a read-only mirror
+    for visibility, not a control surface (yet).
+
+    rows: list of (chat_id, chat_name, type, sheet_id, subs_date_start, subs_date_end) tuples.
+    """
+    if not CONTROL_SHEET_ID:
+        logger.error("sync_control_sheet_main: CONTROL_SHEET_ID is not configured.")
+        return
+    try:
+        ss = await open_spreadsheet(CONTROL_SHEET_ID)
+        ws = await ss.worksheet("Main")
+        await ws.clear()
+        header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SUBS_DATE_START", "SUBS_DATE_END"]
+        body   = [[str(v) if v is not None else "" for v in row] for row in rows]
+        await ws.update("A1", [header] + body)
+    except Exception as e:
+        logger.error(f"Google Sheets Control/Main sync failed: {repr(e)}")
+
+
+async def sync_control_sheet_subconfig(feature_rows: list):
+    """
+    Overwrites the "sub_config" tab of the Control Sheet with the free vs
+    premium feature matrix. feature_rows: list of
+    (feature, free_status, premium_status) tuples - see
+    handlers.FEATURE_MATRIX, which is the actual source of truth this sheet
+    documents (kept as plain reference data here, not read back by the bot).
+    """
+    if not CONTROL_SHEET_ID:
+        logger.error("sync_control_sheet_subconfig: CONTROL_SHEET_ID is not configured.")
+        return
+    try:
+        ss = await open_spreadsheet(CONTROL_SHEET_ID)
+        ws = await ss.worksheet("sub_config")
+        await ws.clear()
+        header = ["FEATURE", "FREE", "PREMIUM"]
+        body   = [[str(v) for v in row] for row in feature_rows]
+        await ws.update("A1", [header] + body)
+    except Exception as e:
+        logger.error(f"Google Sheets Control/sub_config sync failed: {repr(e)}")
