@@ -11,7 +11,7 @@ from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID
 from db import init_db, track_user
 from sheets import log_user_presence, sync_control_sheet_subconfig
 from handlers import (
-    help_command, help_callback_handler, help_back_handler, whoami,
+    help_command, help_callback_handler, help_back_handler, userid, chatid,
     newevent, editevent,
     notify,
     updateuser, listusers, refreshusers, adduser,
@@ -66,12 +66,12 @@ async def _sync_control_sheet_on_startup(application):
     main_ok      = await _push_control_sheet_main()
     subconfig_ok = await sync_control_sheet_subconfig(FEATURE_MATRIX)
     if main_ok and subconfig_ok:
-        logger.info("Control Sheet synced at startup (Main + sub_config).")
+        logger.info("Control Sheet synced at startup (MAIN + SUB_CONFIG).")
     else:
         logger.error(
-            f"Control Sheet startup sync incomplete - Main: {'ok' if main_ok else 'FAILED'}, "
-            f"sub_config: {'ok' if subconfig_ok else 'FAILED'}. Check CONTROL_SHEET_ID, sharing "
-            f"permissions, and that both tabs exist with the exact names 'Main' and 'sub_config'."
+            f"Control Sheet startup sync incomplete - MAIN: {'ok' if main_ok else 'FAILED'}, "
+            f"SUB_CONFIG: {'ok' if subconfig_ok else 'FAILED'}. Check CONTROL_SHEET_ID, sharing "
+            f"permissions, and that both tabs exist with the exact names 'MAIN' and 'SUB_CONFIG'."
         )
 
 
@@ -138,7 +138,8 @@ def main():
 
     # 3. Core commands
     app.add_handler(CommandHandler("help",         help_command))
-    app.add_handler(CommandHandler("whoami",       whoami))
+    app.add_handler(CommandHandler("userid",       userid))
+    app.add_handler(CommandHandler("chatid",       chatid))
     app.add_handler(CommandHandler("newevent",     newevent))
     app.add_handler(CommandHandler("editevent",    editevent))
     app.add_handler(CommandHandler("notify",       notify))

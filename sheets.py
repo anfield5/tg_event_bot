@@ -243,7 +243,7 @@ async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start
 
 async def sync_control_sheet_main(rows: list) -> bool:
     """
-    Overwrites the "Main" tab of the Control Sheet (CONTROL_SHEET_ID) with
+    Overwrites the "MAIN" tab of the Control Sheet (CONTROL_SHEET_ID) with
     the current contents of main_chat_settings, so the bot owner can see
     every group using the bot and its subscription status in one place,
     without needing a Telegram command or a separate web dashboard.
@@ -262,7 +262,7 @@ async def sync_control_sheet_main(rows: list) -> bool:
         return False
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
-        ws = await ss.worksheet("Main")
+        ws = await ss.worksheet("MAIN")
         await ws.clear()
         header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SUBS_DATE_START", "SUBS_DATE_END"]
         body   = [[str(v) if v is not None else "" for v in row] for row in rows]
@@ -275,7 +275,7 @@ async def sync_control_sheet_main(rows: list) -> bool:
 
 async def sync_control_sheet_subconfig(feature_rows: list):
     """
-    Overwrites the "sub_config" tab of the Control Sheet with the free vs
+    Overwrites the "SUB_CONFIG" tab of the Control Sheet with the free vs
     premium feature matrix. feature_rows: list of
     (feature, free_status, premium_status) tuples - see
     handlers.FEATURE_MATRIX, which is the actual source of truth this sheet
@@ -287,7 +287,7 @@ async def sync_control_sheet_subconfig(feature_rows: list):
         return False
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
-        ws = await ss.worksheet("sub_config")
+        ws = await ss.worksheet("SUB_CONFIG")
         await ws.clear()
         header = ["FEATURE", "FREE", "PREMIUM"]
         body   = [[str(v) for v in row] for row in feature_rows]

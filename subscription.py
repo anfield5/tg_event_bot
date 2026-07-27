@@ -78,7 +78,7 @@ async def require_premium(update: Update, feature_label: str) -> bool:
 
 
 async def _push_control_sheet_main() -> bool:
-    """Reads all of main_chat_settings and pushes it to the Control Sheet's 'Main' tab."""
+    """Reads all of main_chat_settings and pushes it to the Control Sheet's 'MAIN' tab."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -102,7 +102,7 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     could otherwise just grant themselves a free subscription.
 
     After every change, pushes the updated main_chat_settings to the Control
-    Sheet's "Main" tab, so you can see every group's status there without
+    Sheet's "MAIN" tab, so you can see every group's status there without
     needing to run any command.
     """
     if update.effective_user.id not in OWNER_USER_IDS:
@@ -218,17 +218,17 @@ async def syncgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if main_ok and subconfig_ok:
         await update.message.reply_text(
-            "✅ Control Sheet synced \\(Main \\+ sub\\_config\\)\\.", parse_mode="MarkdownV2"
+            "✅ Control Sheet synced \\(MAIN \\+ SUB\\_CONFIG\\)\\.", parse_mode="MarkdownV2"
         )
     else:
         failed = []
         if not main_ok:
-            failed.append("Main")
+            failed.append("MAIN")
         if not subconfig_ok:
-            failed.append("sub_config")
+            failed.append("SUB_CONFIG")
         await update.message.reply_text(
-            f"❌ Sync failed for: {', '.join(failed)}\\. Check CONTROL_SHEET_ID is set, the sheet is "
+            f"❌ Sync failed for: {escape_markdown(', '.join(failed))}\\. Check CONTROL_SHEET_ID is set, the sheet is "
             f"shared with the bot's service account \\(Editor access\\), and both tabs exist with the "
-            f"exact names `Main` and `sub_config`\\. See server logs for the specific error\\.",
+            f"exact names `MAIN` and `SUB_CONFIG`\\. See server logs for the specific error\\.",
             parse_mode="MarkdownV2",
         )
