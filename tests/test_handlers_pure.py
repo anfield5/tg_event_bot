@@ -4,7 +4,7 @@ Tests for pure (non-async, no-I/O) functions in handlers.py
 Covered:
   * parse_event_args  — flag parsing for /newevent and /editevent
   * parse_user_args   — @-stripping and comma/space splitting
-  * create_event_keyboard — inline keyboard shape for every is_open state
+  * create_event_keyboard — inline keyboard shape for every event_status state
 
 No mocking needed here; these functions have zero side-effects.
 """
@@ -155,72 +155,93 @@ class TestParseUserArgs:
 # ---------------------------------------------------------------------------
 
 class TestCreateEventKeyboard:
-    """Verifies inline keyboard structure for every is_open value."""
+    """Verifies inline keyboard structure for every event_status value."""
 
     EVENT_ID      = "abc12345"
     GOING_ICON    = "✅"
     NOT_GOING_ICN = "❌"
 
-    # ── is_open == 0 (closed) ─────────────────────────────────────────────
+    # ── event_status == 2 (closed) ────────────────────────────────────────
 
     def test_closed_event_returns_empty_keyboard(self):
         kb = create_event_keyboard(
-            self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN
+            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN
         )
         assert isinstance(kb, InlineKeyboardMarkup)
         # Different ptb versions return [] or () for an empty keyboard
         assert len(kb.inline_keyboard) == 0
 
-    # ── is_open == 1 (open voting) ────────────────────────────────────────
+    # ── event_status == -1 (canceled) ─────────────────────────────────────
+
+    def test_canceled_event_returns_empty_keyboard(self):
+        """A canceled event must show no buttons at all, same as a closed one."""
+        kb = create_event_keyboard(
+            self.EVENT_ID, -1, self.GOING_ICON, self.NOT_GOING_ICN
+        )
+        assert isinstance(kb, InlineKeyboardMarkup)
+        assert len(kb.inline_keyboard) == 0
+
+    # ── event_status == 0 (open voting) ───────────────────────────────────
 
     def test_open_event_has_going_notgoing_row(self):
         kb = create_event_keyboard(
-            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN
+            self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN
         )
         rows = kb.inline_keyboard
         # First row: Going + Not Going
         assert any("Going" in btn.text for row in rows for btn in row)
         assert any("Not Going" in btn.text for row in rows for btn in row)
 
-    def test_open_event_has_add_sub_guest_row(self):
-        kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN)
+    def test_open_event_has_add_remove_guest_row(self):
+        """Buttons are labeled plain 'ADD'/'Remove', not 'Add Guest'/'Sub Guest'."""
+        kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
         texts = [b.text for b in flat]
-        assert any("Add Guest" in t for t in texts)
-        assert any("Sub Guest" in t for t in texts)
+        assert any("ADD" in t for t in texts)
+        assert any("Remove" in t for t in texts)
 
     def test_open_event_master_has_verification_button(self):
         # Non-child view must show a "Verification Mode" / close button
-        kb    = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
+        kb    = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
         flat  = [btn for row in kb.inline_keyboard for btn in row]
         assert any("Verification Mode" in b.text for b in flat)
 
+    def test_open_event_master_has_cancel_event_button(self):
+        # Cancel Event sits right below Verification Mode, master-only.
+        kb    = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
+        flat  = [btn for row in kb.inline_keyboard for btn in row]
+        assert any(b.callback_data == f"cancel_{self.EVENT_ID}" for b in flat)
+
     def test_open_event_child_has_no_verification_button(self):
         # Child views must NOT show the close/verification button
-        kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True)
+        kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True)
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert not any("Verification Mode" in b.text for b in flat)
 
+    def test_open_event_child_has_no_cancel_event_button(self):
+        kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True)
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        assert not any(b.callback_data == f"cancel_{self.EVENT_ID}" for b in flat)
+
     def test_going_callback_format(self):
-        kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN)
+        kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert any(b.callback_data == f"going_{self.EVENT_ID}" for b in flat)
 
     def test_notgoing_callback_format(self):
-        kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN)
+        kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert any(b.callback_data == f"notgoing_{self.EVENT_ID}" for b in flat)
 
-    # ── is_open == 2 (verification mode) ─────────────────────────────────
+    # ── event_status == 1 (verification mode) ─────────────────────────────
 
     def test_verification_has_save_close_event_button(self):
-        kb   = create_event_keyboard(self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN)
+        kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
-        # Button text changed from "Save & Lock Roster" → "Save & Close Event"
         assert any("Save & Close Event" in b.text for b in flat)
 
     def test_verification_has_add_extra_player_button(self):
-        kb   = create_event_keyboard(self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN)
+        kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert any("Add Extra Player" in b.text for b in flat)
 
@@ -228,12 +249,12 @@ class TestCreateEventKeyboard:
         """
         Each master participant must appear over exactly TWO consecutive rows:
           Row A: [👤 name]   [❌ Kick]
-          Row B: [N G.]  [➖]  [➕]
+          Row B: [NG: name]  [−]  [+]
         """
         going_list = ["alice (111)"]
         counters   = {"alice": 2}
         kb         = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN,
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
             going_list=going_list, counters=counters,
         )
         rows = kb.inline_keyboard
@@ -252,51 +273,60 @@ class TestCreateEventKeyboard:
         assert any("Kick"  in b.text for b in row_a)
         assert len(row_a) == 2, "Row A must have exactly 2 buttons (name + kick)"
 
-        # Row B: guest count + ➖ + ➕  (immediately follows row A)
+        # Row B: guest count + − + +  (immediately follows row A)
         row_b = rows[alice_row_idx + 1]
-        assert len(row_b) == 3, "Row B must have exactly 3 buttons (G. / ➖ / ➕)"
-        assert any("G." in b.text for b in row_b)
-        # ➖ appears before ➕ (reversed order requested)
+        assert len(row_b) == 3, "Row B must have exactly 3 buttons (count / minus / plus)"
+        assert any("alice" in b.text for b in row_b), "guest label must mention who the guests belong to"
+        # minus appears before plus (reversed order requested)
         texts = [b.text for b in row_b]
-        minus_idx = next((i for i, t in enumerate(texts) if "➖" in t), None)
-        plus_idx  = next((i for i, t in enumerate(texts) if "➕" in t), None)
-        assert minus_idx is not None, "➖ button missing from row B"
-        assert plus_idx  is not None, "➕ button missing from row B"
-        assert minus_idx < plus_idx,  "➖ must appear before ➕ (reversed order)"
+        minus_idx = next((i for i, t in enumerate(texts) if "−" in t), None)
+        plus_idx  = next((i for i, t in enumerate(texts) if "+" in t), None)
+        assert minus_idx is not None, "minus button missing from row B"
+        assert plus_idx  is not None, "plus button missing from row B"
+        assert minus_idx < plus_idx,  "minus must appear before plus (reversed order)"
 
-    def test_verification_inc_dec_buttons_are_plain_no_dot_prefix(self):
+    def test_verification_inc_dec_buttons_have_no_stray_icons(self):
         """
-        The ➕/➖ buttons must be plain text with NO extra colored-dot prefix
-        (previously "🟠 ➖"/"🟠 ➕" - the dot was explicitly removed on
-        request; Telegram's Bot API has no way to recolor button text, and
-        the bare ➕/➖ glyphs already render in an orange/rust tone in most
-        emoji fonts, including Telegram's own, without any prefix needed).
+        The guest +/- buttons are plain ' − ' / ' + ' text (no emoji, no
+        colored-dot prefix) - Telegram's Bot API has no way to recolor
+        button text, so there's nothing further to force here.
         """
         going_list = ["alice (111)"]
         kb         = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN,
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
             going_list=going_list, counters={},
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert not any("🟠" in b.text for b in flat), "orange-dot prefix must be gone"
-        minus_btns = [b for b in flat if b.text == "➖"]
-        plus_btns  = [b for b in flat if b.text == "➕"]
-        assert minus_btns, "plain ➖ button must exist"
-        assert plus_btns,  "plain ➕ button must exist"
+        assert not any("➖" in b.text or "➕" in b.text for b in flat), "must not use the emoji +/- glyphs"
+        minus_btns = [b for b in flat if b.text == " − "]
+        plus_btns  = [b for b in flat if b.text == " + "]
+        assert minus_btns, "the ' − ' button must exist"
+        assert plus_btns,  "the ' + ' button must exist"
 
     def test_verification_kick_callback_format(self):
         going_list = ["alice (111)"]
         kb         = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN,
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
             going_list=going_list, counters={},
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert any(b.callback_data == f"kick_{self.EVENT_ID}:alice" for b in flat)
 
+    def test_verification_return_button_for_kicked_user(self):
+        """A kicked (but not currently going) user gets a Return button, not Kick."""
+        kb   = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
+            going_list=[], counters={}, kicked_users={"alice"},
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        assert any(b.callback_data == f"return_{self.EVENT_ID}:alice" for b in flat)
+        assert not any(b.callback_data == f"kick_{self.EVENT_ID}:alice" for b in flat)
+
     def test_verification_incgst_callback_format(self):
         going_list = ["alice (111)"]
         kb         = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN,
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
             going_list=going_list, counters={},
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
@@ -305,17 +335,21 @@ class TestCreateEventKeyboard:
     def test_verification_decgst_callback_format(self):
         going_list = ["alice (111)"]
         kb         = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN,
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
             going_list=going_list, counters={},
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert any(b.callback_data == f"decgst_{self.EVENT_ID}:alice" for b in flat)
 
     def test_verification_child_participants_use_ch_prefix(self):
-        """Child-chat participants must use 'ch-<username>' callbacks."""
-        child_rows = [("anreon", 3)]
+        """
+        Child-chat participants must use 'ch-<username>' callbacks.
+        child_users_rows is a list of (username, guests, status) 3-tuples -
+        status='going' here so this renders a Kick (not Return) button.
+        """
+        child_rows = [("anreon", 3, "going")]
         kb         = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN,
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
             going_list=[], counters={}, child_users_rows=child_rows,
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
@@ -323,11 +357,22 @@ class TestCreateEventKeyboard:
         assert any(b.callback_data == f"incgst_{self.EVENT_ID}:ch-anreon" for b in flat)
         assert any(b.callback_data == f"decgst_{self.EVENT_ID}:ch-anreon" for b in flat)
 
+    def test_verification_child_kicked_status_uses_return(self):
+        """status='kicked' on a child row must render Return, not Kick."""
+        child_rows = [("anreon", 3, "kicked")]
+        kb         = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
+            going_list=[], counters={}, child_users_rows=child_rows,
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        assert any(b.callback_data == f"return_{self.EVENT_ID}:ch-anreon" for b in flat)
+        assert not any(b.callback_data == f"kick_{self.EVENT_ID}:ch-anreon" for b in flat)
+
     def test_verification_child_also_uses_two_rows(self):
         """Child participants must also get the two-row layout."""
-        child_rows = [("anreon", 3)]
+        child_rows = [("anreon", 3, "going")]
         kb         = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN,
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
             going_list=[], counters={}, child_users_rows=child_rows,
         )
         rows = kb.inline_keyboard
@@ -343,18 +388,32 @@ class TestCreateEventKeyboard:
         assert len(rows[child_row_idx + 1]) == 3
 
     def test_verification_is_child_returns_empty(self):
-        # Child views in is_open==2 get an empty keyboard (no verification UI)
+        # Child views in event_status==1 get an empty keyboard (no verification UI)
         kb = create_event_keyboard(
-            self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True
         )
         assert len(kb.inline_keyboard) == 0
 
     def test_save_button_says_save_and_close_event(self):
         """Exact wording check — must NOT say 'Save & Lock Roster' anymore."""
-        kb   = create_event_keyboard(self.EVENT_ID, 2, self.GOING_ICON, self.NOT_GOING_ICN)
+        kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
         save_btns = [b for b in flat if b.callback_data == f"save_{self.EVENT_ID}"]
         assert save_btns, "save button must exist"
         assert save_btns[0].text == "💾 Save & Close Event"
         # Old text must be absent
         assert not any("Lock Roster" in b.text for b in flat)
+
+    def test_guest_only_contributor_gets_no_name_row(self):
+        """
+        Someone who only ever clicked Add Guest (never Going, never Kicked)
+        must NOT get a name/Kick row - only the guest count row shows, since
+        there's no "membership" for an admin to act on.
+        """
+        kb   = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
+            going_list=[], counters={"bob": 2}, kicked_users=set(),
+        )
+        rows = kb.inline_keyboard
+        assert not any("👤 bob" in btn.text for row in rows for btn in row)
+        assert any("bob" in btn.text for row in rows for btn in row), "the guest count row must still show"

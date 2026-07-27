@@ -23,16 +23,16 @@ import handlers
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def insert_event(db_path, event_id="ev1", chat_id="-100123",
-                 name="Test Event", is_open=1,
+                 name="Test Event", event_status=0,
                  going="[]", notgoing="[]", counters="{}",
-                 event_date=None):
+                 event_date=None, kicked="[]"):
     conn = sqlite3.connect(db_path)
     conn.execute("""
         INSERT INTO events
             (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-             is_open, going_data, notgoing_data, counters_data, event_date)
-        VALUES (?, ?, '1', ?, '✅', '❌', ?, ?, ?, ?, ?)
-    """, (event_id, chat_id, name, is_open, going, notgoing, counters, event_date))
+             event_status, going_data, notgoing_data, counters_data, event_date, kicked_data)
+        VALUES (?, ?, '1', ?, '✅', '❌', ?, ?, ?, ?, ?, ?)
+    """, (event_id, chat_id, name, event_status, going, notgoing, counters, event_date, kicked))
     conn.commit()
     conn.close()
 
@@ -476,7 +476,9 @@ class TestAliasCommands:
 
     def _insert_alias(self, db_path, alias, chat_id="-200"):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO chat_aliases VALUES (?, ?)", (chat_id, alias))
+        conn.execute(
+            "INSERT INTO sub_groups (chat_id, alias) VALUES (?, ?)", (chat_id, alias)
+        )
         conn.commit()
         conn.close()
 
@@ -492,7 +494,7 @@ class TestAliasCommands:
 
         conn   = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM chat_aliases WHERE alias = 'myalias'")
+        cursor.execute("SELECT * FROM sub_groups WHERE alias = 'myalias'")
         assert cursor.fetchone() is None
         conn.close()
 
@@ -640,8 +642,8 @@ class TestGoingFromLabel:
         assert '("' not in text and '")'  not in text
 
     async def test_squad_verification_header(self, db_path):
-        """Header in is_open==2 must read 'SQUAD VERIFICATION', not old wording."""
-        insert_event(db_path, event_id="ev1", chat_id="-100123", is_open=2)
+        """Header in event_status==1 must read 'SQUAD VERIFICATION', not old wording."""
+        insert_event(db_path, event_id="ev1", chat_id="-100123", event_status=1)
         bot = make_bot()
         ctx = make_context(bot=bot)
 
@@ -1293,7 +1295,7 @@ class TestButtonHandlerSaveCloseEvent:
 
     async def test_appends_new_events_row_with_date_in_column_e(self, db_path):
         insert_event(
-            db_path, event_id="ev1", chat_id=MAIN_CHAT, is_open=2,
+            db_path, event_id="ev1", chat_id=MAIN_CHAT, event_status=1,
             going=json.dumps(["alice (1)"]), event_date="25.12.2026",
         )
         bot  = make_bot()
@@ -1317,7 +1319,7 @@ class TestButtonHandlerSaveCloseEvent:
 
     async def test_updates_existing_events_row_in_column_f_to_h(self, db_path):
         insert_event(
-            db_path, event_id="ev1", chat_id=MAIN_CHAT, is_open=2,
+            db_path, event_id="ev1", chat_id=MAIN_CHAT, event_status=1,
             going=json.dumps(["alice (1)"]), counters=json.dumps({"alice": 2}),
         )
         bot  = make_bot()
@@ -1342,7 +1344,7 @@ class TestButtonHandlerSaveCloseEvent:
         assert amount == 3  # 1 going + 2 guests
 
     async def test_exports_going_users_from_main_and_every_child_chat(self, db_path):
-        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, is_open=2, going=json.dumps(["alice (1)"]))
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, event_status=1, going=json.dumps(["alice (1)"]))
         insert_event_user(db_path, event_id="ev1", chat_id="-200", user_id="2", username="bob", status="going")
         insert_event_user(db_path, event_id="ev1", chat_id="-300", user_id="3", username="carol", status="going")
         insert_event_user(db_path, event_id="ev1", chat_id="-300", user_id="4", username="dave", status="notgoing")
@@ -1374,7 +1376,7 @@ class TestButtonHandlerSaveCloseEvent:
         numeric id to use instead.
         """
         insert_event(
-            db_path, event_id="ev1", chat_id=MAIN_CHAT, is_open=2,
+            db_path, event_id="ev1", chat_id=MAIN_CHAT, event_status=1,
             going=json.dumps(["alice (1)", "guest_bobby"]),
         )
         bot  = make_bot()
@@ -1403,7 +1405,7 @@ class TestButtonHandlerActionsLogNaming:
     """
 
     async def test_incgst_logs_as_add_editmode(self, db_path):
-        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, is_open=2, going=json.dumps(["alice (1)"]))
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, event_status=1, going=json.dumps(["alice (1)"]))
         bot  = make_bot()
         ctx  = make_context(bot=bot)
         user = make_user(user_id=9, username="admin")
@@ -1420,7 +1422,7 @@ class TestButtonHandlerActionsLogNaming:
 
     async def test_decgst_logs_as_sub_editmode(self, db_path):
         insert_event(
-            db_path, event_id="ev1", chat_id=MAIN_CHAT, is_open=2,
+            db_path, event_id="ev1", chat_id=MAIN_CHAT, event_status=1,
             going=json.dumps(["alice (1)"]), counters=json.dumps({"alice": 1}),
         )
         bot  = make_bot()

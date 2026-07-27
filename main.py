@@ -7,8 +7,8 @@ from telegram.ext import (
     filters,
 )
 from config import TELEGRAM_TOKEN, logger
-from db import init_db, track_user, delete_tracked_user
-from sheets import log_user_presence, mark_user_left
+from db import init_db, track_user
+from sheets import log_user_presence
 from handlers import (
     help_command, help_callback_handler, help_back_handler,
     newevent, editevent,
@@ -25,12 +25,10 @@ from handlers import (
 
 async def on_chat_member_update(update, context):
     """
-    Automatically tracks users who join the group as 'active', and fully
-    removes users who leave/are kicked - both from the local list
-    (/listusers, main_group_users) and, in Google Sheets, from the "Users"
-    tab (STATUS -> LEFT, DATE_end set for this place_id) plus a
-    UserPresenceLog entry - all in real time, without waiting for a manual
-    /refreshusers -r/-g run.
+    Automatically tracks users who join the group as 'active',
+    and marks users who leave/are kicked as 'passive'.
+    This powers /refreshusers without requiring manual /adduser.
+    Also logs user presence to UserPresenceLog sheet.
     """
     result = update.chat_member
     if not result:
@@ -47,15 +45,11 @@ async def on_chat_member_update(update, context):
         logger.info(f"Auto-tracked new member @{username} in chat {chat_id}")
 
     elif new_member.status in ["left", "kicked"]:
-        # User left or was removed - drop them from /listusers entirely,
-        # and mirror that in the Google Sheets Users/UserPresenceLog tabs.
+        # User left or was removed
         username = user.username or user.first_name or f"user{user.id}"
-        delete_tracked_user(chat_id, user_id=str(user.id))
-        logger.info(f"Removed @{username} from tracked users (left/kicked) in chat {chat_id}")
-        try:
-            await mark_user_left(chat_id, str(user.id))
-        except Exception as e:
-            logger.error(f"Failed to update Users/UserPresenceLog sheets for @{username} leaving chat {chat_id}: {e}")
+        track_user(chat_id, username, "passive", user_id=str(user.id))
+        logger.info(f"Marked @{username} as passive (left/kicked) in chat {chat_id}")
+        # UserPresenceLog will be updated by sync_users_sheet when status changes to LEFT
 
 
 def main():

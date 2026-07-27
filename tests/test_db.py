@@ -1,8 +1,8 @@
 """
 Tests for db.py
 ───────────────
-Uses an isolated temp SQLite file (via the `db_path` fixture from conftest.py)
-so no test ever touches the real `database.db`.
+Uses an isolated temp SQLite file (via tmp_path) so no test ever touches the
+real `database.db`.
 
 We import `init_db` and `track_user` directly and pass `db_path` explicitly,
 since those functions accept an optional path argument.
@@ -46,19 +46,26 @@ def fetch_all(db_path: str, query: str, params=()):
     return rows
 
 
+def run_sql(db_path: str, query: str, params=()):
+    conn = sqlite3.connect(db_path)
+    conn.execute(query, params)
+    conn.commit()
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
-# init_db
+# init_db — fresh schema
 # ---------------------------------------------------------------------------
 
 class TestInitDb:
     """init_db() must create all required tables and add migration columns."""
 
     EXPECTED_TABLES = {
-        "chat_settings",
+        "main_chat_settings",
         "events",
-        "chat_users",
+        "main_group_users",
         "event_shares",
-        "chat_aliases",
+        "sub_groups",
         "event_users",
     }
 
@@ -68,22 +75,63 @@ class TestInitDb:
         init_db(db_path=path)
         assert self.EXPECTED_TABLES.issubset(get_tables(path))
 
+    def test_legacy_table_names_are_gone(self, tmp_path):
+        # A fresh DB must never contain the old pre-rename table names
+        path = str(tmp_path / "fresh.db")
+        init_db(db_path=path)
+        tables = get_tables(path)
+        assert "chat_settings" not in tables
+        assert "chat_users" not in tables
+        assert "chat_aliases" not in tables
+        assert "monitors" not in tables
+
     def test_events_has_event_date_column(self, tmp_path):
-        # Migration: event_date column must exist on `events`
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         assert "event_date" in get_columns(path, "events")
 
-    def test_chat_users_has_user_id_column(self, tmp_path):
-        # Migration: user_id column must exist on `chat_users`
+    def test_events_has_event_status_column(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        assert "user_id" in get_columns(path, "chat_users")
+        assert "event_status" in get_columns(path, "events")
 
-    def test_chat_users_has_status_column(self, tmp_path):
+    def test_events_has_no_legacy_is_open_columns(self, tmp_path):
+        # is_open/is_cancelled must not exist anywhere - event_status replaces both
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        assert "status" in get_columns(path, "chat_users")
+        cols = get_columns(path, "events")
+        assert "is_open" not in cols
+        assert "is_cancelled" not in cols
+
+    def test_events_has_kicked_data_column(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert "kicked_data" in get_columns(path, "events")
+
+    def test_main_group_users_has_user_id_column(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert "user_id" in get_columns(path, "main_group_users")
+
+    def test_main_group_users_has_status_column(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert "status" in get_columns(path, "main_group_users")
+
+    def test_main_chat_settings_columns(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        cols = get_columns(path, "main_chat_settings")
+        for expected in ("chat_id", "type", "sheet_id", "subs_date_start", "subs_date_end"):
+            assert expected in cols, f"main_chat_settings missing '{expected}'"
+        assert "sheet_name" not in cols, "sheet_name should have been renamed to sheet_id"
+
+    def test_sub_groups_columns(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        cols = get_columns(path, "sub_groups")
+        for expected in ("chat_id", "owner_chat_id", "alias", "is_monitored", "chat_type", "chat_name"):
+            assert expected in cols, f"sub_groups missing '{expected}'"
 
     def test_idempotent_second_call(self, tmp_path):
         # Calling init_db twice must not raise (IF NOT EXISTS guards)
@@ -92,28 +140,198 @@ class TestInitDb:
         init_db(db_path=path)   # second call — must not fail
         assert self.EXPECTED_TABLES.issubset(get_tables(path))
 
+    def test_idempotent_third_call_does_not_duplicate_data(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        track_user("chat1", "alice", "active", db_path=path)
+        init_db(db_path=path)
+        init_db(db_path=path)
+        rows = fetch_all(path, "SELECT COUNT(*) FROM main_group_users WHERE chat_id='chat1' AND username='alice'")
+        assert rows[0][0] == 1
+
     def test_frozen_status_migrated_to_passive(self, tmp_path):
         # Legacy records with status='frozen' must be updated to 'passive'
         path = str(tmp_path / "t.db")
-        # Insert a 'frozen' user before running init_db (simulate old schema)
-        conn   = sqlite3.connect(path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS chat_users (
+        run_sql(path, """
+            CREATE TABLE IF NOT EXISTS main_group_users (
                 chat_id TEXT, username TEXT, status TEXT DEFAULT 'active',
                 PRIMARY KEY (chat_id, username)
             )
         """)
-        cursor.execute(
-            "INSERT INTO chat_users (chat_id, username, status) VALUES ('c1','alice','frozen')"
-        )
-        conn.commit()
-        conn.close()
+        run_sql(path, "INSERT INTO main_group_users (chat_id, username, status) VALUES ('c1','alice','frozen')")
 
         init_db(db_path=path)
 
-        rows = fetch_all(path, "SELECT status FROM chat_users WHERE username = 'alice'")
+        rows = fetch_all(path, "SELECT status FROM main_group_users WHERE username = 'alice'")
         assert rows[0][0] == "passive", "Legacy 'frozen' status should be migrated to 'passive'"
+
+
+# ---------------------------------------------------------------------------
+# init_db — migrations from pre-rename schemas
+# ---------------------------------------------------------------------------
+
+class TestMigrationChatUsersRename:
+    """Legacy 'chat_users' table must be renamed to 'main_group_users', preserving data."""
+
+    def test_renames_and_preserves_data(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE chat_users (
+                chat_id TEXT, username TEXT, status TEXT DEFAULT 'active',
+                PRIMARY KEY (chat_id, username)
+            )
+        """)
+        run_sql(path, "INSERT INTO chat_users (chat_id, username, status) VALUES ('c1','alice','active')")
+
+        init_db(db_path=path)
+
+        tables = get_tables(path)
+        assert "main_group_users" in tables
+        assert "chat_users" not in tables
+        rows = fetch_all(path, "SELECT username, status FROM main_group_users WHERE chat_id='c1'")
+        assert rows == [("alice", "active")]
+
+
+class TestMigrationChatSettingsRename:
+    """Legacy 'chat_settings' (sheet_name) must become 'main_chat_settings' (sheet_id + subscription fields)."""
+
+    def test_renames_column_and_preserves_data(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, "CREATE TABLE chat_settings (chat_id TEXT PRIMARY KEY, sheet_name TEXT)")
+        run_sql(path, "INSERT INTO chat_settings (chat_id, sheet_name) VALUES ('7180695982','FTBLL_Events')")
+
+        init_db(db_path=path)
+
+        tables = get_tables(path)
+        assert "main_chat_settings" in tables
+        assert "chat_settings" not in tables
+        rows = fetch_all(path, "SELECT chat_id, sheet_id, type FROM main_chat_settings WHERE chat_id='7180695982'")
+        assert rows == [("7180695982", "FTBLL_Events", "free")]
+
+    def test_idempotent_after_rename(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, "CREATE TABLE chat_settings (chat_id TEXT PRIMARY KEY, sheet_name TEXT)")
+        run_sql(path, "INSERT INTO chat_settings (chat_id, sheet_name) VALUES ('100','SheetA')")
+        init_db(db_path=path)
+        init_db(db_path=path)  # must not raise or duplicate
+        rows = fetch_all(path, "SELECT chat_id, sheet_id FROM main_chat_settings")
+        assert rows == [("100", "SheetA")]
+
+
+class TestMigrationSubGroupsMerge:
+    """Legacy chat_aliases + monitors must merge into a single sub_groups table."""
+
+    def test_merges_alias_only_row(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, "CREATE TABLE chat_aliases (chat_id TEXT PRIMARY KEY, alias TEXT UNIQUE, owner_chat_id TEXT)")
+        run_sql(path, "INSERT INTO chat_aliases (chat_id, alias, owner_chat_id) VALUES ('-200','downtown','-100')")
+
+        init_db(db_path=path)
+
+        assert "sub_groups" in get_tables(path)
+        assert "chat_aliases" not in get_tables(path)
+        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, owner_chat_id FROM sub_groups")
+        assert rows == [("-200", "downtown", 0, "-100")]
+
+    def test_merges_monitor_only_row(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, "CREATE TABLE monitors (chat_id TEXT PRIMARY KEY, chat_type TEXT, chat_name TEXT, owner_chat_id TEXT)")
+        run_sql(path, "INSERT INTO monitors VALUES ('-300','group','Other Group','-100')")
+
+        init_db(db_path=path)
+
+        assert "monitors" not in get_tables(path)
+        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, chat_type, chat_name FROM sub_groups")
+        assert rows == [("-300", None, 1, "group", "Other Group")]
+
+    def test_merges_chat_present_in_both_legacy_tables_into_one_row(self, tmp_path):
+        """
+        A chat that was BOTH aliased and monitored under the same owner must
+        become a single sub_groups row with both facts set, not two rows.
+        """
+        path = str(tmp_path / "t.db")
+        run_sql(path, "CREATE TABLE chat_aliases (chat_id TEXT PRIMARY KEY, alias TEXT UNIQUE, owner_chat_id TEXT)")
+        run_sql(path, "CREATE TABLE monitors (chat_id TEXT PRIMARY KEY, chat_type TEXT, chat_name TEXT, owner_chat_id TEXT)")
+        run_sql(path, "INSERT INTO chat_aliases (chat_id, alias, owner_chat_id) VALUES ('-200','downtown','-100')")
+        run_sql(path, "INSERT INTO monitors VALUES ('-200','channel','Downtown Channel','-100')")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, chat_type, chat_name FROM sub_groups")
+        assert rows == [("-200", "downtown", 1, "channel", "Downtown Channel")]
+
+    def test_idempotent_after_merge(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, "CREATE TABLE chat_aliases (chat_id TEXT PRIMARY KEY, alias TEXT UNIQUE, owner_chat_id TEXT)")
+        run_sql(path, "INSERT INTO chat_aliases (chat_id, alias, owner_chat_id) VALUES ('-200','downtown','-100')")
+        init_db(db_path=path)
+        init_db(db_path=path)  # must not raise or duplicate
+        rows = fetch_all(path, "SELECT chat_id, alias FROM sub_groups")
+        assert rows == [("-200", "downtown")]
+
+
+class TestMigrationEventStatusRebuild:
+    """Legacy events.is_open/is_cancelled must be translated into a single event_status column."""
+
+    LEGACY_SCHEMA = """
+        CREATE TABLE events (
+            event_id TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, name TEXT,
+            going_icon TEXT, notgoing_icon TEXT, is_open INTEGER, going_data TEXT,
+            notgoing_data TEXT, counters_data TEXT, event_date TEXT DEFAULT NULL,
+            is_cancelled INTEGER DEFAULT 0, kicked_data TEXT DEFAULT '[]'
+        )
+    """
+
+    def _insert_legacy_event(self, path, event_id, is_open, is_cancelled):
+        run_sql(
+            path,
+            "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (event_id, "100", "1", "Test", "✅", "❌", is_open,
+             "[]", "[]", "{}", None, is_cancelled, "[]"),
+        )
+
+    @pytest.mark.parametrize("is_open,is_cancelled,expected_status", [
+        (1, 0, 0),   # open -> 0
+        (2, 0, 1),   # verification -> 1
+        (0, 0, 2),   # closed -> 2
+        (0, 1, -1),  # canceled -> -1 (is_cancelled overrides is_open)
+    ])
+    def test_translates_each_legacy_combination(self, tmp_path, is_open, is_cancelled, expected_status):
+        path = str(tmp_path / "t.db")
+        run_sql(path, self.LEGACY_SCHEMA)
+        self._insert_legacy_event(path, "ev1", is_open, is_cancelled)
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT event_status FROM events WHERE event_id='ev1'")
+        assert rows == [(expected_status,)]
+
+    def test_preserves_other_event_fields(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, self.LEGACY_SCHEMA)
+        run_sql(
+            path,
+            "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("ev1", "100", "1", "Party", "✅", "❌", 1,
+             '["alice (1)"]', "[]", '{"alice": 2}', "25.12.2026", 0, '["bob"]'),
+        )
+
+        init_db(db_path=path)
+
+        row = fetch_all(
+            path,
+            "SELECT name, going_data, counters_data, event_date, kicked_data FROM events WHERE event_id='ev1'",
+        )[0]
+        assert row == ("Party", '["alice (1)"]', '{"alice": 2}', "25.12.2026", '["bob"]')
+
+    def test_idempotent_after_rebuild(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, self.LEGACY_SCHEMA)
+        self._insert_legacy_event(path, "ev1", 1, 0)
+        init_db(db_path=path)
+        init_db(db_path=path)  # must not raise or re-translate
+        rows = fetch_all(path, "SELECT event_status FROM events WHERE event_id='ev1'")
+        assert rows == [(0,)]
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +339,13 @@ class TestInitDb:
 # ---------------------------------------------------------------------------
 
 class TestTrackUser:
-    """track_user() upserts a user record into chat_users."""
+    """track_user() upserts a user record into main_group_users."""
 
     def test_inserts_new_user(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         track_user("chat1", "alice", "active", db_path=path)
-        rows = fetch_all(path, "SELECT username, status FROM chat_users WHERE chat_id='chat1'")
+        rows = fetch_all(path, "SELECT username, status FROM main_group_users WHERE chat_id='chat1'")
         assert len(rows) == 1
         assert rows[0] == ("alice", "active")
 
@@ -137,7 +355,7 @@ class TestTrackUser:
         init_db(db_path=path)
         track_user("chat1", "alice", "active",  db_path=path)
         track_user("chat1", "alice", "passive", db_path=path)
-        rows = fetch_all(path, "SELECT status FROM chat_users WHERE chat_id='chat1' AND username='alice'")
+        rows = fetch_all(path, "SELECT status FROM main_group_users WHERE chat_id='chat1' AND username='alice'")
         assert rows[0][0] == "passive"
 
     def test_empty_username_is_ignored(self, tmp_path):
@@ -146,7 +364,7 @@ class TestTrackUser:
         init_db(db_path=path)
         track_user("chat1", "", "active", db_path=path)
         track_user("chat1", None, "active", db_path=path)
-        rows = fetch_all(path, "SELECT * FROM chat_users")
+        rows = fetch_all(path, "SELECT * FROM main_group_users")
         assert len(rows) == 0
 
     def test_stores_user_id(self, tmp_path):
@@ -154,7 +372,7 @@ class TestTrackUser:
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         track_user("chat1", "bob", "active", user_id="99988", db_path=path)
-        rows = fetch_all(path, "SELECT user_id FROM chat_users WHERE username='bob'")
+        rows = fetch_all(path, "SELECT user_id FROM main_group_users WHERE username='bob'")
         assert rows[0][0] == "99988"
 
     def test_user_id_preserved_on_status_update(self, tmp_path):
@@ -163,7 +381,7 @@ class TestTrackUser:
         init_db(db_path=path)
         track_user("chat1", "bob", "active",  user_id="99988", db_path=path)
         track_user("chat1", "bob", "passive",                   db_path=path)  # no user_id
-        rows = fetch_all(path, "SELECT user_id FROM chat_users WHERE username='bob'")
+        rows = fetch_all(path, "SELECT user_id FROM main_group_users WHERE username='bob'")
         assert rows[0][0] == "99988", "user_id must be preserved when not explicitly passed"
 
     def test_multiple_users_different_chats(self, tmp_path):
@@ -171,12 +389,12 @@ class TestTrackUser:
         init_db(db_path=path)
         track_user("chat1", "alice", "active",  db_path=path)
         track_user("chat2", "alice", "passive", db_path=path)
-        rows = fetch_all(path, "SELECT chat_id, status FROM chat_users WHERE username='alice' ORDER BY chat_id")
+        rows = fetch_all(path, "SELECT chat_id, status FROM main_group_users WHERE username='alice' ORDER BY chat_id")
         assert rows == [("chat1", "active"), ("chat2", "passive")]
 
     def test_default_status_is_active(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         track_user("chat1", "carol", db_path=path)  # no explicit status
-        rows = fetch_all(path, "SELECT status FROM chat_users WHERE username='carol'")
+        rows = fetch_all(path, "SELECT status FROM main_group_users WHERE username='carol'")
         assert rows[0][0] == "active"
