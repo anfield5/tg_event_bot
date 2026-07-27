@@ -198,15 +198,15 @@ class TestMigrationChatSettingsRename:
     def test_renames_column_and_preserves_data(self, tmp_path):
         path = str(tmp_path / "t.db")
         run_sql(path, "CREATE TABLE chat_settings (chat_id TEXT PRIMARY KEY, sheet_name TEXT)")
-        run_sql(path, "INSERT INTO chat_settings (chat_id, sheet_name) VALUES ('7180695982','FTBLL_Events')")
+        run_sql(path, "INSERT INTO chat_settings (chat_id, sheet_name) VALUES ('-1001234567890','TestEventsSheet')")
 
         init_db(db_path=path)
 
         tables = get_tables(path)
         assert "main_chat_settings" in tables
         assert "chat_settings" not in tables
-        rows = fetch_all(path, "SELECT chat_id, sheet_id, type FROM main_chat_settings WHERE chat_id='7180695982'")
-        assert rows == [("7180695982", "FTBLL_Events", "free")]
+        rows = fetch_all(path, "SELECT chat_id, sheet_id, type FROM main_chat_settings WHERE chat_id='-1001234567890'")
+        assert rows == [("-1001234567890", "TestEventsSheet", "free")]
 
     def test_idempotent_after_rename(self, tmp_path):
         path = str(tmp_path / "t.db")

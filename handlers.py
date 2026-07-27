@@ -157,6 +157,19 @@ def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
     ])
 
 
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Replies with the caller's own numeric Telegram user_id - the exact
+    value to put in OWNER_USER_IDS (.env) to grant owner-only command
+    access. A user_id isn't sensitive/secret, so this is safe for anyone
+    to run.
+    """
+    await update.message.reply_text(
+        f"Your Telegram user_id: `{update.effective_user.id}`",
+        parse_mode="MarkdownV2",
+    )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     main_help = (
         "📖 *Main Commands*\n\n"
@@ -539,7 +552,7 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{going_icon} *Going* \\(0\\):\n\n"
         f"{notgoing_icon} *Not Going* \\(0\\):\n"
     )
-    keyboard = create_event_keyboard(event_id, 1, going_icon, notgoing_icon, [], {})
+    keyboard = create_event_keyboard(event_id, 0, going_icon, notgoing_icon, [], {})
 
     try:
         sent_msg = await context.bot.send_message(

@@ -168,6 +168,40 @@ class TestNewevent:
         sent_to = call_kwargs.kwargs.get("chat_id") or (call_kwargs.args[0] if call_kwargs.args else None)
         assert str(sent_to) == "-100123"
 
+    async def test_sends_open_state_keyboard_not_verification(self, db_path):
+        """
+        Regression test: the keyboard sent alongside a freshly created event
+        must be the OPEN state (Going/Not Going/ADD/Remove/Verification Mode/
+        Cancel Event) - NOT the verification-mode-only keyboard (Add Extra
+        Player/Save & Close Event). A stale hardcoded event_status value at
+        the call site once caused every new event to display with the wrong
+        (verification-only) buttons despite event_status=0 being stored
+        correctly in the DB.
+        """
+        chat = make_chat(chat_id=-100123)
+        bot  = make_bot()
+        ctx  = make_context(bot=bot, args=["My Event"])
+        upd  = make_update(chat=chat)
+
+        await handlers.newevent(upd, ctx)
+
+        bot.send_message.assert_awaited_once()
+        keyboard = bot.send_message.call_args.kwargs.get("reply_markup")
+        assert keyboard is not None, "newevent must send a keyboard"
+        flat = [btn for row in keyboard.inline_keyboard for btn in row]
+        texts = [b.text for b in flat]
+
+        assert any("Going" in t for t in texts), "open-state Going button missing"
+        assert any("Not Going" in t for t in texts), "open-state Not Going button missing"
+        assert any("ADD" in t for t in texts), "open-state ADD button missing"
+        assert any("Remove" in t for t in texts), "open-state Remove button missing"
+        assert any("Verification Mode" in t for t in texts), "Verification Mode button missing"
+        assert any("Cancel Event" in t for t in texts), "Cancel Event button missing"
+
+        # And NOT the verification-only keyboard
+        assert not any("Save & Close Event" in t for t in texts), \
+            "must not show the verification-mode keyboard on a freshly opened event"
+
     async def test_missing_name_replies_error(self, db_path):
         # No args → must send an error, NOT insert a row
         chat = make_chat(chat_id=-100123)
@@ -844,7 +878,7 @@ class TestSetsub:
     OWNER_ID = 555
 
     async def test_non_owner_is_silently_ignored(self, db_path):
-        with patch("handlers.OWNER_USER_ID", self.OWNER_ID):
+        with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}):
             chat = make_chat()
             user = make_user(user_id=999)  # not the owner
             msg  = make_message(chat=chat)
@@ -856,8 +890,8 @@ class TestSetsub:
             msg.reply_text.assert_not_awaited()
 
     async def test_owner_can_turn_on(self, db_path):
-        with patch("handlers.OWNER_USER_ID", self.OWNER_ID), \
-             patch("handlers.sync_control_sheet_main", new_callable=AsyncMock):
+        with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}), \
+             patch("subscription.sync_control_sheet_main", new_callable=AsyncMock):
             chat = make_chat()
             user = make_user(user_id=self.OWNER_ID)
             msg  = make_message(chat=chat)
@@ -871,8 +905,8 @@ class TestSetsub:
 
     async def test_owner_can_turn_off(self, db_path):
         insert_premium(db_path, chat_id="-100")
-        with patch("handlers.OWNER_USER_ID", self.OWNER_ID), \
-             patch("handlers.sync_control_sheet_main", new_callable=AsyncMock):
+        with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}), \
+             patch("subscription.sync_control_sheet_main", new_callable=AsyncMock):
             chat = make_chat()
             user = make_user(user_id=self.OWNER_ID)
             msg  = make_message(chat=chat)
@@ -886,8 +920,8 @@ class TestSetsub:
 
     async def test_extending_active_subscription_stacks_not_resets(self, db_path):
         insert_premium(db_path, chat_id="-100", days=10)
-        with patch("handlers.OWNER_USER_ID", self.OWNER_ID), \
-             patch("handlers.sync_control_sheet_main", new_callable=AsyncMock):
+        with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}), \
+             patch("subscription.sync_control_sheet_main", new_callable=AsyncMock):
             chat = make_chat()
             user = make_user(user_id=self.OWNER_ID)
             msg  = make_message(chat=chat)
@@ -1697,7 +1731,7 @@ class TestButtonHandlerSaveCloseEvent:
         fake_ss = FakeSpreadsheet()
         with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
              patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_to_google", new_callable=AsyncMock):
+             patch("handlers.sync_event_users_sheet", new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         ws = fake_ss.worksheets["Events"]
@@ -1725,7 +1759,7 @@ class TestButtonHandlerSaveCloseEvent:
 
         with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
              patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_to_google", new_callable=AsyncMock):
+             patch("handlers.sync_event_users_sheet", new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         assert ws.appended_rows == []
@@ -1749,7 +1783,7 @@ class TestButtonHandlerSaveCloseEvent:
         sync_mock = AsyncMock()
         with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
              patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_to_google", sync_mock):
+             patch("handlers.sync_event_users_sheet", sync_mock):
             await handlers.button_handler(upd, ctx)
 
         sync_mock.assert_awaited_once()
@@ -1779,7 +1813,7 @@ class TestButtonHandlerSaveCloseEvent:
         sync_mock = AsyncMock()
         with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
              patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_to_google", sync_mock):
+             patch("handlers.sync_event_users_sheet", sync_mock):
             await handlers.button_handler(upd, ctx)
 
         sync_mock.assert_awaited_once()
