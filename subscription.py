@@ -6,6 +6,8 @@ Payment itself is confirmed by hand (crypto, checked by the bot owner) -
 there is deliberately no payment automation here.
 """
 
+import re
+import sqlite3
 from datetime import datetime, timedelta
 
 from telegram import Update
@@ -14,7 +16,7 @@ from telegram.ext import ContextTypes
 from config import ICON_WARNING, OWNER_USER_IDS, logger
 from utils import escape_markdown
 from db import get_connection
-from sheets import sync_control_sheet_main, sync_control_sheet_subconfig
+from sheets import sync_control_sheet_main, sync_control_sheet_subconfig, open_spreadsheet
 
 SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
 # isn't relied upon anywhere - always parsed via strptime, but kept
@@ -82,7 +84,7 @@ async def _push_control_sheet_main() -> bool:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_id, chat_name, type, sheet_id, subs_date_start, subs_date_end FROM main_chat_settings"
+            "SELECT chat_id, chat_name, type, sheet_id, sheet_name, subs_date_start, subs_date_end FROM main_chat_settings"
         )
         rows = cursor.fetchall()
     return await sync_control_sheet_main(rows)
@@ -150,7 +152,7 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             conn.commit()
             await update.message.reply_text(
-                f"✅ Subscription turned *off* for `{escape_markdown(target_chat_id)}`\\.",
+                f"✅ Subscription turned *off* for `{target_chat_id}`\\.",
                 parse_mode="MarkdownV2",
             )
             await _push_control_sheet_main()
@@ -191,7 +193,7 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             conn.commit()
             await update.message.reply_text(
-                f"✅ Subscription *on* for `{escape_markdown(target_chat_id)}` until `{escape_markdown(new_end)}`\\.",
+                f"✅ Subscription *on* for `{target_chat_id}` until `{new_end}`\\.",
                 parse_mode="MarkdownV2",
             )
             await _push_control_sheet_main()
@@ -201,6 +203,84 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "❌ *Syntax:* `/setsub <chat_id> on <days>` or `/setsub <chat_id> off`",
         parse_mode="MarkdownV2",
     )
+
+
+async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Binds this hub group to its own Google Sheet, by spreadsheet ID or full
+    URL (the ID is extracted automatically from a pasted URL). Requires:
+      1. This hub to be premium (free tier never writes to Sheets at all).
+      2. The caller to be an admin of this chat.
+
+    The sheet must already be shared with the bot's service account
+    (GOOGLE_CREDENTIALS_JSON's client_email) with Editor access - this is
+    verified immediately by actually opening it and reading its title,
+    rather than trusting the ID blindly.
+    """
+    chat_id = str(update.effective_chat.id)
+
+    if not is_premium(chat_id):
+        await update.message.reply_text(
+            f"{ICON_WARNING} /setsheet is a premium\\-only feature\\. "
+            f"Use /setsub info or contact the bot owner to upgrade\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await update.message.reply_text("⛔️ Only admins can use /setsheet\\.", parse_mode="MarkdownV2")
+            return
+    except Exception as e:
+        logger.error(f"setsheet: admin check failed: {e}")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ *Syntax:* `/setsheet <spreadsheet_id_or_url>`", parse_mode="MarkdownV2"
+        )
+        return
+
+    raw = args[0]
+    m = re.search(r"/d/([a-zA-Z0-9-_]+)", raw)
+    sheet_id = m.group(1) if m else raw
+
+    try:
+        ss = await open_spreadsheet(sheet_id)
+        if not ss:
+            raise ValueError("open_spreadsheet returned nothing")
+        sheet_name = ss.title
+    except Exception as e:
+        logger.error(f"setsheet: could not open sheet {sheet_id}: {e}")
+        await update.message.reply_text(
+            f"❌ Could not open that spreadsheet\\. Make sure the ID/URL is correct and the sheet is "
+            f"shared with the bot's service account \\(Editor access\\)\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE main_chat_settings SET sheet_id = ?, sheet_name = ? WHERE chat_id = ?",
+                (sheet_id, sheet_name, chat_id),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            await update.message.reply_text(
+                f"❌ That spreadsheet is already bound to a different group\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+
+    await update.message.reply_text(
+        f"✅ This group is now bound to `{sheet_name}`\\.",
+        parse_mode="MarkdownV2",
+    )
+    await _push_control_sheet_main()
 
 
 async def syncgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):

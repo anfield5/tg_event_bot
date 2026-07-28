@@ -13,12 +13,14 @@ from subscription import (
     is_premium, require_premium, setsub, syncgroups,
     FEATURE_MATRIX, SUBS_DATE_FORMAT, _push_control_sheet_main,
 )
+from aliases import setalias, removealias, listalias
+from monitors import addmonitor, removemonitor, listmonitors
 
 from config import (
     DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, DEFAULT_CLOSE_ICON, logger,
     ICON_KICK, ICON_RETURN, ICON_ADD,
     ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
-    ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
+    ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_PREMIUM,
     FREE_SHAREEVENT_LIMIT_PER_TARGET,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date
@@ -137,23 +139,24 @@ def parse_user_args(args: list) -> list:
 def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
     """
     Aliases/Monitoring buttons are shown either as normal (premium hub) or
-    as an inert '(premium)'-labeled button (free hub) - tapping the free
+    marked with ICON_PREMIUM and made inert (free hub) - tapping the free
     version does nothing (callback_data='noop', already ignored globally by
     button_handler) rather than opening a section that just repeats "this
     is premium-only" at you.
     """
     premium = is_premium(chat_id)
     alias_btn = InlineKeyboardButton(
-        "⚙️ Aliases" if premium else "⚙️ Aliases (premium)",
+        "⚙️ Aliases" if premium else f"⚙️ Aliases {ICON_PREMIUM}",
         callback_data="help_alias" if premium else "noop",
     )
     monitor_btn = InlineKeyboardButton(
-        "🔍 Monitoring" if premium else "🔍 Monitoring (premium)",
+        "🔍 Monitoring" if premium else f"🔍 Monitoring {ICON_PREMIUM}",
         callback_data="help_monitoring" if premium else "noop",
     )
     return InlineKeyboardMarkup([
-        [alias_btn, InlineKeyboardButton("📢 Distribution", callback_data="help_distribution")],
-        [monitor_btn, InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle")],
+        [InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
+         InlineKeyboardButton("📢 Distribution", callback_data="help_distribution")],
+        [alias_btn, monitor_btn],
     ])
 
 
@@ -280,214 +283,6 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Alias routing system
 # ---------------------------------------------------------------------------
 
-async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Binds a custom alias to a Telegram Chat ID."""
-    if not await require_premium(update, "Aliases"):
-        return
-
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text(
-            "❌ *Syntax error:* Usage: `/setalias [id_group/id_channel] [aliasname]`",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    target_chat_input = args[0].strip()
-    alias_name        = args[1].strip().lower()
-    user_id           = update.effective_user.id
-
-    try:
-        if target_chat_input.startswith("-") and target_chat_input[1:].isdigit():
-            target_chat_id = int(target_chat_input)
-        elif target_chat_input.isdigit():
-            target_chat_id = int(target_chat_input)
-        else:
-            target_chat_id = target_chat_input
-    except ValueError:
-        await update.message.reply_text("No channel/group with such ID", parse_mode="MarkdownV2")
-        return
-
-    try:
-        await context.bot.get_chat(target_chat_id)
-    except BadRequest:
-        await update.message.reply_text("No channel/group with such ID", parse_mode="MarkdownV2")
-        return
-    except Exception:
-        await update.message.reply_text(
-            "Add @EventPlanCheckBot to target group/channel as admin\.", parse_mode="MarkdownV2"
-        )
-        return
-
-    try:
-        bot_member = await context.bot.get_chat_member(chat_id=target_chat_id, user_id=context.bot.id)
-        if bot_member.status not in ["administrator", "creator"]:
-            await update.message.reply_text(
-                "Add @EventPlanCheckBot to target group/channel as admin\.", parse_mode="MarkdownV2"
-            )
-            return
-    except Exception:
-        await update.message.reply_text(
-            "Add @EventPlanCheckBot to target group/channel as admin\.", parse_mode="MarkdownV2"
-        )
-        return
-
-    try:
-        user_member = await context.bot.get_chat_member(chat_id=target_chat_id, user_id=user_id)
-        if user_member.status not in ["administrator", "creator"]:
-            await update.message.reply_text(
-                "Only users with admin rights in target groups/channels can make event shares to them",
-                parse_mode="MarkdownV2",
-            )
-            return
-    except Exception:
-        await update.message.reply_text(
-            "Only users with admin rights in target groups/channels can make event shares to them",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    hub_chat_id = str(update.effective_chat.id)
-
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT chat_id FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (alias_name, hub_chat_id),
-        )
-        if cursor.fetchone():
-            await update.message.reply_text("Alias already exist", parse_mode="MarkdownV2")
-            return
-
-        cursor.execute(
-            "SELECT alias FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (str(target_chat_id), hub_chat_id),
-        )
-        existing_row = cursor.fetchone()
-        if existing_row and existing_row[0] is not None:
-            await update.message.reply_text(
-                f"{ICON_WARNING} This group or channel has already been added\. Please check its existing alias\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-
-        try:
-            if existing_row is not None:
-                # A sub_groups row already exists for this (owner, chat_id)
-                # pair - it just came from /addmonitor (is_monitored=1,
-                # alias still NULL). Set the alias on that same row instead
-                # of inserting a second one, which would violate
-                # UNIQUE(owner_chat_id, chat_id).
-                cursor.execute(
-                    "UPDATE sub_groups SET alias = ? WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                    (alias_name, str(target_chat_id), hub_chat_id),
-                )
-            else:
-                cursor.execute(
-                    "INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES (?, ?, ?)",
-                    (str(target_chat_id), alias_name, hub_chat_id),
-                )
-            conn.commit()
-        except sqlite3.IntegrityError:
-            # Uniqueness is scoped per-owner - UNIQUE(owner_chat_id, alias)
-            # and UNIQUE(owner_chat_id, chat_id) - so two different hubs can
-            # freely reuse the same alias name for different targets. The
-            # SELECT checks above already cover the common case; this is
-            # just a safety net against a race (two concurrent /setalias
-            # calls from the SAME hub for the same name/target).
-            await update.message.reply_text(
-                f"{ICON_WARNING} That alias name or target is already in use for this group\. Pick a different name\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-
-    await update.message.reply_text(
-        rf"✅ Alias `__{escape_markdown(alias_name)}__` mapped to node ID `{target_chat_id}`\.",
-        parse_mode="MarkdownV2",
-    )
-
-
-async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Removes an alias from the routing table."""
-    if not await require_premium(update, "Aliases"):
-        return
-
-    args = context.args
-    if not args:
-        await update.message.reply_text(
-            "❌ *Syntax error:* Usage: `/removealias [aliasname]`", parse_mode="MarkdownV2"
-        )
-        return
-
-    alias_name  = args[0].strip().lower()
-    hub_chat_id = str(update.effective_chat.id)
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT is_monitored FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (alias_name, hub_chat_id),
-        )
-        row = cursor.fetchone()
-        if not row:
-            await update.message.reply_text("🔍 Alias not found\.", parse_mode="MarkdownV2")
-            return
-
-        if row[0]:
-            # This chat is also monitored - only clear the alias, keep the
-            # row (and its monitoring) intact.
-            cursor.execute(
-                "UPDATE sub_groups SET alias = NULL WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                (alias_name, hub_chat_id),
-            )
-        else:
-            cursor.execute(
-                "DELETE FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                (alias_name, hub_chat_id),
-            )
-        conn.commit()
-    await update.message.reply_text(
-        f"🗑️ Alias `__{escape_markdown(alias_name)}__` removed\.", parse_mode="MarkdownV2"
-    )
-
-
-async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows all active routing aliases belonging to THIS hub group."""
-    if not await require_premium(update, "Aliases"):
-        return
-
-    hub_chat_id = str(update.effective_chat.id)
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT alias, chat_id FROM sub_groups WHERE alias IS NOT NULL "
-            "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (hub_chat_id,),
-        )
-        rows = cursor.fetchall()
-
-    if not rows:
-        await update.message.reply_text("📋 No aliases configured\.", parse_mode="MarkdownV2")
-        return
-
-    blocks = []
-    for alias, cid in rows:
-        try:
-            chat_obj = await context.bot.get_chat(int(cid) if cid.replace("-", "").isdigit() else cid)
-            c_name = chat_obj.title or "Unknown"
-            c_type = "Public Channel" if chat_obj.type == "channel" else "Group"
-        except Exception:
-            c_name = "Node Disconnected"
-            c_type  = "Unknown"
-
-        blocks.append(
-            f"Aliasname: {escape_markdown(alias)}\n"
-            f"Type: {escape_markdown(c_type)}\n"
-            f"Name: {escape_markdown(c_name)}\n"
-            f"ID: {escape_markdown(str(cid))}"
-        )
-
-    text = "📋 *Distribution Routes:*\n\n" + "\n\n".join(blocks)
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 # ---------------------------------------------------------------------------
@@ -956,213 +751,6 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Adds a group/channel for monitoring.
-    Usage: /addmonitor id_channel or /addmonitor id_group
-    The bot must be added to the group/channel and the user must be admin in both
-    the main group and the monitored group/channel.
-    """
-    if not await require_premium(update, "Monitoring"):
-        return
-
-    args = context.args
-    if len(args) < 1:
-        await update.message.reply_text(
-            "❌ *Syntax error:* `/addmonitor <chat_id>`\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    target_chat_id = args[0]
-    main_chat_id = str(update.effective_chat.id)
-    user_id = update.effective_user.id
-
-    try:
-        # Check if user is admin in main chat
-        try:
-            main_admin = await context.bot.get_chat_member(main_chat_id, user_id)
-            if main_admin.status not in ["administrator", "creator"]:
-                await update.message.reply_text(
-                    "❌ You must be an admin in the main group to add monitors\\.",
-                    parse_mode="MarkdownV2",
-                )
-                return
-        except Exception:
-            await update.message.reply_text(
-                "❌ Could not verify admin status in main chat\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-
-        # Check if bot is in target chat
-        try:
-            bot_member = await context.bot.get_chat_member(target_chat_id, context.bot.id)
-        except Exception:
-            await update.message.reply_text(
-                "❌ Bot is not a member of the target group/channel\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-
-        # Check if user is admin in target chat
-        try:
-            target_admin = await context.bot.get_chat_member(target_chat_id, user_id)
-            if target_admin.status not in ["administrator", "creator"]:
-                await update.message.reply_text(
-                    "❌ You must be an admin in the target group/channel to add it as a monitor\\.",
-                    parse_mode="MarkdownV2",
-                )
-                return
-        except Exception:
-            await update.message.reply_text(
-                "❌ Could not verify admin status in target chat\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-
-        # Get chat info
-        try:
-            chat_info = await context.bot.get_chat(target_chat_id)
-            chat_name = chat_info.title or "Unknown"
-            chat_type = "channel" if chat_info.type == "channel" else "group"
-        except Exception:
-            await update.message.reply_text(
-                "❌ Could not retrieve chat information\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-
-        # Add to database
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                (target_chat_id, main_chat_id),
-            )
-            existing = cursor.fetchone()
-
-            if existing:
-                # A sub_groups row already exists for this (owner, chat_id)
-                # pair - possibly an alias-only row from /setalias. Turn on
-                # monitoring on that same row instead of inserting a second
-                # one, which would violate UNIQUE(owner_chat_id, chat_id).
-                cursor.execute(
-                    "UPDATE sub_groups SET is_monitored = 1, chat_type = ?, chat_name = ? "
-                    "WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                    (chat_type, chat_name, target_chat_id, main_chat_id),
-                )
-            else:
-                cursor.execute(
-                    "INSERT INTO sub_groups (chat_id, chat_type, chat_name, owner_chat_id, is_monitored) "
-                    "VALUES (?, ?, ?, ?, 1)",
-                    (target_chat_id, chat_type, chat_name, main_chat_id),
-                )
-            conn.commit()
-
-        await update.message.reply_text(
-            f"✅ Added monitor: `{escape_markdown(chat_name)}` \\({chat_type}\\)",
-            parse_mode="MarkdownV2",
-        )
-
-    except Exception as e:
-        logger.error(f"Error adding monitor: {e}")
-        await update.message.reply_text(
-            "❌ Failed to add monitor\\.",
-            parse_mode="MarkdownV2",
-        )
-
-
-async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Removes a group/channel from monitoring.
-    Usage: /removemonitor id_channel or /removemonitor id_group
-    """
-    if not await require_premium(update, "Monitoring"):
-        return
-
-    args = context.args
-    if len(args) < 1:
-        await update.message.reply_text(
-            "❌ *Syntax error:* `/removemonitor <chat_id>`\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    target_chat_id = args[0]
-    hub_chat_id    = str(update.effective_chat.id)
-
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT chat_name, alias FROM sub_groups WHERE chat_id = ? AND is_monitored = 1 "
-            "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (target_chat_id, hub_chat_id),
-        )
-        row = cursor.fetchone()
-
-        if not row:
-            await update.message.reply_text(
-                "❌ Monitor not found\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-
-        chat_name, alias = row
-        if alias is not None:
-            # This chat is also aliased - only turn off monitoring, keep
-            # the row (and its alias) intact.
-            cursor.execute(
-                "UPDATE sub_groups SET is_monitored = 0 WHERE chat_id = ? "
-                "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                (target_chat_id, hub_chat_id),
-            )
-        else:
-            cursor.execute(
-                "DELETE FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                (target_chat_id, hub_chat_id),
-            )
-        conn.commit()
-
-    await update.message.reply_text(
-        f"✅ Removed monitor: `{escape_markdown(chat_name)}`",
-        parse_mode="MarkdownV2",
-    )
-
-
-async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Lists all monitored groups/channels belonging to THIS hub group.
-    """
-    if not await require_premium(update, "Monitoring"):
-        return
-
-    hub_chat_id = str(update.effective_chat.id)
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT chat_id, chat_type, chat_name FROM sub_groups WHERE is_monitored = 1 AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-            (hub_chat_id,),
-        )
-        rows = cursor.fetchall()
-
-    if not rows:
-        await update.message.reply_text(
-            f"{ICON_STATS} No monitors configured\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    lines = []
-    for chat_id, chat_type, chat_name in rows:
-        lines.append(
-            f"name: `{escape_markdown(chat_name)}`\n"
-            f"type: {escape_markdown(chat_type)}\n"
-            f"id: `{escape_markdown(chat_id)}`"
-        )
-
-    text = f"{ICON_STATS} *Monitored Groups/Channels:*\n\n" + "\n\n".join(lines)
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 # ---------------------------------------------------------------------------

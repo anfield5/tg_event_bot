@@ -85,6 +85,7 @@ def init_db(db_path: str = DB_PATH):
             chat_name TEXT DEFAULT NULL,
             type TEXT DEFAULT 'free',
             sheet_id TEXT UNIQUE,
+            sheet_name TEXT DEFAULT NULL,
             subs_date_start TEXT DEFAULT NULL,
             subs_date_end TEXT DEFAULT NULL
         )
@@ -268,6 +269,8 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_end TEXT DEFAULT NULL")
     if "chat_name" not in mcs_cols:
         cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN chat_name TEXT DEFAULT NULL")
+    if "sheet_name" not in mcs_cols:
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN sheet_name TEXT DEFAULT NULL")
 
     # 0b. Add `chat_type`/`chat_name` to sub_groups if it exists from an
     # earlier version of this same migration that predates them.

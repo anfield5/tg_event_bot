@@ -22,7 +22,7 @@ from handlers import (
     button_handler,
     global_text_router,
 )
-from subscription import setsub, syncgroups, _push_control_sheet_main, FEATURE_MATRIX
+from subscription import setsub, setsheet, syncgroups, _push_control_sheet_main, FEATURE_MATRIX
 
 
 async def on_chat_member_update(update, context):
@@ -161,6 +161,7 @@ def main():
 
     # 6. Subscription control (owner-only, checked inside setsub itself)
     app.add_handler(CommandHandler("setsub", setsub))
+    app.add_handler(CommandHandler("setsheet", setsheet))
     app.add_handler(CommandHandler("syncgroups", syncgroups))
 
     # 5. Text message router (extra player input + @everyone)

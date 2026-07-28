@@ -253,7 +253,7 @@ async def sync_control_sheet_main(rows: list) -> bool:
     way to actually change a subscription. This tab is a read-only mirror
     for visibility, not a control surface (yet).
 
-    rows: list of (chat_id, chat_name, type, sheet_id, subs_date_start, subs_date_end) tuples.
+    rows: list of (chat_id, chat_name, type, sheet_id, sheet_name, subs_date_start, subs_date_end) tuples.
     Returns True on success, False on failure (logged either way) - so
     callers can tell the user honestly instead of always claiming success.
     """
@@ -264,7 +264,7 @@ async def sync_control_sheet_main(rows: list) -> bool:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("MAIN")
         await ws.clear()
-        header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SUBS_DATE_START", "SUBS_DATE_END"]
+        header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SHEET_NAME", "SUBS_DATE_START", "SUBS_DATE_END"]
         body   = [[str(v) if v is not None else "" for v in row] for row in rows]
         await ws.update("A1", [header] + body)
         return True
