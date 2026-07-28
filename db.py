@@ -8,7 +8,7 @@ DB_PATH = "database.db"
 
 
 @contextmanager
-def get_connection(db_path: str = DB_PATH):
+def get_connection(db_path: str = None):
     """
     Small context-manager wrapper around sqlite3.connect() so call sites can
     write:
@@ -21,7 +21,16 @@ def get_connection(db_path: str = DB_PATH):
     exception is raised mid-query, which several existing call sites don't
     (a raised exception between `sqlite3.connect()` and `conn.close()`
     currently leaks the connection).
+
+    db_path defaults to None and is resolved to the CURRENT value of the
+    module-level DB_PATH at call time, not at function-definition time -
+    using `db_path: str = DB_PATH` as the parameter default would bind
+    whatever DB_PATH held when this module was first imported, silently
+    ignoring any later `db.DB_PATH = ...` / monkeypatch (exactly what every
+    pytest fixture in this project does to isolate tests in a temp file).
     """
+    if db_path is None:
+        db_path = DB_PATH
     conn = sqlite3.connect(db_path)
     try:
         yield conn

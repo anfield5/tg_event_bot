@@ -122,9 +122,8 @@ class TestInitDb:
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         cols = get_columns(path, "main_chat_settings")
-        for expected in ("chat_id", "type", "sheet_id", "subs_date_start", "subs_date_end"):
+        for expected in ("chat_id", "type", "sheet_id", "sheet_name", "subs_date_start", "subs_date_end"):
             assert expected in cols, f"main_chat_settings missing '{expected}'"
-        assert "sheet_name" not in cols, "sheet_name should have been renamed to sheet_id"
 
     def test_sub_groups_columns(self, tmp_path):
         path = str(tmp_path / "t.db")
