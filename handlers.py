@@ -245,8 +245,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"  • {DEFAULT_CLOSE_ICON} Verification Mode \\- admin only, locks voting and opens roster review\n"
             f"  • {ICON_CANCEL_EVENT} Cancel Event \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
-            f"  • − / \\+ \\- admin only, adjust guest count\n"
-            f"  • {ICON_ADD} Add Extra Player \\- admin only, add by username\n"
+            f"  • \\- / \\+ \\- admin only, adjust guest count\n"
+            f"  • \\{ICON_ADD} Add Extra Player \\- admin only, add by username\n"
             f"  • {ICON_SAVE} Save & Close Event \\- admin only, finalize and export to EventUsers"
         ),
     }
@@ -294,8 +294,8 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Creates a new Going/Not-Going event.
 
     Flags:
-        -gi / -goingimage <emoji>
-        -ni / -notgoingimage <emoji>
+        -gi / -goingicon <emoji>
+        -ni / -notgoingicon <emoji>
         -date / -d <dd.mm.yyyy> [HH:MM]
     """
     chat_id  = str(update.effective_chat.id)

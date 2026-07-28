@@ -44,8 +44,8 @@ class TestParseEventArgs:
         _, gi, _, _ = parse_event_args(["-gi", "⚽", "Party"])
         assert gi == "⚽"
 
-    def test_goingimage_flag_long(self):
-        _, gi, _, _ = parse_event_args(["-goingimage", "⚽", "Party"])
+    def test_goingicon_flag_long(self):
+        _, gi, _, _ = parse_event_args(["-goingicon", "⚽", "Party"])
         assert gi == "⚽"
 
     def test_gi_flag_strips_from_name(self):
@@ -60,8 +60,8 @@ class TestParseEventArgs:
         _, _, ni, _ = parse_event_args(["-ni", "❎", "Party"])
         assert ni == "❎"
 
-    def test_notgoingimage_flag_long(self):
-        _, _, ni, _ = parse_event_args(["-notgoingimage", "❎", "Party"])
+    def test_notgoingicon_flag_long(self):
+        _, _, ni, _ = parse_event_args(["-notgoingicon", "❎", "Party"])
         assert ni == "❎"
 
     # ── Date flag ─────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ class TestCreateEventKeyboard:
         assert any("alice" in b.text for b in row_b), "guest label must mention who the guests belong to"
         # minus appears before plus (reversed order requested)
         texts = [b.text for b in row_b]
-        minus_idx = next((i for i, t in enumerate(texts) if "−" in t), None)
+        minus_idx = next((i for i, t in enumerate(texts) if "-" in t), None)
         plus_idx  = next((i for i, t in enumerate(texts) if "+" in t), None)
         assert minus_idx is not None, "minus button missing from row B"
         assert plus_idx  is not None, "plus button missing from row B"
@@ -287,7 +287,7 @@ class TestCreateEventKeyboard:
 
     def test_verification_inc_dec_buttons_have_no_stray_icons(self):
         """
-        The guest +/- buttons are plain ' − ' / ' + ' text (no emoji, no
+        The guest +/- buttons are plain ' - ' / ' + ' text (no emoji, no
         colored-dot prefix) - Telegram's Bot API has no way to recolor
         button text, so there's nothing further to force here.
         """
@@ -299,9 +299,9 @@ class TestCreateEventKeyboard:
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert not any("🟠" in b.text for b in flat), "orange-dot prefix must be gone"
         assert not any("➖" in b.text or "➕" in b.text for b in flat), "must not use the emoji +/- glyphs"
-        minus_btns = [b for b in flat if b.text == " − "]
+        minus_btns = [b for b in flat if b.text == " - "]
         plus_btns  = [b for b in flat if b.text == " + "]
-        assert minus_btns, "the ' − ' button must exist"
+        assert minus_btns, "the ' - ' button must exist"
         assert plus_btns,  "the ' + ' button must exist"
 
     def test_verification_kick_callback_format(self):
