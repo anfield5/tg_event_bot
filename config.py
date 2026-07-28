@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.1.0"
+BOT_VERSION = "3.3"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -65,12 +65,12 @@ ICON_KICK          = "❌"
 ICON_RETURN        = "↩️"
 ICON_PERSON         = "👤"   # master-hub participant row
 ICON_CHANNEL_PERSON = "📢"   # child-chat/channel participant row
-ICON_GUEST_MINUS    = " − "
+ICON_GUEST_MINUS    = " - "
 ICON_GUEST_PLUS     = " + "
 
 # Event lifecycle buttons
-ICON_ADD            = "➕"   # also used for "Add Extra Player"
-ICON_REMOVE         = "➖"
+ICON_ADD            = "+"   # also used for "Add Extra Player"
+ICON_REMOVE         = "-"
 ICON_CANCEL_EVENT   = "🚫"
 ICON_SAVE           = "💾"
 
@@ -84,3 +84,4 @@ ICON_NOTIFY         = "🔔"
 ICON_CLEAN          = "🧹"   # /refreshusers removal summary
 ICON_ADMIN_ONLY     = "⛔️"
 ICON_GLOBE          = "🌍"   # /refreshusers -g global sync section
+ICON_PREMIUM        = "⚡ᴾᴿᴼ"   # marks premium-only features (e.g. Aliases/Monitoring on /help)

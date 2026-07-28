@@ -958,8 +958,8 @@ class TestHelpTierAwareKeyboard:
         flat = [btn for row in keyboard.inline_keyboard for btn in row]
         alias_btn   = next(b for b in flat if "Alias" in b.text)
         monitor_btn = next(b for b in flat if "Monitoring" in b.text)
-        assert "(premium)" in alias_btn.text
-        assert "(premium)" in monitor_btn.text
+        assert handlers.ICON_PREMIUM in alias_btn.text
+        assert handlers.ICON_PREMIUM in monitor_btn.text
         assert alias_btn.callback_data == "noop"
         assert monitor_btn.callback_data == "noop"
 
@@ -976,10 +976,29 @@ class TestHelpTierAwareKeyboard:
         flat = [btn for row in keyboard.inline_keyboard for btn in row]
         alias_btn   = next(b for b in flat if "Alias" in b.text)
         monitor_btn = next(b for b in flat if "Monitoring" in b.text)
-        assert "(premium)" not in alias_btn.text
-        assert "(premium)" not in monitor_btn.text
+        assert handlers.ICON_PREMIUM not in alias_btn.text
+        assert handlers.ICON_PREMIUM not in monitor_btn.text
         assert alias_btn.callback_data == "help_alias"
         assert monitor_btn.callback_data == "help_monitoring"
+
+    async def test_row_layout_lifecycle_distribution_first_aliases_monitoring_second(self, db_path):
+        """Row 1: Event Lifecycle + Distribution. Row 2: Aliases + Monitoring."""
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        rows = keyboard.inline_keyboard
+        assert len(rows) == 2
+        row1_texts = [b.text for b in rows[0]]
+        row2_texts = [b.text for b in rows[1]]
+        assert any("Lifecycle" in t for t in row1_texts)
+        assert any("Distribution" in t for t in row1_texts)
+        assert any("Alias" in t for t in row2_texts)
+        assert any("Monitoring" in t for t in row2_texts)
 
     async def test_distribution_and_lifecycle_buttons_always_active(self, db_path):
         """These two sections are free for everyone, regardless of tier."""
