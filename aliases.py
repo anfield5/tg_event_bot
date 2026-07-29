@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
 from config import ICON_WARNING
-from utils import escape_markdown
+from utils import escape_markdown, GROUP_ANONYMOUS_BOT_ID
 from db import get_connection
 from subscription import require_premium
 
@@ -64,6 +64,14 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text(
             "Add @EventPlanCheckBot to target group/channel as admin\.", parse_mode="MarkdownV2"
+        )
+        return
+
+    if user_id == GROUP_ANONYMOUS_BOT_ID:
+        await update.message.reply_text(
+            "Please disable \"Remain anonymous\" and re\\-run /setalias \\- your admin status in the "
+            "target group/channel can't be verified anonymously",
+            parse_mode="MarkdownV2",
         )
         return
 

@@ -14,7 +14,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import ICON_WARNING, OWNER_USER_IDS, logger
-from utils import escape_markdown
+from utils import escape_markdown, is_real_admin
 from db import get_connection
 from sheets import sync_control_sheet_main, sync_control_sheet_subconfig, open_spreadsheet
 
@@ -227,13 +227,11 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    try:
-        member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-        if member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("⛔️ Only admins can use /setsheet\\.", parse_mode="MarkdownV2")
-            return
-    except Exception as e:
-        logger.error(f"setsheet: admin check failed: {e}")
+    admin_ok = await is_real_admin(
+        context.bot, update.effective_chat.id, update.effective_user, message=update.message
+    )
+    if not admin_ok:
+        await update.message.reply_text("⛔️ Only admins can use /setsheet\\.", parse_mode="MarkdownV2")
         return
 
     args = context.args

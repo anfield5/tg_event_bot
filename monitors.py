@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import ICON_STATS, logger
-from utils import escape_markdown
+from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import get_connection
 from subscription import require_premium
 
@@ -35,18 +35,11 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     try:
-        # Check if user is admin in main chat
-        try:
-            main_admin = await context.bot.get_chat_member(main_chat_id, user_id)
-            if main_admin.status not in ["administrator", "creator"]:
-                await update.message.reply_text(
-                    "❌ You must be an admin in the main group to add monitors\\.",
-                    parse_mode="MarkdownV2",
-                )
-                return
-        except Exception:
+        # Check if user is admin in main chat (same chat the command was
+        # sent from - safe to trust Telegram's anonymous-admin substitution)
+        if not await is_real_admin(context.bot, main_chat_id, update.effective_user, message=update.message):
             await update.message.reply_text(
-                "❌ Could not verify admin status in main chat\\.",
+                "❌ You must be an admin in the main group to add monitors\\.",
                 parse_mode="MarkdownV2",
             )
             return
@@ -61,7 +54,19 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Check if user is admin in target chat
+        # Check if user is admin in TARGET chat (a different chat than the
+        # one the command was sent from) - if they're posting anonymously,
+        # we cannot verify their real identity's admin status in a chat
+        # other than the one Telegram already vouched for, so ask them to
+        # disable anonymous mode for this specific command rather than
+        # either bypassing insecurely or silently rejecting a real admin.
+        if user_id == GROUP_ANONYMOUS_BOT_ID:
+            await update.message.reply_text(
+                "❌ Please disable \"Remain anonymous\" and re\\-run /addmonitor - "
+                "your admin status in the target group/channel can't be verified anonymously\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
         try:
             target_admin = await context.bot.get_chat_member(target_chat_id, user_id)
             if target_admin.status not in ["administrator", "creator"]:
