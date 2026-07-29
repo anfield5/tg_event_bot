@@ -707,26 +707,51 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Check if identifier is a numeric user_id
             if identifier.lstrip("-").isdigit():
                 target_user_id = identifier
-                # Try to get username from Telegram
                 try:
                     member = await context.bot.get_chat_member(target_chat_id, int(target_user_id))
-                    username = member.user.username or member.user.first_name or f"user{target_user_id}"
-                    track_user(target_chat_id, username, "active", user_id=target_user_id)
-                    added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
+                    if member.status in ("left", "kicked"):
+                        # getChatMember succeeding with status=left/kicked is a
+                        # VALID response (Telegram remembers a former member),
+                        # not an exception - must be checked explicitly, or
+                        # anyone who ever passed through the chat (or never
+                        # was in it at all, depending on visibility settings)
+                        # gets silently tracked as a current active member.
+                        failed.append(f"{identifier}: not currently in that chat (status={member.status})")
+                    else:
+                        username = member.user.username or member.user.first_name or f"user{target_user_id}"
+                        track_user(target_chat_id, username, "active", user_id=target_user_id)
+                        added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
                 except Exception as e:
                     # If can't get user from Telegram, fail - don't add without real user_id
                     failed.append(f"{identifier}: {e}")
             else:
-                # Treat as username, try to get user_id from Telegram
+                # Treat as username. The Bot API's getChatMember only accepts
+                # a numeric user_id - there is no way to look up a chat
+                # member by @username directly. The only Bot-API-supported
+                # path to resolve a username we've never seen before is the
+                # chat's administrator list (getChatAdministrators returns
+                # full User objects, username included) - a regular,
+                # non-admin member can only be resolved once they've
+                # interacted with the bot at least once (which then already
+                # stores their user_id, making this whole branch moot for
+                # them - see /refreshusers, ChatMemberHandler in main.py).
                 target_username = identifier.lstrip("@")
                 try:
-                    member = await context.bot.get_chat_member(
-                        chat_id=target_chat_id, username=target_username
+                    admins = await context.bot.get_chat_administrators(target_chat_id)
+                    match = next(
+                        (a.user for a in admins if a.user.username and a.user.username.lower() == target_username.lower()),
+                        None,
                     )
-                    resolved_user_id = str(member.user.id)
-                    resolved_username = member.user.username or member.user.first_name or target_username
-                    track_user(target_chat_id, resolved_username, "active", user_id=resolved_user_id)
-                    added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
+                    if match is None:
+                        failed.append(
+                            f"{identifier}: can't resolve a username to a user_id unless they're an "
+                            f"admin of that chat or have already interacted with the bot"
+                        )
+                    else:
+                        resolved_user_id = str(match.id)
+                        resolved_username = match.username or match.first_name or target_username
+                        track_user(target_chat_id, resolved_username, "active", user_id=resolved_user_id)
+                        added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
                 except Exception as e:
                     # If can't resolve, fail - don't add without real user_id
                     failed.append(f"{identifier}: {e}")
@@ -771,6 +796,9 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
       - No flag: Sync with /listusers only (local DB)
       - -r: Sync with /listusers AND Google Sheets Users tab for current group
       - -g: Sync with /listusers AND Google Sheets Users tab for all monitored groups/channels
+      - -purge: Remove tracked users with no stored user_id outright, instead
+        of leaving them alone forever (see the note below on why they can't
+        be auto-verified). Review the ⚠️ list from a normal run first.
 
     On the "adding missing members" side: the Telegram Bot API has no
     endpoint that lists every regular member of a group (only admins, via
@@ -785,19 +813,13 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     removed, since we simply have no way to confirm they left.
     """
     chat_id   = str(update.effective_chat.id)
+    purge_unverifiable = any(a.strip().lower() in ("-purge", "--purge-unverifiable") for a in context.args)
     root_sync = any(a.strip().lower() in ("-r", "-root", "--root") for a in context.args)
     global_sync = any(a.strip().lower() in ("-g", "-global", "--global") for a in context.args)
 
     # Only admins may run this
-    try:
-        member = await context.bot.get_chat_member(
-            chat_id=update.effective_chat.id, user_id=update.effective_user.id
-        )
-        if member.status not in ["administrator", "creator"]:
-            await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /refreshusers\\.", parse_mode="MarkdownV2")
-            return
-    except Exception as e:
-        logger.error(f"refreshusers: admin check failed: {e}")
+    if not await is_real_admin(context.bot, update.effective_chat.id, update.effective_user, message=update.message):
+        await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /refreshusers\\.", parse_mode="MarkdownV2")
         return
 
     with get_connection() as conn:
@@ -809,13 +831,18 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ── 1. Remove confirmed-departed/invalid users, track who's still here ──
         removed        = []
+        unverifiable   = []  # no stored user_id - can't be membership-checked at all
         still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
 
         for username, user_id, status in rows:
             if not user_id:
-                # User without stored ID - keep them in list for now
-                # They might have been added via /adduser without verification
-                still_present.append((username, username))
+                if purge_unverifiable:
+                    removed.append(username)
+                else:
+                    # User without stored ID - keep them in list for now
+                    # They might have been added via /adduser without verification
+                    still_present.append((username, username))
+                    unverifiable.append(username)
                 continue
             try:
                 m = await context.bot.get_chat_member(
@@ -881,6 +908,11 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if added:
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in added)
         lines.append(f"➕ Added \\(new admins found\\): {mentions}")
+    if unverifiable:
+        mentions = ", ".join(f"@{escape_markdown(u)}" for u in unverifiable)
+        lines.append(
+            f"{ICON_WARNING} Could not verify \\(no stored user\\_id, left as\\-is\\): {mentions}"
+        )
     if not lines:
         lines.append("✅ Nothing to change \\- list already matches the group\\.")
 
@@ -1287,8 +1319,32 @@ async def schedule_view_refresh(context: ContextTypes.DEFAULT_TYPE, event_id: st
 
 async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: str):
     """
-    Cascades layout changes to all downstream linked endpoints.
-    Called after every state mutation.
+    Re-renders EVERY view of one event after its state changed: the master
+    post in the hub group, plus every child chat/channel it's been shared
+    to (via /shareevent). Called after every going/notgoing/kick/guest
+    click, /editevent, Save & Close, and Cancel Event - normally through
+    schedule_view_refresh() (see its own docstring for why it's not called
+    directly), never straight from a click handler.
+
+    What it does, roughly in order:
+      1. Reads the master event row (going/notgoing lists, guest counters,
+         kicked list, event_status) - this is the single source of truth
+         that everything below gets rendered from.
+      2. Reads every event_shares row (one per chat/channel this event has
+         been shared to) plus that child chat's own event_users rows
+         (their own going/notgoing/guest state, tracked independently of
+         the master hub's own going list).
+      3. Builds the master hub's message text + keyboard (via
+         create_event_keyboard) and edits that message in place.
+      4. For each child share: builds that child's own message text +
+         keyboard (which only shows THAT child's participants, not the
+         whole event) and edits it too - respecting whatever share mode
+         (-visible/-onlycount/-hidden) it was shared with.
+
+    All DB reads happen up front in ONE connection, closed before any
+    Telegram API calls are made - editing N child chats means N sequential
+    network calls, and there's no reason to hold a SQLite connection open
+    across all of them.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -1547,7 +1603,39 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Handles all inline keyboard interactions.
+    The main state machine: every inline keyboard click across every chat
+    (master hub or child) comes through here. Broad shape of what happens
+    on each click:
+
+      1. Parse callback_data into (action, event_id) - or
+         (action, event_id, target_username) for per-person actions like
+         kick_<id>:<username> during verification.
+      2. Figure out whether this click came from the master hub or a child
+         chat (click_chat_id vs the event's own chat_id), and whether the
+         clicker is an admin (needed to gate admin-only actions: close,
+         cancel, kick/return, save, add-extra-player).
+      3. Acquire this event's lock (get_event_lock) so two near-simultaneous
+         clicks on the SAME event can't interleave their read-modify-write
+         and silently drop one - this is the one place all DB writes for
+         an event go through.
+      4. Inside the lock: read the current event row, apply exactly ONE
+         state change based on (event_status, action, is_child), then
+         write it back in a single UPDATE.
+      5. Outside the lock (after committing): schedule a re-render of every
+         view of this event via schedule_view_refresh(), and best-effort
+         log the action to the Google Sheets "Actions" tab.
+
+    event_status branches (see keyboard.py's create_event_keyboard for the
+    matching button layout each one shows):
+      0  (open)         - going/notgoing/add/sub/close/cancel
+      1  (verification)  - kick/return/incgst/decgst/addext/save, master
+                            hub only; child-chat clicks during verification
+                            only ever touch guest counts/kick-return for
+                            THAT child's own participants (event_users table)
+      2  (closed) / -1 (canceled) - no buttons are shown at all (see
+                            create_event_keyboard), so this function should
+                            never actually receive a click for these -
+                            treated as a no-op safety net if it somehow does.
     """
     query         = update.callback_query
     callback_data = query.data
@@ -1592,16 +1680,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not action or not event_id:
         return
 
-    try:
-        chat_member = await context.bot.get_chat_member(
-            chat_id=query.message.chat.id, user_id=user.id
-        )
-        is_admin = chat_member.status in ["administrator", "creator"]
-    except BadRequest:
-        # User may not be accessible in this chat (e.g., left or channel subscriber)
-        is_admin = False
-    except Exception:
-        is_admin = False
+    is_admin = await is_real_admin(context.bot, query.message.chat.id, user)
 
     data_changed = False
     event_status = 0
@@ -2033,14 +2112,7 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
     chat_id  = str(update.effective_chat.id)
     raw_text = update.message.text.strip()
 
-    try:
-        member = await context.bot.get_chat_member(
-            chat_id=update.effective_chat.id, user_id=update.effective_user.id
-        )
-        if member.status not in ["administrator", "creator"]:
-            return
-    except Exception as e:
-        logger.error(f"Extra player admin check failed: {e}")
+    if not await is_real_admin(context.bot, update.effective_chat.id, update.effective_user, message=update.message):
         return
 
     target_username = raw_text.lstrip('@').strip()

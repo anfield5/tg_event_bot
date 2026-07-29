@@ -34,6 +34,11 @@ def make_message(message_id=1, chat=None, user=None, text=""):
     msg.text       = text
     msg.reply_text = AsyncMock(return_value=MagicMock(message_id=99))
     msg.delete     = AsyncMock()
+    # A bare MagicMock auto-vivifies ANY unset attribute as a truthy mock
+    # object rather than None - explicitly setting this to None matches a
+    # real (non-anonymous) Telegram message and keeps is_real_admin()'s
+    # "was this posted anonymously as the chat itself" check honest.
+    msg.sender_chat = None
     return msg
 
 

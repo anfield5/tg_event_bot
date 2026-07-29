@@ -124,6 +124,15 @@ date.
 Pings only users who haven't responded yet, skips those who have, replies
 with an error if there's no active event.
 
+### `TestAdduser` (5 tests)
+Admin gate, a numeric user_id only gets added if `getChatMember` confirms
+they're *currently* in the chat (a regression test specifically covers
+`status=left/kicked` - a valid, non-exception API response that must be
+checked explicitly, not just "did the call succeed"), and a `@username` can
+only be resolved via the chat's administrator list (the Bot API has no
+username-lookup for `getChatMember` at all - a previous version tried
+passing `username=` directly to it, which silently never worked).
+
 ### `TestUpdateuser` (7 tests)
 The `-a`/`-active`/`-p`/`-passive` flag syntax, unknown flag error, missing
 args error, `@`-prefix stripping.

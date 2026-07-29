@@ -68,6 +68,14 @@ pytest -x -v -k alias  # combine flags as needed
   `make_update`, `make_bot`, `make_context`, `make_callback_update` - all
   return `MagicMock`/`AsyncMock` objects standing in for real
   `python-telegram-bot` objects, so no network call ever happens.
+  **Important**: `make_message()` explicitly sets `sender_chat = None`.
+  A bare `MagicMock()` auto-vivifies *any* unset attribute as a truthy mock
+  object instead of `None` - without this, every admin-gated command's
+  test silently short-circuited through `is_real_admin()`'s "was this
+  posted anonymously as the channel/chat itself" check as if it were
+  always true, meaning the *real* `get_chat_member`-based admin check
+  never actually ran in any test using a plain message mock. Don't remove
+  this line.
 - `insert_event()` and `insert_premium()` (in `test_handlers_async.py`) are
   shared helpers for seeding a temp DB with an event or an active
   subscription before exercising a handler against it.
