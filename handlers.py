@@ -23,7 +23,7 @@ from config import (
     ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_PREMIUM,
     FREE_SHAREEVENT_LIMIT_PER_TARGET,
 )
-from utils import escape_markdown, now2ddmmyy, parse_event_date
+from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import track_user, DB_PATH, get_connection
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet,
@@ -665,13 +665,8 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     # Only admins can use this command
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status not in ["administrator", "creator"]:
-            await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /adduser\\.", parse_mode="MarkdownV2")
-            return
-    except Exception as e:
-        logger.error(f"adduser: admin check failed: {e}")
+    if not await is_real_admin(context.bot, chat_id, update.effective_user, message=update.message):
+        await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /adduser\\.", parse_mode="MarkdownV2")
         return
 
     # Parse --chat_id / --monitor parameter
@@ -1143,6 +1138,15 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
             text="🤖 Could not verify bot status in target chat\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    if user_id == GROUP_ANONYMOUS_BOT_ID:
+        await context.bot.send_message(
+            chat_id=main_hub_chat_id,
+            text=f"{ICON_ADMIN_ONLY} Please disable \"Remain anonymous\" and re\\-run /shareevent \\- "
+                 f"your admin status in the target chat can't be verified anonymously\\.",
             parse_mode="MarkdownV2",
         )
         return
