@@ -263,10 +263,26 @@ async def sync_control_sheet_main(rows: list) -> bool:
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("MAIN")
-        await ws.clear()
         header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SHEET_NAME", "SUBS_DATE_START", "SUBS_DATE_END"]
         body   = [[str(v) if v is not None else "" for v in row] for row in rows]
-        await ws.update("A1", [header] + body)
+        grid   = [header] + body
+
+        # Find out how many rows this tab currently holds BEFORE writing,
+        # so we know whether any stale trailing rows need clearing after -
+        # deliberately done this way round (write first, trim leftovers
+        # after) so a failure never leaves the tab completely blank: worst
+        # case on a partial failure is a few harmless stale rows left below
+        # the fresh data, not "everything is gone".
+        try:
+            existing_row_count = len(await ws.get_all_values())
+        except Exception:
+            existing_row_count = 0
+
+        await ws.update("A1", grid)
+
+        if existing_row_count > len(grid):
+            await ws.batch_clear([f"A{len(grid) + 1}:Z{existing_row_count}"])
+
         return True
     except Exception as e:
         logger.error(f"Google Sheets Control/Main sync failed: {repr(e)}")
@@ -288,10 +304,20 @@ async def sync_control_sheet_subconfig(feature_rows: list):
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("SUB_CONFIG")
-        await ws.clear()
         header = ["FEATURE", "FREE", "PREMIUM"]
         body   = [[str(v) for v in row] for row in feature_rows]
-        await ws.update("A1", [header] + body)
+        grid   = [header] + body
+
+        try:
+            existing_row_count = len(await ws.get_all_values())
+        except Exception:
+            existing_row_count = 0
+
+        await ws.update("A1", grid)
+
+        if existing_row_count > len(grid):
+            await ws.batch_clear([f"A{len(grid) + 1}:Z{existing_row_count}"])
+
         return True
     except Exception as e:
         logger.error(f"Google Sheets Control/sub_config sync failed: {repr(e)}")

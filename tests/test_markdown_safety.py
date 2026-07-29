@@ -16,6 +16,12 @@ throughout this codebase as intentional formatting syntax (*bold*, `code`,
 bare '.' or '!' never has any special Markdown meaning here, so every
 occurrence of one is unescaped-by-mistake by definition. This is exactly
 the bug class that shipped in removealias/listalias.
+
+Backtick `code spans` are tracked and excluded: MarkdownV2 doesn't require
+(and doesn't want) escaping inside a code span - a backslash there shows up
+as a literal backslash in the rendered message rather than being consumed,
+so a '.'/'!' inside backticks (e.g. a "..." in a usage example) is correct
+as-is and must NOT be flagged.
 """
 import ast
 import os
@@ -59,10 +65,15 @@ class MarkdownV2Finder(ast.NodeVisitor):
             )
             if text_node is not None:
                 combined = "".join(_extract_literal_parts(text_node))
-                unescaped = [
-                    c for i, c in enumerate(combined)
-                    if c in RESERVED_MUST_ESCAPE and not (i > 0 and combined[i - 1] == "\\")
-                ]
+                unescaped = []
+                in_code = False
+                for i, c in enumerate(combined):
+                    prev_escaped = i > 0 and combined[i - 1] == "\\"
+                    if c == "`" and not prev_escaped:
+                        in_code = not in_code
+                        continue
+                    if c in RESERVED_MUST_ESCAPE and not in_code and not prev_escaped:
+                        unescaped.append(c)
                 if unescaped:
                     self.violations.append((node.lineno, combined))
         self.generic_visit(node)

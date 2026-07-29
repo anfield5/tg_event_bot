@@ -410,6 +410,108 @@ class TestNotify:
         msg.reply_text.assert_awaited_once()
 
 
+# ── /adduser ─────────────────────────────────────────────────────────────────
+
+class TestAdduser:
+    """
+    Covers the rewritten /adduser logic:
+      - a numeric user_id is only added if getChatMember confirms they're
+        CURRENTLY in the chat (status left/kicked is a valid, non-exception
+        response from Telegram - must be checked explicitly, not just
+        "did the call succeed")
+      - a @username can only be resolved via the chat's administrator list
+        (the Bot API has no username lookup for getChatMember at all)
+    """
+
+    async def test_admin_required(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=["123456"])
+
+        await handlers.adduser(upd, ctx)
+
+        assert "⛔" in msg.reply_text.call_args.args[0]
+
+    async def test_numeric_id_currently_in_chat_is_added(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),  # requester admin check
+            MagicMock(status="member", user=make_user(user_id=555, username="bob")),
+        ])
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=["555"])
+
+        await handlers.adduser(upd, ctx)
+
+        rows = get_users(db_path)
+        assert dict(rows)["bob"] == "active"
+        assert "✅ Added" in msg.reply_text.call_args.args[0]
+
+    async def test_numeric_id_with_left_status_is_rejected(self, db_path):
+        """
+        Regression test: getChatMember succeeding with status=left/kicked is
+        a VALID response (Telegram remembers a former member) - it must NOT
+        be silently treated as "currently in the chat".
+        """
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),
+            MagicMock(status="left", user=make_user(user_id=555, username="ghost")),
+        ])
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=["555"])
+
+        await handlers.adduser(upd, ctx)
+
+        rows = get_users(db_path)
+        assert "ghost" not in dict(rows)
+        assert "❌ Failed" in msg.reply_text.call_args.args[0]
+
+    async def test_username_resolved_via_chat_administrators(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        admin_user = make_user(user_id=777, username="carol")
+        bot.get_chat_administrators = AsyncMock(return_value=[MagicMock(user=admin_user)])
+
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=["@carol"])
+
+        await handlers.adduser(upd, ctx)
+
+        rows = get_users(db_path)
+        assert dict(rows)["carol"] == "active"
+
+    async def test_username_not_in_admin_list_is_rejected(self, db_path):
+        """
+        A username that isn't a chat admin (and has never interacted with
+        the bot before, so has no stored user_id either) can't be resolved
+        at all - the Bot API has no username lookup for getChatMember.
+        """
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=["@stranger"])
+
+        await handlers.adduser(upd, ctx)
+
+        rows = get_users(db_path)
+        assert "stranger" not in dict(rows)
+        assert "❌ Failed" in msg.reply_text.call_args.args[0]
+
+
 # ── /updateuser ───────────────────────────────────────────────────────────────
 
 class TestUpdateuser:
@@ -1307,7 +1409,8 @@ class TestRefreshusers:
     async def test_root_flag_appends_new_member_to_users_sheet(self, db_path):
         """
         -r/-root: a chat administrator not yet present in the Users tab must
-        get a new row: USER_ID, USER_NAME, PLACE_ID, STATUS="Member", "".
+        get a new row: USER_ID, USER_NAME, PLACE_ID, STATUS="MEMBER", a live
+        DATE_start timestamp, blank DATE_end, blank ARCHIVED_USER_NAME.
         """
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
@@ -1321,12 +1424,16 @@ class TestRefreshusers:
         ctx  = make_context(bot=bot, args=["-r"])
 
         fake_ss = FakeSpreadsheet()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
         ws = fake_ss.worksheets["Users"]
-        assert ws.appended_rows == [["555", "newadmin", "-100123", "Member", ""]]
+        assert len(ws.appended_rows) == 1
+        row = ws.appended_rows[0]
+        assert row[0:4] == ["555", "newadmin", "-100123", "MEMBER"]
+        assert row[4], "DATE_start must be set to a live timestamp"
+        assert row[5:7] == ["", ""]  # DATE_end, ARCHIVED_USER_NAME both blank
         reply = msg.reply_text.call_args.args[0]
         assert "Users tab" in reply
 
@@ -1343,12 +1450,16 @@ class TestRefreshusers:
         ctx  = make_context(bot=bot, args=["-root"])
 
         fake_ss = FakeSpreadsheet()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
         ws = fake_ss.worksheets["Users"]
-        assert ws.appended_rows == [["555", "newadmin", "-100123", "Member", ""]]
+        assert len(ws.appended_rows) == 1
+        row = ws.appended_rows[0]
+        assert row[0:4] == ["555", "newadmin", "-100123", "MEMBER"]
+        assert row[4], "DATE_start must be set to a live timestamp"
+        assert row[5:7] == ["", ""]
 
     async def test_root_flag_archives_changed_username(self, db_path):
         """A changed USER_NAME must be archived (comma-joined) and updated, not overwritten silently."""
@@ -1376,11 +1487,11 @@ class TestRefreshusers:
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
         ws.records = [{"USER_ID": "111", "USER_NAME": "oldname", "PLACE_ID": "-100123",
-                       "STATUS": "Member", "ARCHIVED USER_NAME": ""}]
+                       "STATUS": "Member", "ARCHIVED_USER_NAME": ""}]
         fake_ss.worksheets["Users"] = ws
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
         assert ws.cell_updates["B2"] == [["newname"]]
@@ -1408,11 +1519,11 @@ class TestRefreshusers:
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
         ws.records = [{"USER_ID": "111", "USER_NAME": "secondname", "PLACE_ID": "-100123",
-                       "STATUS": "Member", "ARCHIVED USER_NAME": "firstname"}]
+                       "STATUS": "Member", "ARCHIVED_USER_NAME": "firstname"}]
         fake_ss.worksheets["Users"] = ws
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
         assert ws.cell_updates["E2"] == [["firstname,secondname"]]
@@ -1438,14 +1549,14 @@ class TestRefreshusers:
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
         ws.records = [{"USER_ID": "222", "USER_NAME": "gone", "PLACE_ID": "-100123",
-                       "STATUS": "Member", "ARCHIVED USER_NAME": ""}]
+                       "STATUS": "Member", "ARCHIVED_USER_NAME": ""}]
         fake_ss.worksheets["Users"] = ws
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
-        assert ws.cell_updates["D2"] == [["Left"]]
+        assert ws.cell_updates["D2"] == [["LEFT"]]
 
     async def test_root_flag_does_not_touch_rows_from_other_places(self, db_path):
         """A Users-sheet row belonging to a DIFFERENT PLACE_ID must never be touched by this chat's refresh."""
@@ -1461,11 +1572,11 @@ class TestRefreshusers:
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
         ws.records = [{"USER_ID": "999", "USER_NAME": "elsewhere", "PLACE_ID": "-999999",
-                       "STATUS": "Member", "ARCHIVED USER_NAME": ""}]
+                       "STATUS": "Member", "ARCHIVED_USER_NAME": ""}]
         fake_ss.worksheets["Users"] = ws
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
         assert ws.cell_updates == {}
@@ -1805,7 +1916,7 @@ class TestButtonHandlerSaveCloseEvent:
              patch("handlers.sync_event_users_sheet", sync_mock):
             await handlers.button_handler(upd, ctx)
 
-        sync_mock.assert_awaited_once()
+        sync_mock.assert_called_once()
         _, _, going_ids = sync_mock.call_args.args
         # alice (main hub) + bob + carol (two DIFFERENT child chats) must all
         # be present; dave (notgoing) must be excluded.
@@ -1835,7 +1946,7 @@ class TestButtonHandlerSaveCloseEvent:
              patch("handlers.sync_event_users_sheet", sync_mock):
             await handlers.button_handler(upd, ctx)
 
-        sync_mock.assert_awaited_once()
+        sync_mock.assert_called_once()
         _, _, going_ids = sync_mock.call_args.args
         assert "1" in going_ids
         assert "guest_bobby" in going_ids
@@ -1988,6 +2099,20 @@ class TestScheduleViewRefreshCoalescing:
 
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
         bot = make_bot()
+
+        # A bare AsyncMock() resolves synchronously when awaited (no real
+        # I/O inside it) - so it never actually yields control back to the
+        # event loop, meaning the 5 "concurrent" calls below would just run
+        # one at a time to full completion with no real overlap, and the
+        # coalescing lock would never see genuine concurrency to collapse.
+        # A tiny real suspension point (asyncio.sleep(0)) makes the mock
+        # behave like the real network call it's standing in for, letting
+        # the other 4 calls actually pile up while one is "in flight".
+        async def _yielding_edit(*args, **kwargs):
+            await asyncio.sleep(0)
+            return MagicMock()
+        bot.edit_message_text = AsyncMock(side_effect=_yielding_edit)
+
         ctx = make_context(bot=bot)
 
         # Fire several refreshes "at once" for the same event.
