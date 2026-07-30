@@ -84,19 +84,60 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_start TEXT DEFAULT NULL")
         cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_end TEXT DEFAULT NULL")
 
+    # Second rename: 'main_chat_settings' -> 'all_groups'. Same reasoning as
+    # above - must run before CREATE TABLE IF NOT EXISTS, since 'all_groups'
+    # is a brand new name that "IF NOT EXISTS" would happily create empty
+    # alongside the still-existing old table.
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='main_chat_settings'")
+    has_main_chat_settings = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='all_groups'")
+    has_all_groups = cursor.fetchone() is not None
+    if has_main_chat_settings and not has_all_groups:
+        cursor.execute("ALTER TABLE main_chat_settings RENAME TO all_groups")
+
     # Per-hub settings: which Google Sheet this hub writes to (by spreadsheet
     # ID, not name - names aren't guaranteed unique across different Google
-    # accounts/files, only the ID is), subscription tier, and subscription
-    # window.
+    # accounts/files, only the ID is), subscription tier, subscription
+    # window, whether the group is public/private, and when the bot was
+    # added to it.
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS main_chat_settings (
+        CREATE TABLE IF NOT EXISTS all_groups (
             chat_id TEXT PRIMARY KEY,
             chat_name TEXT DEFAULT NULL,
             type TEXT DEFAULT 'free',
             sheet_id TEXT UNIQUE,
             sheet_name TEXT DEFAULT NULL,
             subs_date_start TEXT DEFAULT NULL,
-            subs_date_end TEXT DEFAULT NULL
+            subs_date_end TEXT DEFAULT NULL,
+            visibility TEXT DEFAULT NULL,
+            date_bot_add TEXT DEFAULT NULL
+        )
+    """)
+
+    # Every channel the bot has ever been added to (separate from
+    # all_groups, since channels don't have a subscription/sheet concept
+    # the same way hub groups do - this is purely a presence registry).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS all_channels (
+            chat_id TEXT PRIMARY KEY,
+            chat_name TEXT DEFAULT NULL,
+            visibility TEXT DEFAULT NULL,
+            date_bot_add TEXT DEFAULT NULL
+        )
+    """)
+
+    # Historical log of every group/channel the bot has ever been added to
+    # and (if applicable) removed from. A row is inserted here - carrying
+    # over that chat's date_bot_add - and the corresponding all_groups/
+    # all_channels row is deleted, the moment the bot is removed. Kept as
+    # its own append-only table (chat_id is NOT unique here - the same chat
+    # could add/remove/re-add the bot multiple times over its history).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS all_chats_bot_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            date_bot_add TEXT DEFAULT NULL,
+            date_bot_removed TEXT DEFAULT NULL
         )
     """)
 
@@ -138,6 +179,8 @@ def init_db(db_path: str = DB_PATH):
             username TEXT,
             user_id TEXT DEFAULT NULL,
             status TEXT DEFAULT 'active',
+            first_name TEXT DEFAULT NULL,
+            last_name TEXT DEFAULT NULL,
             PRIMARY KEY (chat_id, username)
         )
     """)
@@ -265,21 +308,25 @@ def init_db(db_path: str = DB_PATH):
 
     # ── Migrations ────────────────────────────────────────────────────────────
 
-    # -1. Add any of main_chat_settings' newer columns if still missing
-    # (covers a main_chat_settings that already existed under its new name
-    # but predates one of these columns).
-    cursor.execute("PRAGMA table_info(main_chat_settings)")
+    # -1. Add any of all_groups' newer columns if still missing (covers an
+    # all_groups that already existed under its current name but predates
+    # one of these columns).
+    cursor.execute("PRAGMA table_info(all_groups)")
     mcs_cols = [col[1] for col in cursor.fetchall()]
     if "type" not in mcs_cols:
-        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN type TEXT DEFAULT 'free'")
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN type TEXT DEFAULT 'free'")
     if "subs_date_start" not in mcs_cols:
-        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_start TEXT DEFAULT NULL")
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN subs_date_start TEXT DEFAULT NULL")
     if "subs_date_end" not in mcs_cols:
-        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_end TEXT DEFAULT NULL")
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN subs_date_end TEXT DEFAULT NULL")
     if "chat_name" not in mcs_cols:
-        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN chat_name TEXT DEFAULT NULL")
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN chat_name TEXT DEFAULT NULL")
     if "sheet_name" not in mcs_cols:
-        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN sheet_name TEXT DEFAULT NULL")
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN sheet_name TEXT DEFAULT NULL")
+    if "visibility" not in mcs_cols:
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN visibility TEXT DEFAULT NULL")
+    if "date_bot_add" not in mcs_cols:
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN date_bot_add TEXT DEFAULT NULL")
 
     # 0b. Add `chat_type`/`chat_name` to sub_groups if it exists from an
     # earlier version of this same migration that predates them.
@@ -299,6 +346,12 @@ def init_db(db_path: str = DB_PATH):
     # 2. Add `user_id` column to main_group_users if missing
     if "user_id" not in main_group_users_cols:
         cursor.execute("ALTER TABLE main_group_users ADD COLUMN user_id TEXT DEFAULT NULL")
+
+    # 2b. Add `first_name`/`last_name` columns to main_group_users if missing
+    if "first_name" not in main_group_users_cols:
+        cursor.execute("ALTER TABLE main_group_users ADD COLUMN first_name TEXT DEFAULT NULL")
+    if "last_name" not in main_group_users_cols:
+        cursor.execute("ALTER TABLE main_group_users ADD COLUMN last_name TEXT DEFAULT NULL")
 
     # 3. Add `event_date` column to events if missing
     cursor.execute("PRAGMA table_info(events)")
@@ -366,10 +419,14 @@ def init_db(db_path: str = DB_PATH):
 
 
 def track_user(chat_id: str, username: str, status: str = "active",
-               user_id: str = None, db_path: str = None):
+               user_id: str = None, first_name: str = None, last_name: str = None,
+               db_path: str = None):
     """
     Upserts a single user registration record within the localized chat context.
-    Optionally stores the Telegram user_id so refreshusers can verify membership.
+    Optionally stores the Telegram user_id so refreshusers can verify membership,
+    plus first_name/last_name so going/notgoing lists can show a clickable
+    "First Last" link (tg://user?id=...) instead of relying on @username,
+    which may not exist at all.
     """
     if not username:
         return
@@ -379,15 +436,125 @@ def track_user(chat_id: str, username: str, status: str = "active",
     cursor = conn.cursor()
     if user_id is not None:
         cursor.execute("""
-            INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES (?, ?, ?, ?)
+            INSERT INTO main_group_users (chat_id, username, user_id, status, first_name, last_name)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(chat_id, username) DO UPDATE
                 SET status = excluded.status,
-                    user_id = COALESCE(excluded.user_id, main_group_users.user_id)
-        """, (str(chat_id), username, str(user_id), status))
+                    user_id = COALESCE(excluded.user_id, main_group_users.user_id),
+                    first_name = COALESCE(excluded.first_name, main_group_users.first_name),
+                    last_name = COALESCE(excluded.last_name, main_group_users.last_name)
+        """, (str(chat_id), username, str(user_id), status, first_name, last_name))
     else:
         cursor.execute("""
             INSERT INTO main_group_users (chat_id, username, status) VALUES (?, ?, ?)
             ON CONFLICT(chat_id, username) DO UPDATE SET status = excluded.status
         """, (str(chat_id), username, status))
     conn.commit()
+    conn.close()
+
+
+def get_display_name(chat_id: str, user_id: str, fallback: str, db_path: str = None) -> str:
+    """
+    Returns "First Last" for this user_id if we have it stored (from a
+    previous track_user() call with first_name/last_name), trimmed of any
+    missing part - e.g. just "First" if there's no last_name on file.
+    Falls back to `fallback` (typically the @username or "user<id>") if we
+    have no name on file at all for this chat_id/user_id yet.
+    """
+    if not user_id:
+        return fallback
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT first_name, last_name FROM main_group_users WHERE chat_id = ? AND user_id = ? "
+        "AND first_name IS NOT NULL LIMIT 1",
+        (str(chat_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return fallback
+    first, last = row
+    full = " ".join(p for p in (first, last) if p)
+    return full or fallback
+
+
+def register_chat_added(chat_id: str, chat_name: str, chat_type: str, visibility: str,
+                         date_bot_add: str, db_path: str = None):
+    """
+    Called the moment the bot is added to a group/channel (see main.py's
+    on_my_chat_member_update). Groups go into all_groups (default type
+    'free'), channels go into all_channels - both are simple "the bot is
+    currently present here" registries, kept separate since groups have a
+    subscription/sheet-binding concept that channels don't.
+
+    chat_type: "channel" for channels, anything else (group/supergroup)
+    treated as a group.
+    visibility: "public" if the chat has a public @username, "private"
+    otherwise (see main.py for how this is determined).
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    if chat_type == "channel":
+        cursor.execute("""
+            INSERT INTO all_channels (chat_id, chat_name, visibility, date_bot_add)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE
+                SET chat_name = excluded.chat_name,
+                    visibility = excluded.visibility,
+                    date_bot_add = excluded.date_bot_add
+        """, (str(chat_id), chat_name, visibility, date_bot_add))
+    else:
+        cursor.execute("""
+            INSERT INTO all_groups (chat_id, chat_name, type, visibility, date_bot_add)
+            VALUES (?, ?, 'free', ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE
+                SET chat_name = excluded.chat_name,
+                    visibility = excluded.visibility,
+                    date_bot_add = excluded.date_bot_add
+        """, (str(chat_id), chat_name, visibility, date_bot_add))
+    conn.commit()
+    conn.close()
+
+
+def register_chat_removed(chat_id: str, date_bot_removed: str, db_path: str = None):
+    """
+    Called the moment the bot is removed from (or leaves) a group/channel.
+    Moves that chat's row out of all_groups/all_channels (wherever it was)
+    and appends a record to all_chats_bot_log with both the original
+    date_bot_add and the new date_bot_removed - the presence registries
+    only ever reflect chats the bot is CURRENTLY in, the log is the
+    historical trail.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT date_bot_add FROM all_groups WHERE chat_id = ?", (str(chat_id),))
+    row = cursor.fetchone()
+    if row is not None:
+        cursor.execute(
+            "INSERT INTO all_chats_bot_log (chat_id, date_bot_add, date_bot_removed) VALUES (?, ?, ?)",
+            (str(chat_id), row[0], date_bot_removed),
+        )
+        cursor.execute("DELETE FROM all_groups WHERE chat_id = ?", (str(chat_id),))
+        conn.commit()
+        conn.close()
+        return
+
+    cursor.execute("SELECT date_bot_add FROM all_channels WHERE chat_id = ?", (str(chat_id),))
+    row = cursor.fetchone()
+    if row is not None:
+        cursor.execute(
+            "INSERT INTO all_chats_bot_log (chat_id, date_bot_add, date_bot_removed) VALUES (?, ?, ?)",
+            (str(chat_id), row[0], date_bot_removed),
+        )
+        cursor.execute("DELETE FROM all_channels WHERE chat_id = ?", (str(chat_id),))
+        conn.commit()
+
     conn.close()

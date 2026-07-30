@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
-from db import init_db, track_user
+from db import init_db, track_user, register_chat_added, register_chat_removed
 from sheets import log_user_presence, sync_control_sheet_subconfig
 from handlers import (
     help_command, help_callback_handler, help_back_handler, userid, chatid,
@@ -22,7 +22,8 @@ from handlers import (
     button_handler,
     global_text_router,
 )
-from subscription import setsub, setsheet, syncgroups, _push_control_sheet_main, FEATURE_MATRIX
+from subscription import setsub, setsheet, syncgroups, _push_control_sheet_main, _push_control_sheet_channels, FEATURE_MATRIX
+from utils import now2ddmmyy
 
 
 async def on_chat_member_update(update, context):
@@ -57,22 +58,72 @@ async def on_chat_member_update(update, context):
 async def _sync_control_sheet_on_startup(application):
     """
     Runs once after the bot finishes initializing. If CONTROL_SHEET_ID is
-    configured, pushes the current main_chat_settings + feature matrix to
-    the Control Sheet right away - otherwise the sheet would stay empty
-    until the first /setsub call or a manual /syncgroups.
+    configured, pushes the current all_groups + all_channels + feature
+    matrix to the Control Sheet right away - otherwise the sheet would stay
+    empty until the first /setsub call or a manual /syncgroups.
     """
     if not CONTROL_SHEET_ID:
         return
-    main_ok      = await _push_control_sheet_main()
+    groups_ok    = await _push_control_sheet_main()
+    channels_ok  = await _push_control_sheet_channels()
     subconfig_ok = await sync_control_sheet_subconfig(FEATURE_MATRIX)
-    if main_ok and subconfig_ok:
-        logger.info("Control Sheet synced at startup (MAIN + SUB_CONFIG).")
+    if groups_ok and channels_ok and subconfig_ok:
+        logger.info("Control Sheet synced at startup (GROUPS + CHANNELS + SUB_CONFIG).")
     else:
         logger.error(
-            f"Control Sheet startup sync incomplete - MAIN: {'ok' if main_ok else 'FAILED'}, "
+            f"Control Sheet startup sync incomplete - GROUPS: {'ok' if groups_ok else 'FAILED'}, "
+            f"CHANNELS: {'ok' if channels_ok else 'FAILED'}, "
             f"SUB_CONFIG: {'ok' if subconfig_ok else 'FAILED'}. Check CONTROL_SHEET_ID, sharing "
-            f"permissions, and that both tabs exist with the exact names 'MAIN' and 'SUB_CONFIG'."
+            f"permissions, and that all three tabs exist with the exact names 'GROUPS', 'CHANNELS', and 'SUB_CONFIG'."
         )
+
+
+async def on_my_chat_member_update(update, context):
+    """
+    Tracks the BOT'S OWN membership changes (added to / removed from a
+    group or channel) - a DIFFERENT Telegram update type from regular user
+    membership changes (see on_chat_member_update above, which only fires
+    for OTHER users). Populates all_groups/all_channels the instant the bot
+    joins a new chat (default type 'free' for groups), and moves that row
+    into all_chats_bot_log with a removal timestamp the instant it's kicked
+    or leaves. Also pushes the Control Sheet's GROUPS/CHANNELS tabs right
+    away, so they never lag behind reality waiting for the next /setsub or
+    bot restart.
+    """
+    result = update.my_chat_member
+    if not result:
+        return
+
+    chat        = result.chat
+    chat_id     = str(chat.id)
+    old_status  = result.old_chat_member.status
+    new_status  = result.new_chat_member.status
+
+    was_present = old_status in ("member", "administrator", "creator")
+    is_present  = new_status in ("member", "administrator", "creator")
+
+    if is_present and not was_present:
+        chat_name  = chat.title or chat.username or chat_id
+        # A chat has a public @username iff it's discoverable/joinable by
+        # anyone via that handle - the standard signal for "public" vs
+        # "private" (invite-link-only) groups and channels.
+        visibility = "public" if chat.username else "private"
+        chat_type  = "channel" if chat.type == "channel" else "group"
+        register_chat_added(chat_id, chat_name, chat_type, visibility, now2ddmmyy())
+        logger.info(f"Bot added to {chat_type} {chat_id} ({chat_name}, {visibility})")
+    elif was_present and not is_present:
+        register_chat_removed(chat_id, now2ddmmyy())
+        logger.info(f"Bot removed from chat {chat_id}")
+    else:
+        return  # neither an add nor a removal (e.g. restricted <-> member) - nothing to sync
+
+    if not CONTROL_SHEET_ID:
+        return
+    try:
+        await _push_control_sheet_main()
+        await _push_control_sheet_channels()
+    except Exception as e:
+        logger.error(f"Control Sheet sync after bot membership change failed: {e}")
 
 
 def main():
@@ -135,6 +186,7 @@ def main():
 
     # 2. Chat member join/leave tracking
     app.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(on_my_chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
 
     # 3. Core commands
     app.add_handler(CommandHandler("help",         help_command))
