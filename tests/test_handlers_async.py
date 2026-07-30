@@ -171,7 +171,7 @@ class TestNewevent:
     async def test_sends_open_state_keyboard_not_verification(self, db_path):
         """
         Regression test: the keyboard sent alongside a freshly created event
-        must be the OPEN state (Going/Not Going/ADD/Remove/Verification Mode/
+        must be the OPEN state (Going/Not Going/ADD/Remove/Verify&Close/
         Cancel Event) - NOT the verification-mode-only keyboard (Add Extra
         Player/Save & Close Event). A stale hardcoded event_status value at
         the call site once caused every new event to display with the wrong
@@ -195,7 +195,7 @@ class TestNewevent:
         assert any("Not Going" in t for t in texts), "open-state Not Going button missing"
         assert any("ADD" in t for t in texts), "open-state ADD button missing"
         assert any("Remove" in t for t in texts), "open-state Remove button missing"
-        assert any("Verification Mode" in t for t in texts), "Verification Mode button missing"
+        assert any("Verify&Close" in t for t in texts), "Verify&Close button missing"
         assert any("Cancel Event" in t for t in texts), "Cancel Event button missing"
 
         # And NOT the verification-only keyboard
