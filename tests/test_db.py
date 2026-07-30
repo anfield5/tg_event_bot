@@ -61,7 +61,9 @@ class TestInitDb:
     """init_db() must create all required tables and add migration columns."""
 
     EXPECTED_TABLES = {
-        "main_chat_settings",
+        "all_groups",
+        "all_channels",
+        "all_chats_bot_log",
         "events",
         "main_group_users",
         "event_shares",
@@ -118,12 +120,20 @@ class TestInitDb:
         init_db(db_path=path)
         assert "status" in get_columns(path, "main_group_users")
 
-    def test_main_chat_settings_columns(self, tmp_path):
+    def test_main_group_users_has_name_columns(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        cols = get_columns(path, "main_chat_settings")
-        for expected in ("chat_id", "type", "sheet_id", "sheet_name", "subs_date_start", "subs_date_end"):
-            assert expected in cols, f"main_chat_settings missing '{expected}'"
+        cols = get_columns(path, "main_group_users")
+        assert "first_name" in cols
+        assert "last_name" in cols
+
+    def test_all_groups_columns(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        cols = get_columns(path, "all_groups")
+        for expected in ("chat_id", "type", "sheet_id", "sheet_name", "subs_date_start",
+                         "subs_date_end", "visibility", "date_bot_add"):
+            assert expected in cols, f"all_groups missing '{expected}'"
 
     def test_sub_groups_columns(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -192,7 +202,13 @@ class TestMigrationChatUsersRename:
 
 
 class TestMigrationChatSettingsRename:
-    """Legacy 'chat_settings' (sheet_name) must become 'main_chat_settings' (sheet_id + subscription fields)."""
+    """
+    Legacy 'chat_settings' (sheet_name) must become 'all_groups' (sheet_id +
+    subscription fields) - a single init_db() call runs the FULL migration
+    chain (chat_settings -> main_chat_settings -> all_groups), so a
+    database starting from the oldest legacy name ends up fully migrated
+    to the current one in one pass.
+    """
 
     def test_renames_column_and_preserves_data(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -202,9 +218,10 @@ class TestMigrationChatSettingsRename:
         init_db(db_path=path)
 
         tables = get_tables(path)
-        assert "main_chat_settings" in tables
+        assert "all_groups" in tables
         assert "chat_settings" not in tables
-        rows = fetch_all(path, "SELECT chat_id, sheet_id, type FROM main_chat_settings WHERE chat_id='-1001234567890'")
+        assert "main_chat_settings" not in tables
+        rows = fetch_all(path, "SELECT chat_id, sheet_id, type FROM all_groups WHERE chat_id='-1001234567890'")
         assert rows == [("-1001234567890", "TestEventsSheet", "free")]
 
     def test_idempotent_after_rename(self, tmp_path):
@@ -213,8 +230,48 @@ class TestMigrationChatSettingsRename:
         run_sql(path, "INSERT INTO chat_settings (chat_id, sheet_name) VALUES ('100','SheetA')")
         init_db(db_path=path)
         init_db(db_path=path)  # must not raise or duplicate
-        rows = fetch_all(path, "SELECT chat_id, sheet_id FROM main_chat_settings")
+        rows = fetch_all(path, "SELECT chat_id, sheet_id FROM all_groups")
         assert rows == [("100", "SheetA")]
+
+
+class TestMigrationMainChatSettingsRename:
+    """
+    'main_chat_settings' (the intermediate name) must become 'all_groups' -
+    covers a database that already migrated to main_chat_settings under an
+    older bot version, and is now catching up to the current name.
+    """
+
+    def test_renames_and_preserves_data(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE main_chat_settings (
+                chat_id TEXT PRIMARY KEY, chat_name TEXT, type TEXT DEFAULT 'free',
+                sheet_id TEXT UNIQUE, sheet_name TEXT, subs_date_start TEXT, subs_date_end TEXT
+            )
+        """)
+        run_sql(path, "INSERT INTO main_chat_settings (chat_id, type, sheet_id) VALUES ('-200', 'pro', 'SheetB')")
+
+        init_db(db_path=path)
+
+        tables = get_tables(path)
+        assert "all_groups" in tables
+        assert "main_chat_settings" not in tables
+        rows = fetch_all(path, "SELECT chat_id, type, sheet_id FROM all_groups WHERE chat_id='-200'")
+        assert rows == [("-200", "pro", "SheetB")]
+
+    def test_idempotent_after_rename(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE main_chat_settings (
+                chat_id TEXT PRIMARY KEY, chat_name TEXT, type TEXT DEFAULT 'free',
+                sheet_id TEXT UNIQUE, sheet_name TEXT, subs_date_start TEXT, subs_date_end TEXT
+            )
+        """)
+        run_sql(path, "INSERT INTO main_chat_settings (chat_id, sheet_id) VALUES ('300', 'SheetC')")
+        init_db(db_path=path)
+        init_db(db_path=path)
+        rows = fetch_all(path, "SELECT chat_id, sheet_id FROM all_groups")
+        assert rows == [("300", "SheetC")]
 
 
 class TestMigrationSubGroupsMerge:

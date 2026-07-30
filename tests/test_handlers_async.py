@@ -43,7 +43,7 @@ def insert_premium(db_path, chat_id="-100123", days=30):
     end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO main_chat_settings (chat_id, type, subs_date_start, subs_date_end) VALUES (?, 'premium', ?, ?)",
+        "INSERT INTO all_groups (chat_id, type, subs_date_start, subs_date_end) VALUES (?, 'pro', ?, ?)",
         (chat_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), end),
     )
     conn.commit()
@@ -362,8 +362,8 @@ class TestNotify:
         # Insert an event + two users; neither has responded
         insert_event(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob',  NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',  NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -384,7 +384,7 @@ class TestNotify:
             going=json.dumps(["alice (111)"]),
         )
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -520,7 +520,7 @@ class TestUpdateuser:
     async def _run(self, db_path, args):
         """Helper: insert a known user then run /updateuser with given args."""
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -571,7 +571,7 @@ class TestUpdateuser:
 
     async def test_at_prefix_stripped_from_username(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -591,8 +591,8 @@ class TestListusers:
 
     async def test_shows_all_users(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice',NULL,'active')")
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob',  NULL,'passive')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',  NULL,'passive')")
         conn.commit()
         conn.close()
 
@@ -765,7 +765,7 @@ class TestShareevent:
         assert count == 3, "the 4th share must have been rejected"
 
         sent_text = ctx.bot.send_message.call_args.kwargs.get("text", "")
-        assert sent_text == "You used all free limit for /shareevent, move to premium subscription for more"
+        assert sent_text == "You used all free limit for /shareevent, move to PRO subscription for more"
 
     async def test_premium_tier_has_no_shareevent_limit(self, db_path):
         insert_premium(db_path, chat_id=MAIN_CHAT)
@@ -842,7 +842,7 @@ class TestPremiumGating:
     async def _assert_blocked(self, msg):
         msg.reply_text.assert_awaited_once()
         reply = msg.reply_text.call_args.args[0]
-        assert "premium" in reply.lower()
+        assert "pro" in reply.lower()
 
     async def test_setalias_blocked_on_free(self, db_path):
         chat = make_chat(chat_id=int(self.FREE_CHAT_ID))
@@ -952,7 +952,7 @@ class TestIsPremium:
 
     def test_free_type_is_not_premium(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_chat_settings (chat_id, type) VALUES ('-100','free')")
+        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-100','free')")
         conn.commit()
         conn.close()
         assert handlers.is_premium("-100") is False
@@ -967,7 +967,7 @@ class TestIsPremium:
 
     def test_premium_type_but_null_end_date_is_not_premium(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_chat_settings (chat_id, type) VALUES ('-100','premium')")
+        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-100','pro')")
         conn.commit()
         conn.close()
         assert handlers.is_premium("-100") is False
@@ -1035,7 +1035,7 @@ class TestSetsub:
 
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT subs_date_end FROM main_chat_settings WHERE chat_id='-100'")
+            cursor.execute("SELECT subs_date_end FROM all_groups WHERE chat_id='-100'")
             end_str = cursor.fetchone()[0]
             conn.close()
             from datetime import datetime
@@ -1229,7 +1229,7 @@ class TestRefreshusers:
         is exactly why "the list wasn't cleaned" was reported.
         """
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','alice','111','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','111','active')")
         conn.commit()
         conn.close()
 
@@ -1255,7 +1255,7 @@ class TestRefreshusers:
 
     async def test_kicked_user_is_also_removed(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob','222','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob','222','active')")
         conn.commit()
         conn.close()
 
@@ -1277,7 +1277,7 @@ class TestRefreshusers:
 
     async def test_still_present_user_is_not_removed(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','carol','333','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','carol','333','active')")
         conn.commit()
         conn.close()
 
@@ -1300,7 +1300,7 @@ class TestRefreshusers:
     async def test_users_without_id_are_skipped_not_removed(self, db_path):
         # Insert a user without a user_id
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','bob',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',NULL,'active')")
         conn.commit()
         conn.close()
 
@@ -1353,7 +1353,7 @@ class TestRefreshusers:
 
     async def test_does_not_duplicate_already_tracked_admin(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','existingadmin','555','passive')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','existingadmin','555','passive')")
         conn.commit()
         conn.close()
 
@@ -1464,7 +1464,7 @@ class TestRefreshusers:
     async def test_root_flag_archives_changed_username(self, db_path):
         """A changed USER_NAME must be archived (comma-joined) and updated, not overwritten silently."""
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','oldname','111','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','oldname','111','active')")
         conn.commit()
         conn.close()
 
@@ -1499,7 +1499,7 @@ class TestRefreshusers:
 
     async def test_root_flag_appends_further_archived_names_with_comma(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','secondname','111','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','secondname','111','active')")
         conn.commit()
         conn.close()
 
@@ -1531,7 +1531,7 @@ class TestRefreshusers:
     async def test_root_flag_marks_departed_user_as_left_in_sheet(self, db_path):
         """A Users-sheet row for this PLACE_ID whose person is confirmed gone must get STATUS=Left."""
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users VALUES ('-100123','gone','222','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','gone','222','active')")
         conn.commit()
         conn.close()
 
@@ -1836,7 +1836,7 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
 
         child_calls = [c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -200]
         text = child_calls[0].kwargs.get("text", "")
-        assert "2, from: onlyguests" in text
+        assert "2, from: [onlyguests](tg://user?id=9)" in text
         assert "✅ onlyguests\n" not in text, "a guest-only registrant must not get their own 'going' name line"
 
 
@@ -2011,7 +2011,7 @@ class TestButtonHandlerActionsLogNaming:
 
 
 class TestSharedLabelAndIcon:
-    """The child-chat broadcast text must say 'SHARED:' with the ↪️ icon."""
+    """The child-chat broadcast text uses only the ↪️ icon, no 'SHARED' word."""
 
     async def test_shared_label_uses_new_icon_and_short_text(self, db_path):
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
@@ -2031,8 +2031,8 @@ class TestSharedLabelAndIcon:
         ]
         assert child_calls, "expected an edit_message_text call for the child chat"
         text = child_calls[0].kwargs.get("text", "")
-        assert "↪️ *SHARED:" in text
-        assert "SHARED EVENT" not in text
+        assert "↪️ *" in text
+        assert "SHARED" not in text
         assert "📢" not in text
 
 
@@ -2054,7 +2054,7 @@ class TestGuestsFoldedIntoGoingList:
 
         text = bot.edit_message_text.call_args_list[0].kwargs.get("text", "")
         assert "Guests" not in text
-        assert "2, from: alice" in text
+        assert "2, from: [alice](tg://user?id=1)" in text
 
     async def test_guest_line_present_in_child_view(self, db_path):
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
@@ -2072,7 +2072,7 @@ class TestGuestsFoldedIntoGoingList:
 
         child_calls = [c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -200]
         text = child_calls[0].kwargs.get("text", "")
-        assert "4, from: channelfan" in text
+        assert "4, from: [channelfan](tg://user?id=9)" in text
         assert "(+4 g.)" not in text
 
 

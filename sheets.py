@@ -60,7 +60,7 @@ async def get_sheet_for_chat(chat_id):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT type, sheet_id, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
+        "SELECT type, sheet_id, subs_date_end FROM all_groups WHERE chat_id = ?",
         (str(chat_id),),
     )
     row = cursor.fetchone()
@@ -70,7 +70,7 @@ async def get_sheet_for_chat(chat_id):
         return None  # unregistered hub defaults to free - no Sheets writes
 
     chat_type, sheet_id, subs_date_end = row
-    if chat_type != "premium":
+    if chat_type != "pro":
         return None
 
     if not subs_date_end:
@@ -102,10 +102,14 @@ async def sync_users_sheet(chat_id, current_members: list):
     Syncs the "Users" worksheet for a given chat/place with its current
     (best-known) membership.
 
-    current_members: list of (user_id, username) tuples for people confirmed
-    to currently be in `chat_id` right now.
+    current_members: list of (user_id, username) or
+    (user_id, username, first_name, last_name) tuples for people confirmed
+    to currently be in `chat_id` right now. The 2-tuple form is still
+    accepted for backward compatibility - first_name/last_name just won't
+    be written for those entries.
 
-    Columns: USER_ID, USER_NAME, PLACE_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME
+    Columns: USER_ID, USER_NAME, PLACE_ID, STATUS, DATE_start, DATE_end,
+    ARCHIVED_USER_NAME, FIRST_NAME, LAST_NAME.
     A row is uniquely identified by (USER_ID, PLACE_ID) - the same person can
     have separate rows for separate places/groups managed by this bot.
 
@@ -116,6 +120,10 @@ async def sync_users_sheet(chat_id, current_members: list):
         is appended to ARCHIVED_USER_NAME (comma-separated), and USER_NAME is
         updated to the current one. If they were previously "LEFT", their
         STATUS flips back to "MEMBER" and DATE_end is cleared.
+      - FIRST_NAME/LAST_NAME are (re)written whenever we have a fresh value
+        for them, even for an already-known row - covers someone who
+        changed their Telegram name, or whose name simply wasn't captured
+        the first time this feature existed.
       - Any existing row for this PLACE_ID that ISN'T in current_members ->
         STATUS is set to "LEFT" and DATE_end is set to current date
         (their row/history is kept, not deleted).
@@ -134,7 +142,12 @@ async def sync_users_sheet(chat_id, current_members: list):
             index[key] = (idx, r)
 
         current_keys = set()
-        for user_id, username in current_members:
+        for member in current_members:
+            if len(member) == 4:
+                user_id, username, first_name, last_name = member
+            else:
+                user_id, username = member
+                first_name, last_name = None, None
             if not user_id or not username:
                 continue
             key = (str(user_id), str(chat_id))
@@ -157,9 +170,15 @@ async def sync_users_sheet(chat_id, current_members: list):
                     await ws.update(f"E{idx}", [[now2ddmmyy()]])
                     await ws.update(f"F{idx}", [[""]])
                 # If status is already MEMBER, do nothing
+
+                if first_name:
+                    await ws.update(f"H{idx}", [[first_name]])
+                if last_name:
+                    await ws.update(f"I{idx}", [[last_name]])
             else:
                 # New user: add with MEMBER status
-                await ws.append_row([str(user_id), username, str(chat_id), "MEMBER", now2ddmmyy(), "", ""])
+                await ws.append_row([str(user_id), username, str(chat_id), "MEMBER", now2ddmmyy(), "",
+                                      "", first_name or "", last_name or ""])
 
         # Handle users who left the group
         for key, (idx, rec) in index.items():
@@ -243,8 +262,8 @@ async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start
 
 async def sync_control_sheet_main(rows: list) -> bool:
     """
-    Overwrites the "MAIN" tab of the Control Sheet (CONTROL_SHEET_ID) with
-    the current contents of main_chat_settings, so the bot owner can see
+    Overwrites the "GROUPS" tab of the Control Sheet (CONTROL_SHEET_ID) with
+    the current contents of all_groups, so the bot owner can see
     every group using the bot and its subscription status in one place,
     without needing a Telegram command or a separate web dashboard.
 
@@ -253,7 +272,8 @@ async def sync_control_sheet_main(rows: list) -> bool:
     way to actually change a subscription. This tab is a read-only mirror
     for visibility, not a control surface (yet).
 
-    rows: list of (chat_id, chat_name, type, sheet_id, sheet_name, subs_date_start, subs_date_end) tuples.
+    rows: list of (chat_id, chat_name, type, sheet_id, sheet_name,
+    subs_date_start, subs_date_end, visibility, date_bot_add) tuples.
     Returns True on success, False on failure (logged either way) - so
     callers can tell the user honestly instead of always claiming success.
     """
@@ -262,8 +282,9 @@ async def sync_control_sheet_main(rows: list) -> bool:
         return False
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
-        ws = await ss.worksheet("MAIN")
-        header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SHEET_NAME", "SUBS_DATE_START", "SUBS_DATE_END"]
+        ws = await ss.worksheet("GROUPS")
+        header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SHEET_NAME",
+                   "SUBS_DATE_START", "SUBS_DATE_END", "VISIBILITY", "DATE_BOT_ADD"]
         body   = [[str(v) if v is not None else "" for v in row] for row in rows]
         grid   = [header] + body
 
@@ -285,7 +306,43 @@ async def sync_control_sheet_main(rows: list) -> bool:
 
         return True
     except Exception as e:
-        logger.error(f"Google Sheets Control/Main sync failed: {repr(e)}")
+        logger.error(f"Google Sheets Control/Groups sync failed: {repr(e)}")
+        return False
+
+
+async def sync_control_sheet_channels(rows: list) -> bool:
+    """
+    Overwrites the "CHANNELS" tab of the Control Sheet with the current
+    contents of all_channels - every channel the bot is currently a member
+    of. Same one-way push, write-first-then-trim pattern as
+    sync_control_sheet_main (see its docstring for why).
+
+    rows: list of (chat_id, chat_name, visibility, date_bot_add) tuples.
+    Returns True on success, False on failure.
+    """
+    if not CONTROL_SHEET_ID:
+        logger.error("sync_control_sheet_channels: CONTROL_SHEET_ID is not configured.")
+        return False
+    try:
+        ss = await open_spreadsheet(CONTROL_SHEET_ID)
+        ws = await ss.worksheet("CHANNELS")
+        header = ["CHAT_ID", "CHAT_NAME", "VISIBILITY", "DATE_BOT_ADD"]
+        body   = [[str(v) if v is not None else "" for v in row] for row in rows]
+        grid   = [header] + body
+
+        try:
+            existing_row_count = len(await ws.get_all_values())
+        except Exception:
+            existing_row_count = 0
+
+        await ws.update("A1", grid)
+
+        if existing_row_count > len(grid):
+            await ws.batch_clear([f"A{len(grid) + 1}:Z{existing_row_count}"])
+
+        return True
+    except Exception as e:
+        logger.error(f"Google Sheets Control/Channels sync failed: {repr(e)}")
         return False
 
 

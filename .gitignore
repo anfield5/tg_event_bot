@@ -25,8 +25,10 @@ venv/
 # ======================
 # OS generated files
 # ======================
-.DS_Store        # macOS
-Thumbs.db        # Windows
+# macOS
+.DS_Store
+# Windows
+Thumbs.db        
 
 # ======================
 # IDE / Editor settings

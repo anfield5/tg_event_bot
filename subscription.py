@@ -1,6 +1,6 @@
 """
 Subscription tiers (free/premium), owner-controlled manual activation, and
-the Control Sheet sync that mirrors main_chat_settings for visibility.
+the Control Sheet sync that mirrors all_groups for visibility.
 
 Payment itself is confirmed by hand (crypto, checked by the bot owner) -
 there is deliberately no payment automation here.
@@ -16,7 +16,7 @@ from telegram.ext import ContextTypes
 from config import ICON_WARNING, OWNER_USER_IDS, logger
 from utils import escape_markdown, is_real_admin
 from db import get_connection
-from sheets import sync_control_sheet_main, sync_control_sheet_subconfig, open_spreadsheet
+from sheets import sync_control_sheet_main, sync_control_sheet_subconfig, sync_control_sheet_channels, open_spreadsheet
 
 SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
 # isn't relied upon anywhere - always parsed via strptime, but kept
@@ -26,19 +26,19 @@ SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
 def is_premium(chat_id: str) -> bool:
     """
     True if this hub currently has an active premium subscription.
-    Auto-expires: type='premium' with a subs_date_end in the past is treated
+    Auto-expires: type='pro' with a subs_date_end in the past is treated
     as NOT premium, without needing any background job to flip the flag back -
     the flag only ever matters at the moment a premium-gated command runs.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT type, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
+            "SELECT type, subs_date_end FROM all_groups WHERE chat_id = ?",
             (str(chat_id),),
         )
         row = cursor.fetchone()
 
-    if not row or row[0] != "premium" or not row[1]:
+    if not row or row[0] != "pro" or not row[1]:
         return False
     try:
         return datetime.strptime(row[1], SUBS_DATE_FORMAT) > datetime.now()
@@ -72,7 +72,7 @@ async def require_premium(update: Update, feature_label: str) -> bool:
     if is_premium(chat_id):
         return True
     await update.message.reply_text(
-        f"{ICON_WARNING} *{escape_markdown(feature_label)}* is a premium\\-only feature\\. "
+        f"{ICON_WARNING} *{escape_markdown(feature_label)}* is a PRO\\-only feature\\. "
         f"Use /setsub info or contact the bot owner to upgrade\\.",
         parse_mode="MarkdownV2",
     )
@@ -80,14 +80,24 @@ async def require_premium(update: Update, feature_label: str) -> bool:
 
 
 async def _push_control_sheet_main() -> bool:
-    """Reads all of main_chat_settings and pushes it to the Control Sheet's 'MAIN' tab."""
+    """Reads all of all_groups and pushes it to the Control Sheet's 'GROUPS' tab."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_id, chat_name, type, sheet_id, sheet_name, subs_date_start, subs_date_end FROM main_chat_settings"
+            "SELECT chat_id, chat_name, type, sheet_id, sheet_name, subs_date_start, subs_date_end, "
+            "visibility, date_bot_add FROM all_groups"
         )
         rows = cursor.fetchall()
     return await sync_control_sheet_main(rows)
+
+
+async def _push_control_sheet_channels() -> bool:
+    """Reads all of all_channels and pushes it to the Control Sheet's 'CHANNELS' tab."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, chat_name, visibility, date_bot_add FROM all_channels")
+        rows = cursor.fetchall()
+    return await sync_control_sheet_channels(rows)
 
 
 async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -103,7 +113,7 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     (OWNER_USER_IDS), NOT on "is admin in this chat" - a hub's own admin
     could otherwise just grant themselves a free subscription.
 
-    After every change, pushes the updated main_chat_settings to the Control
+    After every change, pushes the updated all_groups to the Control
     Sheet's "MAIN" tab, so you can see every group's status there without
     needing to run any command.
     """
@@ -134,7 +144,7 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT type, subs_date_end FROM main_chat_settings WHERE chat_id = ?",
+            "SELECT type, subs_date_end FROM all_groups WHERE chat_id = ?",
             (target_chat_id,),
         )
         existing = cursor.fetchone()
@@ -142,12 +152,12 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mode == "off":
             if existing:
                 cursor.execute(
-                    "UPDATE main_chat_settings SET type = 'free', chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
+                    "UPDATE all_groups SET type = 'free', chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
                     (chat_name, target_chat_id),
                 )
             else:
                 cursor.execute(
-                    "INSERT INTO main_chat_settings (chat_id, chat_name, type) VALUES (?, ?, 'free')",
+                    "INSERT INTO all_groups (chat_id, chat_name, type) VALUES (?, ?, 'free')",
                     (target_chat_id, chat_name),
                 )
             conn.commit()
@@ -170,7 +180,7 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # date, not to "now" - otherwise renewing a few days early would
             # throw away the remaining days instead of stacking on top.
             base = datetime.now()
-            if existing and existing[0] == "premium" and existing[1]:
+            if existing and existing[0] == "pro" and existing[1]:
                 try:
                     prior_end = datetime.strptime(existing[1], SUBS_DATE_FORMAT)
                     if prior_end > base:
@@ -179,16 +189,16 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
 
             new_end = (base + timedelta(days=days)).strftime(SUBS_DATE_FORMAT)
-            new_start = existing[1] if existing and existing[0] == "premium" and existing[1] else datetime.now().strftime(SUBS_DATE_FORMAT)
+            new_start = existing[1] if existing and existing[0] == "pro" and existing[1] else datetime.now().strftime(SUBS_DATE_FORMAT)
 
             if existing:
                 cursor.execute(
-                    "UPDATE main_chat_settings SET type = 'premium', subs_date_start = ?, subs_date_end = ?, chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
+                    "UPDATE all_groups SET type = 'pro', subs_date_start = ?, subs_date_end = ?, chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
                     (new_start, new_end, chat_name, target_chat_id),
                 )
             else:
                 cursor.execute(
-                    "INSERT INTO main_chat_settings (chat_id, chat_name, type, subs_date_start, subs_date_end) VALUES (?, ?, 'premium', ?, ?)",
+                    "INSERT INTO all_groups (chat_id, chat_name, type, subs_date_start, subs_date_end) VALUES (?, ?, 'pro', ?, ?)",
                     (target_chat_id, chat_name, new_start, new_end),
                 )
             conn.commit()
@@ -221,7 +231,7 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_premium(chat_id):
         await update.message.reply_text(
-            f"{ICON_WARNING} /setsheet is a premium\\-only feature\\. "
+            f"{ICON_WARNING} /setsheet is a PRO\\-only feature\\. "
             f"Use /setsub info or contact the bot owner to upgrade\\.",
             parse_mode="MarkdownV2",
         )
@@ -263,7 +273,7 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "UPDATE main_chat_settings SET sheet_id = ?, sheet_name = ? WHERE chat_id = ?",
+                "UPDATE all_groups SET sheet_id = ?, sheet_name = ? WHERE chat_id = ?",
                 (sheet_id, sheet_name, chat_id),
             )
             conn.commit()
@@ -283,30 +293,33 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def syncgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Owner-only. Manually pushes the current main_chat_settings and the
-    free/premium feature matrix to the Control Sheet, without needing to
+    Owner-only. Manually pushes the current all_groups, all_channels, and
+    the free/PRO feature matrix to the Control Sheet, without needing to
     change anyone's subscription first (e.g. right after setting up
     CONTROL_SHEET_ID for the first time).
     """
     if update.effective_user.id not in OWNER_USER_IDS:
         return
 
-    main_ok       = await _push_control_sheet_main()
+    groups_ok     = await _push_control_sheet_main()
+    channels_ok   = await _push_control_sheet_channels()
     subconfig_ok  = await sync_control_sheet_subconfig(FEATURE_MATRIX)
 
-    if main_ok and subconfig_ok:
+    if groups_ok and channels_ok and subconfig_ok:
         await update.message.reply_text(
-            "✅ Control Sheet synced \\(MAIN \\+ SUB\\_CONFIG\\)\\.", parse_mode="MarkdownV2"
+            "✅ Control Sheet synced \\(GROUPS \\+ CHANNELS \\+ SUB\\_CONFIG\\)\\.", parse_mode="MarkdownV2"
         )
     else:
         failed = []
-        if not main_ok:
-            failed.append("MAIN")
+        if not groups_ok:
+            failed.append("GROUPS")
+        if not channels_ok:
+            failed.append("CHANNELS")
         if not subconfig_ok:
             failed.append("SUB_CONFIG")
         await update.message.reply_text(
             f"❌ Sync failed for: {escape_markdown(', '.join(failed))}\\. Check CONTROL_SHEET_ID is set, the sheet is "
-            f"shared with the bot's service account \\(Editor access\\), and both tabs exist with the "
-            f"exact names `MAIN` and `SUB_CONFIG`\\. See server logs for the specific error\\.",
+            f"shared with the bot's service account \\(Editor access\\), and all three tabs exist with the "
+            f"exact names `GROUPS`, `CHANNELS`, and `SUB_CONFIG`\\. See server logs for the specific error\\.",
             parse_mode="MarkdownV2",
         )

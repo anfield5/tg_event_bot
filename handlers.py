@@ -24,7 +24,7 @@ from config import (
     FREE_SHAREEVENT_LIMIT_PER_TARGET,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import track_user, DB_PATH, get_connection
+from db import track_user, DB_PATH, get_connection, get_display_name
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet,
     log_user_presence,
@@ -210,7 +210,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     # "noop" instead), but re-check here too in case the tier changed
     # between the button being shown and being tapped.
     if query.data in ("help_alias", "help_monitoring") and not is_premium(update.effective_chat.id):
-        await query.answer("This section is premium-only.", show_alert=True)
+        await query.answer("This section is PRO-only.", show_alert=True)
         return
 
     await query.answer()
@@ -354,8 +354,8 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"*{escape_markdown(event_name_raw)}*\n"
         f"{date_line}\n"
-        f"{going_icon} *Going* \\(0\\):\n\n"
-        f"{notgoing_icon} *Not Going* \\(0\\):\n"
+        f"*Going* \\(0\\):\n\n"
+        f"*Not Going* \\(0\\):\n"
     )
     keyboard = create_event_keyboard(event_id, 0, going_icon, notgoing_icon, [], {})
 
@@ -841,7 +841,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     # User without stored ID - keep them in list for now
                     # They might have been added via /adduser without verification
-                    still_present.append((username, username))
+                    still_present.append((username, username, None, None))
                     unverifiable.append(username)
                 continue
             try:
@@ -855,7 +855,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # not the possibly-stale one stored locally - this is what
                     # lets the Users sheet sync actually detect a name change.
                     live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
-                    still_present.append((user_id, live_username))
+                    still_present.append((user_id, live_username, m.user.first_name, m.user.last_name))
             except BadRequest as e:
                 # "User not found" / "Chat member not found" - this could mean:
                 # 1. User actually left the group
@@ -864,11 +864,11 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # To avoid false positives for recently re-added users, keep them
                 # in the list. If they're truly gone, they'll be removed next time.
                 logger.error(f"refreshusers: BadRequest for user {username} (user_id={user_id}): {e}")
-                still_present.append((user_id, username))
+                still_present.append((user_id, username, None, None))
             except Exception as e:
                 # Any other error - keep them in list to avoid false removals
                 logger.error(f"refreshusers: Exception for user {username} (user_id={user_id}): {e}")
-                still_present.append((user_id, username))
+                still_present.append((user_id, username, None, None))
 
         if removed:
             cursor.executemany(
@@ -890,16 +890,20 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     continue
                 uname = u.username or u.first_name or f"user{u.id}"
                 if uname not in already_tracked:
-                    track_user(chat_id, uname, "active", user_id=str(u.id))
+                    track_user(chat_id, uname, "active", user_id=str(u.id),
+                               first_name=u.first_name, last_name=u.last_name)
                     added.append(uname)
-                still_present.append((str(u.id), uname))
+                still_present.append((str(u.id), uname, u.first_name, u.last_name))
         except Exception as e:
             logger.error(f"refreshusers: could not fetch chat administrators: {e}")
 
     # Dedupe still_present by user_id (an admin who was already tracked
     # would otherwise appear twice - once from step 1, once from step 2).
     # Also filter out entries without valid user_id for Google Sheets sync
-    still_present = list({str(uid): (uid, uname) for uid, uname in still_present if uid and uid != uname}.values())
+    still_present = list({
+        str(uid): (uid, uname, first_name, last_name)
+        for uid, uname, first_name, last_name in still_present if uid and uid != uname
+    }.values())
 
     lines = []
     if removed:
@@ -964,7 +968,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     monitor_removed.append(username)
                                 else:
                                     live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
-                                    monitor_present.append((user_id, live_username))
+                                    monitor_present.append((user_id, live_username, m.user.first_name, m.user.last_name))
                             except BadRequest:
                                 monitor_removed.append(username)
                             except Exception:
@@ -990,14 +994,18 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     continue
                                 uname = u.username or u.first_name or f"user{u.id}"
                                 if uname not in monitor_tracked:
-                                    track_user(monitor_chat_id, uname, "active", user_id=str(u.id))
+                                    track_user(monitor_chat_id, uname, "active", user_id=str(u.id),
+                                               first_name=u.first_name, last_name=u.last_name)
                                     monitor_added.append(uname)
-                                monitor_present.append((str(u.id), uname))
+                                monitor_present.append((str(u.id), uname, u.first_name, u.last_name))
                         except Exception as e:
                             logger.error(f"Global sync: could not fetch admins for {chat_name}: {e}")
 
                     # Dedupe monitor_present
-                    monitor_present = list({str(uid): (uid, uname) for uid, uname in monitor_present}.values())
+                    monitor_present = list({
+                        str(uid): (uid, uname, first_name, last_name)
+                        for uid, uname, first_name, last_name in monitor_present
+                    }.values())
 
                     # Sync to sheets with place_id (each monitor gets its own place_id)
                     await sync_users_sheet(monitor_chat_id, monitor_present)
@@ -1100,7 +1108,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if share_count >= FREE_SHAREEVENT_LIMIT_PER_TARGET:
                 await context.bot.send_message(
                     chat_id=main_hub_chat_id,
-                    text="You used all free limit for /shareevent, move to premium subscription for more",
+                    text="You used all free limit for /shareevent, move to PRO subscription for more",
                 )
                 return
 
@@ -1211,7 +1219,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sent = await context.bot.send_message(
             chat_id=target_chat_api,
-            text=f"{ICON_SHARED} *SHARED: {escape_markdown(name)}*\n_Synchronising\\.\\.\\._",
+            text=f"{ICON_SHARED} *{escape_markdown(name)}*\n_Synchronising\\.\\.\\._",
             parse_mode="MarkdownV2",
         )
         with get_connection() as conn:
@@ -1317,6 +1325,39 @@ async def schedule_view_refresh(context: ContextTypes.DEFAULT_TYPE, event_id: st
             await update_all_shared_views(context, event_id)
 
 
+def _mention_link(chat_id: str, username: str, user_id=None) -> str:
+    """
+    Builds a clickable MarkdownV2 mention - [First Last](tg://user?id=...) -
+    using the stored first_name/last_name for this user_id if we have it on
+    file (see db.get_display_name), falling back to the plain @username/
+    display name we were given if we don't have a resolvable user_id at all
+    (e.g. someone added via /adduser whose name was never captured).
+
+    Unlike Telegram's own automatic @mention linking, this works even for
+    users who have no @username set - the whole point of this feature.
+
+    `user_id` can be omitted if the caller only has a plain username on
+    hand (e.g. entries in the Not Going list, which - unlike Going - don't
+    carry a "(user_id)" suffix) - in that case it's looked up from
+    main_group_users by (chat_id, username).
+    """
+    if user_id is None:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+                (str(chat_id), username),
+            )
+            row = cursor.fetchone()
+            user_id = row[0] if row else None
+
+    if not user_id or not str(user_id).lstrip("-").isdigit():
+        return escape_markdown(username)
+
+    display = get_display_name(str(chat_id), str(user_id), username)
+    return f"[{escape_markdown(display)}](tg://user?id={user_id})"
+
+
 async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: str):
     """
     Re-renders EVERY view of one event after its state changed: the master
@@ -1380,7 +1421,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         per_share_users = {}
         for s_chat_id, _, _ in shares:
             cursor.execute(
-                "SELECT username, status, guests FROM event_users "
+                "SELECT username, status, guests, user_id FROM event_users "
                 "WHERE event_id = ? AND chat_id = ?",
                 (event_id, str(s_chat_id)),
             )
@@ -1394,12 +1435,12 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         users      = per_share_users[str(s_chat_id)]
         users_list = []
         chat_sum   = 0
-        for username, status, guests in users:
+        for username, status, guests, u_id in users:
             if status == "going":
-                users_list.append(f"{going_icon} {escape_markdown(username)}")
+                users_list.append(f"{going_icon} {_mention_link(s_chat_id, username, u_id)}")
                 chat_sum += 1
             if guests > 0:
-                users_list.append(f"{ICON_GUEST_DEFAULT} {guests}, from: {escape_markdown(username)}")
+                users_list.append(f"{ICON_GUEST_DEFAULT} {guests}, from: {_mention_link(s_chat_id, username, u_id)}")
                 chat_sum += guests
 
         child_data[str(s_chat_id)] = {
@@ -1419,7 +1460,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         if chat_sum > 0:
             # FIX: channel/group name without quotes around it
             block = (
-                f"\n\n{going_icon} *Going from {escape_markdown(chat_title)}*"
+                f"\n\n*Going from {escape_markdown(chat_title)}*"
                 f" \\({chat_sum}\\):\n" + "\n".join(users_list)
             )
             child_addons_for_master.append(block)
@@ -1432,36 +1473,40 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     current_post_total  = total_master_going
     global_total        = current_post_total + total_child_going
 
-    going_names_list = [f"{going_icon} {escape_markdown(u.split(' (')[0])}" for u in master_going]
+    going_names_list = [
+        f"{going_icon} {_mention_link(main_chat_id, u.split(' (')[0], u.split('(')[-1].rstrip(')') if '(' in u else None)}"
+        for u in master_going
+    ]
 
     # Guest lines are now folded directly into the Going list instead of a
     # separate "Guests:" section - one line per contributor, "N, from: Name".
     guest_lines = []
     for entry in master_going:
         u_name = entry.split(" (")[0]
+        u_id   = entry.split("(")[-1].rstrip(")") if "(" in entry else None
         if master_counters.get(u_name, 0) > 0:
-            guest_lines.append(f"{ICON_GUEST_DEFAULT} {master_counters[u_name]}, from: {escape_markdown(u_name)}")
+            guest_lines.append(f"{ICON_GUEST_DEFAULT} {master_counters[u_name]}, from: {_mention_link(main_chat_id, u_name, u_id)}")
     # Also include guests from users who are not going (kicked users with guests)
     for k, count in master_counters.items():
         if k not in {u.split(" (")[0] for u in master_going} and count > 0:
-            guest_lines.append(f"{ICON_GUEST_DEFAULT} {count}, from: {escape_markdown(k)}")
+            guest_lines.append(f"{ICON_GUEST_DEFAULT} {count}, from: {_mention_link(main_chat_id, k)}")
 
     going_list_text = "\n".join(going_names_list + guest_lines)
 
     not_going_list_text = (
-        "\n".join(f"{notgoing_icon} {escape_markdown(u)}" for u in master_not_going)
+        "\n".join(f"{notgoing_icon} {_mention_link(main_chat_id, u)}" for u in master_not_going)
         if master_not_going else ""
     )
 
     # Header: changed wording
     header      = f"{ICON_WARNING} *SQUAD VERIFICATION*\n_Review members before save_\n\n" if event_status == 1 else ""
     date_line   = f"{ICON_CLOCK} {escape_markdown(event_date)}\n" if event_date else ""
-    title_line  = f"*CANCELED {escape_markdown(name)}*" if event_status == -1 else f"*{escape_markdown(name)}*"
+    title_line  = f"{ICON_CANCEL_EVENT} *CANCELED* ~{escape_markdown(name)}~" if event_status == -1 else f"*{escape_markdown(name)}*"
 
     master_text = (
         f"{header}{title_line}\n\n {date_line}\n"
-        f"{going_icon} *Going* \\({total_master_going}\\):\n{going_list_text}\n\n"
-        f"{notgoing_icon} *Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
+        f"*Going* \\({total_master_going}\\):\n{going_list_text}\n\n"
+        f"*Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
         f"{master_shares_block}\n\n"
         f"{ICON_STATS} *TOTAL Going:* {global_total}"
     )
@@ -1520,7 +1565,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     main_title          = await _get_title(main_chat_id)
     escaped_main_title  = escape_markdown(main_title)
-    child_title_name    = f"CANCELED {escape_markdown(name)}" if event_status == -1 else escape_markdown(name)
+    child_title_name    = (
+        f"{ICON_CANCEL_EVENT} *CANCELED* ~{escape_markdown(name)}~"
+        if event_status == -1 else f"*{escape_markdown(name)}*"
+    )
     for s_chat_id, _, _ in shares:
         await _get_title(s_chat_id)
 
@@ -1529,9 +1577,9 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         if mode == "-visible":
             child_text = (
-                f"{ICON_SHARED} *SHARED: {child_title_name}*\n"
+                f"{ICON_SHARED} {child_title_name}\n"
                 f"{date_line} \n"
-                f"{going_icon} *Going from {escaped_main_title}* \\({current_post_total}\\):\n{going_list_text}\n\n"
+                f"*Going from {escaped_main_title}* \\({current_post_total}\\):\n{going_list_text}\n\n"
             )
             for other_id, _, _ in shares:
                 if str(other_id) != str(s_chat_id):
@@ -1539,31 +1587,31 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                     o_info  = child_data.get(str(other_id), {"users_text": "", "count": 0})
                     if o_info["count"] > 0:
                         child_text += (
-                            f"{going_icon} *Going from {escape_markdown(o_title)}*"
+                            f"*Going from {escape_markdown(o_title)}*"
                             f" \\({o_info['count']}\\):\n{o_info['users_text']}\n\n"
                         )
 
         elif mode == "-onlycount":
             child_text = (
-                f"{ICON_SHARED} *SHARED: {child_title_name}*\n"
+                f"{ICON_SHARED} {child_title_name}\n"
                 f"{date_line} \n"
-                f"{going_icon} *Going from {escaped_main_title}:* {current_post_total}\n\n"
+                f"*Going from {escaped_main_title}:* {current_post_total}\n\n"
             )
             for other_id, _, _ in shares:
                 if str(other_id) != str(s_chat_id):
                     o_title = title_cache.get(str(other_id), "Group")
                     o_info  = child_data.get(str(other_id), {"count": 0})
-                    child_text += f"{going_icon} *Going from {escape_markdown(o_title)}:* {o_info['count']}\n"
+                    child_text += f"*Going from {escape_markdown(o_title)}:* {o_info['count']}\n"
             child_text += "\n"
 
         else:  # "-hidden"
             child_text = (
-                f"{ICON_SHARED} *SHARED: {child_title_name}*\n\n_Data hidden by admin\\._\n"
+                f"{ICON_SHARED} {child_title_name}\n\n_Data hidden by admin\\._\n"
                 f"{date_line} \n"
             )
 
         child_text += (
-            f"{going_icon} *Going here:* \\({c_info['count']}\\)\n{c_info['users_text']}\n\n"
+            f"*Going here:* \\({c_info['count']}\\)\n{c_info['users_text']}\n\n"
             f"{ICON_STATS} *Total Going \\(all groups\\):* {global_total}\n"
         )
 
@@ -1687,6 +1735,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lock = get_event_lock(event_id)
     async with lock:
+        # track_user() opens its OWN separate SQLite connection - calling it
+        # from inside the transaction below (before it commits) causes
+        # "database is locked", since two connections would be trying to
+        # write to the same file at once. Collect what needs tracking here,
+        # and only actually call track_user() after the transaction below
+        # has committed and closed.
+        pending_track_user = []
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -1779,6 +1834,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
                             (event_id, click_chat_id, str(user_id), username_raw, current_guests),
                         )
+                        pending_track_user.append(
+                            (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                        )
                         data_changed = True
                     elif action == "notgoing":
                         if current_guests > 0:
@@ -1791,6 +1849,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 "DELETE FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
                                 (event_id, click_chat_id, str(user_id)),
                             )
+                        pending_track_user.append(
+                            (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                        )
                         data_changed = True
                     elif action == "add":
                         # NOTE: does NOT force status='going' - mirrors the main
@@ -1845,11 +1906,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             going.append(f"{username_raw} ({user_id})")
                         not_going.discard(username_raw)
                         # Store user_id for refreshusers
-                        track_user(click_chat_id, username_raw, "active", user_id=str(user_id))
+                        pending_track_user.append(
+                            (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                        )
                         data_changed = True
                     elif action == "notgoing":
                         going    = [u for u in going if u.split(" (")[0] != username_raw]
                         not_going.add(username_raw)
+                        pending_track_user.append(
+                            (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                        )
                         # NOTE: guests are intentionally left untouched here -
                         # they're only ever added/removed via Add Guest/Sub
                         # Guest, never as a side effect of opting out.
@@ -1975,6 +2041,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as db_err:
             logger.error(f"SQLite transaction failure: {db_err}")
             return
+
+        # Now that the transaction above has committed and its connection
+        # is closed, it's safe for track_user() to open its own connection
+        # without hitting "database is locked".
+        for t_chat_id, t_username, t_user_id, t_first_name, t_last_name in pending_track_user:
+            track_user(t_chat_id, t_username, "active", user_id=t_user_id,
+                       first_name=t_first_name, last_name=t_last_name)
 
         # Log action to Sheets
         if data_changed:

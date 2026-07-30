@@ -7,12 +7,13 @@ Extracted here so test files can do:   from tests.helpers import make_update, ..
 from unittest.mock import AsyncMock, MagicMock
 
 
-def make_user(user_id=111, username="testuser", first_name="Test"):
+def make_user(user_id=111, username="testuser", first_name="Test", last_name=None):
     """Returns a mock telegram.User."""
     u            = MagicMock()
     u.id         = user_id
     u.username   = username
     u.first_name = first_name
+    u.last_name  = last_name
     return u
 
 
