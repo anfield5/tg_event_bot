@@ -1495,7 +1495,7 @@ class TestRefreshusers:
             await handlers.refreshusers(upd, ctx)
 
         assert ws.cell_updates["B2"] == [["newname"]]
-        assert ws.cell_updates["E2"] == [["oldname"]]
+        assert ws.cell_updates["G2"] == [["oldname"]]
 
     async def test_root_flag_appends_further_archived_names_with_comma(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -1526,7 +1526,7 @@ class TestRefreshusers:
              patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
-        assert ws.cell_updates["E2"] == [["firstname,secondname"]]
+        assert ws.cell_updates["G2"] == [["firstname,secondname"]]
 
     async def test_root_flag_marks_departed_user_as_left_in_sheet(self, db_path):
         """A Users-sheet row for this PLACE_ID whose person is confirmed gone must get STATUS=Left."""
@@ -1837,7 +1837,7 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         child_calls = [c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -200]
         text = child_calls[0].kwargs.get("text", "")
         assert "2, from: onlyguests" in text
-        assert "• onlyguests\n" not in text, "a guest-only registrant must not get their own 'going' name bullet"
+        assert "✅ onlyguests\n" not in text, "a guest-only registrant must not get their own 'going' name line"
 
 
 class TestButtonHandlerSaveCloseEvent:

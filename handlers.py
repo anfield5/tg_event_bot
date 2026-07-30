@@ -17,7 +17,7 @@ from aliases import setalias, removealias, listalias
 from monitors import addmonitor, removemonitor, listmonitors
 
 from config import (
-    DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, DEFAULT_CLOSE_ICON, logger,
+    DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, DEFAULT_CLOSE_ICON, ICON_GUEST_DEFAULT, logger,
     ICON_KICK, ICON_RETURN, ICON_ADD,
     ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_PREMIUM,
@@ -1396,10 +1396,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         chat_sum   = 0
         for username, status, guests in users:
             if status == "going":
-                users_list.append(f"• {escape_markdown(username)}")
+                users_list.append(f"{going_icon} {escape_markdown(username)}")
                 chat_sum += 1
             if guests > 0:
-                users_list.append(f"• {guests}, from: {escape_markdown(username)}")
+                users_list.append(f"{ICON_GUEST_DEFAULT} {guests}, from: {escape_markdown(username)}")
                 chat_sum += guests
 
         child_data[str(s_chat_id)] = {
@@ -1432,7 +1432,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     current_post_total  = total_master_going
     global_total        = current_post_total + total_child_going
 
-    going_names_list = [f"• {escape_markdown(u.split(' (')[0])}" for u in master_going]
+    going_names_list = [f"{going_icon} {escape_markdown(u.split(' (')[0])}" for u in master_going]
 
     # Guest lines are now folded directly into the Going list instead of a
     # separate "Guests:" section - one line per contributor, "N, from: Name".
@@ -1440,16 +1440,16 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     for entry in master_going:
         u_name = entry.split(" (")[0]
         if master_counters.get(u_name, 0) > 0:
-            guest_lines.append(f"• {master_counters[u_name]}, from: {escape_markdown(u_name)}")
+            guest_lines.append(f"{ICON_GUEST_DEFAULT} {master_counters[u_name]}, from: {escape_markdown(u_name)}")
     # Also include guests from users who are not going (kicked users with guests)
     for k, count in master_counters.items():
         if k not in {u.split(" (")[0] for u in master_going} and count > 0:
-            guest_lines.append(f"• {count}, from: {escape_markdown(k)}")
+            guest_lines.append(f"{ICON_GUEST_DEFAULT} {count}, from: {escape_markdown(k)}")
 
     going_list_text = "\n".join(going_names_list + guest_lines)
 
     not_going_list_text = (
-        "\n".join(f"• {escape_markdown(u)}" for u in master_not_going)
+        "\n".join(f"{notgoing_icon} {escape_markdown(u)}" for u in master_not_going)
         if master_not_going else ""
     )
 
