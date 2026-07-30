@@ -10,6 +10,7 @@ from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
 from db import init_db, track_user, register_chat_added, register_chat_removed
 from sheets import log_user_presence, sync_control_sheet_subconfig
+from hub_resolver import hub_pick_callback_handler
 from handlers import (
     help_command, help_callback_handler, help_back_handler, userid, chatid,
     newevent, editevent,
@@ -182,6 +183,7 @@ def main():
     # section" fallback instead of returning to the main help menu.
     app.add_handler(CallbackQueryHandler(help_back_handler, pattern="^help_back$"))
     app.add_handler(CallbackQueryHandler(help_callback_handler, pattern="^help_"))
+    app.add_handler(CallbackQueryHandler(hub_pick_callback_handler, pattern="^hubpick_"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # 2. Chat member join/leave tracking
