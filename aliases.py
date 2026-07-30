@@ -55,7 +55,7 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         return
     except Exception:
         await update.message.reply_text(
-            "Add @EventPlanCheckBot to target group/channel as admin\.", parse_mode="MarkdownV2"
+            "Add @EventPlanCheckBot to target group/channel as admin\\.", parse_mode="MarkdownV2"
         )
         return
 
@@ -63,12 +63,12 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         bot_member = await context.bot.get_chat_member(chat_id=target_chat_id, user_id=context.bot.id)
         if bot_member.status not in ["administrator", "creator"]:
             await update.message.reply_text(
-                "Add @EventPlanCheckBot to target group/channel as admin\.", parse_mode="MarkdownV2"
+                "Add @EventPlanCheckBot to target group/channel as admin\\.", parse_mode="MarkdownV2"
             )
             return
     except Exception:
         await update.message.reply_text(
-            "Add @EventPlanCheckBot to target group/channel as admin\.", parse_mode="MarkdownV2"
+            "Add @EventPlanCheckBot to target group/channel as admin\\.", parse_mode="MarkdownV2"
         )
         return
 
@@ -112,7 +112,7 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         existing_row = cursor.fetchone()
         if existing_row and existing_row[0] is not None:
             await update.message.reply_text(
-                f"{ICON_WARNING} This group or channel has already been added\. Please check its existing alias\.",
+                f"{ICON_WARNING} This group or channel has already been added\\. Please check its existing alias\\.",
                 parse_mode="MarkdownV2",
             )
             return
@@ -142,13 +142,13 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
             # just a safety net against a race (two concurrent /setalias
             # calls from the SAME hub for the same name/target).
             await update.message.reply_text(
-                f"{ICON_WARNING} That alias name or target is already in use for this group\. Pick a different name\.",
+                f"{ICON_WARNING} That alias name or target is already in use for this group\\. Pick a different name\\.",
                 parse_mode="MarkdownV2",
             )
             return
 
     await update.message.reply_text(
-        rf"✅ Alias `__{escape_markdown(alias_name)}__` mapped to node ID `{target_chat_id}`\.",
+        rf"✅ Alias `__{escape_markdown(alias_name)}__` mapped to node ID `{target_chat_id}`\\.",
         parse_mode="MarkdownV2",
     )
 
@@ -178,7 +178,7 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE, overri
         )
         row = cursor.fetchone()
         if not row:
-            await update.message.reply_text("🔍 Alias not found\.", parse_mode="MarkdownV2")
+            await update.message.reply_text("🔍 Alias not found\\.", parse_mode="MarkdownV2")
             return
 
         if row[0]:
@@ -195,7 +195,7 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE, overri
             )
         conn.commit()
     await update.message.reply_text(
-        f"🗑️ Alias `__{escape_markdown(alias_name)}__` removed\.", parse_mode="MarkdownV2"
+        f"🗑️ Alias `__{escape_markdown(alias_name)}__` removed\\.", parse_mode="MarkdownV2"
     )
 
 
@@ -218,7 +218,7 @@ async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         rows = cursor.fetchall()
 
     if not rows:
-        await update.message.reply_text("📋 No aliases configured\.", parse_mode="MarkdownV2")
+        await update.message.reply_text("📋 No aliases configured\\.", parse_mode="MarkdownV2")
         return
 
     blocks = []
