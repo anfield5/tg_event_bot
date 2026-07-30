@@ -12,7 +12,7 @@ from db import init_db, track_user, register_chat_added, register_chat_removed
 from sheets import log_user_presence, sync_control_sheet_subconfig
 from hub_resolver import hub_pick_callback_handler, start_command
 from handlers import (
-    start_command, help_command, help_callback_handler, help_back_handler, userid, chatid,
+    help_command, help_callback_handler, help_back_handler, userid, chatid,
     newevent, editevent,
     notify,
     updateuser, listusers, refreshusers, adduser,
