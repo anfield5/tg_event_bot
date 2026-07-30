@@ -13,11 +13,16 @@ from config import ICON_WARNING
 from utils import escape_markdown, GROUP_ANONYMOUS_BOT_ID
 from db import get_connection
 from subscription import require_premium
+from hub_resolver import resolve_hub_chat_id, register_hub_command
 
 
-async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("setalias")
+async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """Binds a custom alias to a Telegram Chat ID."""
-    if not await require_premium(update, "Aliases"):
+    hub_chat_id = await resolve_hub_chat_id(update, context, "setalias", override_chat_id)
+    if hub_chat_id is None:
+        return
+    if not await require_premium(update, "Aliases", chat_id=hub_chat_id):
         return
 
     args = context.args
@@ -90,8 +95,6 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    hub_chat_id = str(update.effective_chat.id)
-
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -150,9 +153,13 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("removealias")
+async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """Removes an alias from the routing table."""
-    if not await require_premium(update, "Aliases"):
+    hub_chat_id = await resolve_hub_chat_id(update, context, "removealias", override_chat_id)
+    if hub_chat_id is None:
+        return
+    if not await require_premium(update, "Aliases", chat_id=hub_chat_id):
         return
 
     args = context.args
@@ -163,7 +170,6 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     alias_name  = args[0].strip().lower()
-    hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -193,12 +199,15 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("listalias")
+async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """Shows all active routing aliases belonging to THIS hub group."""
-    if not await require_premium(update, "Aliases"):
+    hub_chat_id = await resolve_hub_chat_id(update, context, "listalias", override_chat_id)
+    if hub_chat_id is None:
+        return
+    if not await require_premium(update, "Aliases", chat_id=hub_chat_id):
         return
 
-    hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(

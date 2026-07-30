@@ -62,13 +62,20 @@ FEATURE_MATRIX = [
 ]
 
 
-async def require_premium(update: Update, feature_label: str) -> bool:
+async def require_premium(update: Update, feature_label: str, chat_id: str = None) -> bool:
     """
     Call at the top of a premium-only command. Returns True if the
     invoking chat's hub is premium (caller proceeds normally); otherwise
     sends the upgrade message and returns False (caller should just return).
+
+    `chat_id` can be passed explicitly when the caller has already resolved
+    the real hub to act on (e.g. via hub_resolver.resolve_hub_chat_id for a
+    command run from a DM) - otherwise it defaults to
+    update.effective_chat.id, which is only correct when the command was
+    run directly inside the group itself.
     """
-    chat_id = str(update.effective_chat.id)
+    if chat_id is None:
+        chat_id = str(update.effective_chat.id)
     if is_premium(chat_id):
         return True
     await update.message.reply_text(

@@ -25,6 +25,7 @@ from config import (
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import track_user, DB_PATH, get_connection, get_display_name
+from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet,
     log_user_presence,
@@ -289,7 +290,8 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Event lifecycle
 # ---------------------------------------------------------------------------
 
-async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("newevent")
+async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Creates a new Going/Not-Going event.
 
@@ -298,7 +300,9 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         -ni / -notgoingicon <emoji>
         -date / -d <dd.mm.yyyy> [HH:MM]
     """
-    chat_id  = str(update.effective_chat.id)
+    chat_id = await resolve_hub_chat_id(update, context, "newevent", override_chat_id)
+    if chat_id is None:
+        return
     message  = update.message
     args     = context.args
     user_raw = (
@@ -391,12 +395,15 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Failed to log event creation to Google Sheets: {e}")
 
 
-async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("editevent")
+async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Edits name, icons, or date of the current chat's active event.
     Only provided flags are updated; omitted ones keep their existing values.
     """
-    chat_id = str(update.effective_chat.id)
+    chat_id = await resolve_hub_chat_id(update, context, "editevent", override_chat_id)
+    if chat_id is None:
+        return
     args    = context.args
     if not args:
         await update.message.reply_text(
@@ -545,7 +552,8 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # User management
 # ---------------------------------------------------------------------------
 
-async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("updateuser")
+async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Updates a user's status in the current chat's registry.
 
@@ -556,7 +564,9 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Multiple users can be specified separated by commas:
         /updateuser @anfield, 8043690847, @anreon -a
     """
-    chat_id = str(update.effective_chat.id)
+    chat_id = await resolve_hub_chat_id(update, context, "updateuser", override_chat_id)
+    if chat_id is None:
+        return
     args    = context.args
 
     if len(args) < 2:
@@ -610,8 +620,11 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
+@register_hub_command("listusers")
+async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+    chat_id = await resolve_hub_chat_id(update, context, "listusers", override_chat_id)
+    if chat_id is None:
+        return
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT username, status FROM main_group_users WHERE chat_id = ?", (chat_id,))
