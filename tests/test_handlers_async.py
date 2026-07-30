@@ -2265,3 +2265,85 @@ class TestHubResolver:
         final_reply = upd2.message.reply_text.call_args.args[0]
         assert "footballalias" in final_reply
         assert "hoopsalias" not in final_reply, "must only show the CHOSEN group's data, not both"
+
+
+class TestStartCommand:
+    """/start lists the user's admin groups (or says plainly they have none)."""
+
+    async def test_lists_admin_groups(self, db_path):
+        insert_premium(db_path, chat_id="-100111")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
+        conn.commit()
+        conn.close()
+
+        import hub_resolver
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await hub_resolver.start_command(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Football" in reply
+
+    async def test_tells_the_truth_when_not_admin_anywhere(self, db_path):
+        import hub_resolver
+        bot = make_bot()
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await hub_resolver.start_command(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "don't see you as an admin" in reply
+
+    async def test_does_nothing_when_run_inside_a_group(self, db_path):
+        """/start is only meaningful in a DM - a stray /start typed inside
+        a group must be a silent no-op, not spam the group."""
+        import hub_resolver
+        bot  = make_bot()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        await hub_resolver.start_command(upd, ctx)
+
+        msg.reply_text.assert_not_awaited()
+
+    async def test_finds_groups_only_known_via_main_group_users(self, db_path):
+        """
+        Regression test: a group the bot was added to BEFORE all_groups
+        existed has no row there at all - only in main_group_users (which
+        has existed since v2.0). /start (and resolve_hub_chat_id) must
+        still find it via that fallback, not just all_groups.
+        """
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100999','alice','1','active')"
+        )
+        conn.commit()
+        conn.close()
+
+        import hub_resolver
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Old Legacy Group", username=None))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await hub_resolver.start_command(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Old Legacy Group" in reply

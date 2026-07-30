@@ -31,6 +31,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from db import get_connection
+from utils import escape_markdown
 
 # Filled in by aliases.py (and whichever other modules opt into this) at
 # import time - kept here rather than imported directly to avoid a circular
@@ -46,6 +47,82 @@ def register_hub_command(name):
         HUB_COMMAND_REGISTRY[name] = fn
         return fn
     return _wrap
+
+
+async def _get_known_candidate_chats(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """
+    Returns [(chat_id, display_name), ...] for every chat_id the bot has ANY
+    record of (from all_groups, populated going forward by the
+    MY_CHAT_MEMBER handler, UNIONed with main_group_users, which has
+    existed much longer and is populated by the older per-user
+    ChatMemberHandler plus most commands) where `user_id` is a real,
+    currently-verified admin.
+
+    all_groups alone would miss every group the bot was added to BEFORE
+    that table existed - main_group_users is the fallback that catches
+    those, since it's been populated since v2.0.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, chat_name FROM all_groups")
+        from_all_groups = {str(cid): name for cid, name in cursor.fetchall()}
+        cursor.execute("SELECT DISTINCT chat_id FROM main_group_users")
+        from_main_group_users = {str(row[0]) for row in cursor.fetchall()}
+
+    all_chat_ids = set(from_all_groups) | from_main_group_users
+
+    admin_of = []
+    for candidate_chat_id in all_chat_ids:
+        try:
+            member = await context.bot.get_chat_member(int(candidate_chat_id), user_id)
+            if member.status in ("administrator", "creator"):
+                display_name = from_all_groups.get(candidate_chat_id)
+                if not display_name:
+                    try:
+                        chat_obj = await context.bot.get_chat(int(candidate_chat_id))
+                        display_name = chat_obj.title or chat_obj.username or candidate_chat_id
+                    except Exception:
+                        display_name = candidate_chat_id
+                admin_of.append((candidate_chat_id, display_name))
+        except Exception:
+            # Bot may have been removed from that chat since it was last
+            # seen, or the chat_id is stale/inaccessible - skip it rather
+            # than failing the whole lookup over one bad candidate.
+            continue
+
+    return admin_of
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start - only meaningful in a private chat with the bot. Lists every
+    group the user administers (where the bot is already present), so they
+    immediately know what they can run DM commands for - or tells them
+    plainly if they're not an admin anywhere yet.
+    """
+    chat = update.effective_chat
+    if chat.type != "private":
+        return
+
+    admin_of = await _get_known_candidate_chats(context, update.effective_user.id)
+
+    if not admin_of:
+        await update.message.reply_text(
+            "👋 Hi\\! I don't see you as an admin of any group I'm currently in\\.\n\n"
+            "Add me to a group and make yourself an admin there to start using event commands "
+            "\\(from the group itself, or right here in this DM\\)\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    lines = "\n".join(f"• {name}" for _, name in admin_of)
+    await update.message.reply_text(
+        f"👋 Hi\\! You're an admin of {len(admin_of)} group\\(s\\) I'm in:\n\n"
+        f"{escape_markdown(lines)}\n\n"
+        f"You can run commands like /newevent, /listusers, /setalias, etc\\. right here in this DM \\- "
+        f"if you're an admin of more than one, I'll ask which group each time\\.",
+        parse_mode="MarkdownV2",
+    )
 
 
 async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE,
@@ -65,23 +142,7 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
         return str(chat.id)
 
     user_id = update.effective_user.id
-
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, chat_name FROM all_groups")
-        candidates = cursor.fetchall()
-
-    admin_of = []
-    for candidate_chat_id, candidate_chat_name in candidates:
-        try:
-            member = await context.bot.get_chat_member(int(candidate_chat_id), user_id)
-            if member.status in ("administrator", "creator"):
-                admin_of.append((candidate_chat_id, candidate_chat_name or candidate_chat_id))
-        except Exception:
-            # Bot may have been removed from that chat since it was last
-            # registered, or the chat_id is stale/inaccessible - skip it
-            # rather than failing the whole lookup over one bad candidate.
-            continue
+    admin_of = await _get_known_candidate_chats(context, user_id)
 
     if not admin_of:
         await update.message.reply_text(

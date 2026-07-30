@@ -184,6 +184,19 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    The conventional first command a user sends when opening the bot -
+    especially relevant now that several commands work from a DM (see
+    hub_resolver.py). Just a short greeting pointing to /help.
+    """
+    await update.message.reply_text(
+        "👋 Hi\\! I help run Going/Not\\-Going events for your groups\\.\n\n"
+        "Add me to a group to get started, then use /help to see what I can do\\.",
+        parse_mode="MarkdownV2",
+    )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     main_help = (
         "📖 *Main Commands*\n\n"
