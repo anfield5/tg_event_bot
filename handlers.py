@@ -17,7 +17,7 @@ from aliases import setalias, removealias, listalias
 from monitors import addmonitor, removemonitor, listmonitors
 
 from config import (
-    DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, DEFAULT_CLOSE_ICON, ICON_GUEST_DEFAULT, logger,
+    DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, ICON_VERIFICATION, ICON_GUEST_DEFAULT, logger,
     ICON_KICK, ICON_RETURN, ICON_ADD,
     ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_PREMIUM,
@@ -243,7 +243,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         "help_lifecycle": (
             f"🗳 *Event Lifecycle Buttons*\n\n"
             f"  • Going / Not Going / ADD / Remove \\- open voting, available to everyone\n"
-            f"  • {DEFAULT_CLOSE_ICON} Verification Mode \\- admin only, locks voting and opens roster review\n"
+            f"  • {ICON_VERIFICATION} Verify&Close \\- admin only, locks voting and opens roster review\n"
             f"  • {ICON_CANCEL_EVENT} Cancel Event \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
             f"  • \\- / \\+ \\- admin only, adjust guest count\n"

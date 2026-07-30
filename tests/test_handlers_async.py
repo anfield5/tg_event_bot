@@ -2125,3 +2125,143 @@ class TestScheduleViewRefreshCoalescing:
         # Each pass calls edit_message_text once for the master (no shares
         # configured here), so this bounds the total call count tightly.
         assert bot.edit_message_text.await_count <= 2
+
+
+# ── DM-based hub resolution (hub_resolver.py) ───────────────────────────────
+
+class TestHubResolver:
+    """
+    Covers resolve_hub_chat_id() and the group-picker replay flow, using
+    /listalias as the concrete command under test (any of the 7 wired
+    commands would exercise the same underlying mechanism).
+    """
+
+    async def test_inside_a_group_resolves_immediately_unchanged(self, db_path):
+        """From inside a group chat, behavior must be identical to before
+        this feature existed - no DM/admin-lookup logic runs at all."""
+        insert_premium(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-999','downtown','-100123')")
+        conn.commit()
+        conn.close()
+
+        import aliases
+        bot  = make_bot()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        await aliases.listalias(upd, ctx)
+
+        bot.get_chat_member.assert_not_awaited()
+        reply = msg.reply_text.call_args.args[0]
+        assert "downtown" in reply
+
+    async def test_dm_with_no_admin_groups_is_told_plainly(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','free')")
+        conn.commit()
+        conn.close()
+
+        import aliases
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))  # not admin
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await aliases.listalias(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "not an admin" in reply.lower()
+
+    async def test_dm_with_exactly_one_admin_group_resolves_immediately(self, db_path):
+        insert_premium(db_path, chat_id="-100111")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
+        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-999','downtown','-100111')")
+        conn.commit()
+        conn.close()
+
+        import aliases
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await aliases.listalias(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "downtown" in reply, "should resolve straight to the only admin group, no picker shown"
+
+    async def test_dm_with_multiple_admin_groups_shows_picker_and_stashes_command(self, db_path):
+        insert_premium(db_path, chat_id="-100111")
+        insert_premium(db_path, chat_id="-100222")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
+        conn.execute("UPDATE all_groups SET chat_name='Basketball' WHERE chat_id='-100222'")
+        conn.commit()
+        conn.close()
+
+        import aliases
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await aliases.listalias(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup")
+        assert keyboard is not None, "must show an inline picker for 2+ admin groups"
+        names = [b.text for row in keyboard.inline_keyboard for b in row]
+        assert "Football" in names and "Basketball" in names
+        assert ctx.user_data["pending_hub_command"] == {"command": "listalias", "args": []}
+
+    async def test_picking_a_group_replays_the_command_for_that_group_only(self, db_path):
+        """The end-to-end flow: DM -> picker -> button tap -> the original
+        command re-runs scoped to ONLY the chosen group's data."""
+        insert_premium(db_path, chat_id="-100111")
+        insert_premium(db_path, chat_id="-100222")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
+        conn.execute("UPDATE all_groups SET chat_name='Basketball' WHERE chat_id='-100222'")
+        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-999','footballalias','-100111')")
+        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-888','hoopsalias','-100222')")
+        conn.commit()
+        conn.close()
+
+        import aliases, hub_resolver
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await aliases.listalias(upd, ctx)
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup")
+        football_button = next(b for row in keyboard.inline_keyboard for b in row if b.text == "Football")
+
+        query = MagicMock()
+        query.data = football_button.callback_data
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd2 = MagicMock()
+        upd2.callback_query = query
+        upd2.message = make_message(chat=dm_chat)
+
+        await hub_resolver.hub_pick_callback_handler(upd2, ctx)
+
+        final_reply = upd2.message.reply_text.call_args.args[0]
+        assert "footballalias" in final_reply
+        assert "hoopsalias" not in final_reply, "must only show the CHOSEN group's data, not both"

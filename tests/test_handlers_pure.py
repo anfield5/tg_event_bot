@@ -201,22 +201,30 @@ class TestCreateEventKeyboard:
         assert any("Remove" in t for t in texts)
 
     def test_open_event_master_has_verification_button(self):
-        # Non-child view must show a "Verification Mode" / close button
+        # Non-child view must show a "Verify&Close" button
         kb    = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
         flat  = [btn for row in kb.inline_keyboard for btn in row]
-        assert any("Verification Mode" in b.text for b in flat)
+        assert any("Verify&Close" in b.text for b in flat)
 
     def test_open_event_master_has_cancel_event_button(self):
-        # Cancel Event sits right below Verification Mode, master-only.
         kb    = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
         flat  = [btn for row in kb.inline_keyboard for btn in row]
         assert any(b.callback_data == f"cancel_{self.EVENT_ID}" for b in flat)
+
+    def test_verify_and_cancel_share_a_row_verify_first(self):
+        # Verify&Close and Cancel Event sit on the SAME row - Verify&Close
+        # on the left, Cancel Event on the right.
+        kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
+        row  = next(r for r in kb.inline_keyboard if any("Verify&Close" in b.text for b in r))
+        assert len(row) == 2
+        assert "Verify&Close" in row[0].text
+        assert row[1].callback_data == f"cancel_{self.EVENT_ID}"
 
     def test_open_event_child_has_no_verification_button(self):
         # Child views must NOT show the close/verification button
         kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True)
         flat = [btn for row in kb.inline_keyboard for btn in row]
-        assert not any("Verification Mode" in b.text for b in flat)
+        assert not any("Verify&Close" in b.text for b in flat)
 
     def test_open_event_child_has_no_cancel_event_button(self):
         kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True)
