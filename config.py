@@ -7,15 +7,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.5.0"
+BOT_VERSION = "3.6.0"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Default UI icons with safe fallback configurations
-DEFAULT_GOING_ICON = "✅"
+DEFAULT_GOING_ICON = "👍"
 DEFAULT_NOTGOING_ICON = "❌"
+ICON_GUEST_DEFAULT = "👤⊕"   # marks "N guests, from: <username>" lines
 DEFAULT_CLOSE_ICON = "🔴"
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
