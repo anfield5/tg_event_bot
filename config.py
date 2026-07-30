@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.8.0"
+BOT_VERSION = "3.10.0"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -18,6 +18,7 @@ DEFAULT_GOING_ICON = "👍"
 DEFAULT_NOTGOING_ICON = "❌"
 ICON_GUEST_DEFAULT = "👤⊕"   # marks "N guests, from: <username>" lines
 DEFAULT_CLOSE_ICON = "🔴"
+ICON_VERIFICATION = "🔄"   # used on the "Verify&Close" button (open -> verification mode)
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 # Optional: set only if api.telegram.org is blocked/throttled on this network

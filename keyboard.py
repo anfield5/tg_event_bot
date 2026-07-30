@@ -9,7 +9,7 @@ monolithic handlers.py.
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import (
-    DEFAULT_CLOSE_ICON,
+    ICON_VERIFICATION,
     ICON_KICK, ICON_RETURN, ICON_PERSON, ICON_CHANNEL_PERSON,
     ICON_GUEST_MINUS, ICON_GUEST_PLUS, ICON_ADD, ICON_REMOVE,
     ICON_CANCEL_EVENT, ICON_SAVE,
@@ -60,9 +60,7 @@ def create_event_keyboard(
         ])
         if not is_child:
             buttons.append([
-                InlineKeyboardButton(f"{DEFAULT_CLOSE_ICON} Verification Mode", callback_data=f"close_{event_id}"),
-            ])
-            buttons.append([
+                InlineKeyboardButton(f"{ICON_VERIFICATION} Verify&Close", callback_data=f"close_{event_id}"),
                 InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel Event", callback_data=f"cancel_{event_id}"),
             ])
 
