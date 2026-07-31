@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.11.1"
+BOT_VERSION = "3.11.2"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -16,9 +16,6 @@ logger = logging.getLogger(__name__)
 # Default UI icons with safe fallback configurations
 DEFAULT_GOING_ICON = "👍"
 DEFAULT_NOTGOING_ICON = "❌"
-ICON_GUEST_DEFAULT = "👤⊕"   # marks "N guests, from: <username>" lines
-DEFAULT_CLOSE_ICON = "🔴"
-ICON_VERIFICATION = "🔄"   # used on the "Verify&Close" button (open -> verification mode)
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 # Optional: set only if api.telegram.org is blocked/throttled on this network
@@ -61,6 +58,10 @@ GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 # meant to be customized). Centralized here purely so every place in the
 # code that needs "the Kick icon" or "the warning icon" reads from one
 # source instead of a bare emoji literal repeated at each call site.
+
+ICON_GUEST = "👤⊕"   # marks "N guests, from: <username>" lines
+CLOSE_ICON = "🔴"
+ICON_VERIFICATION = "🔄"   # used on the "Verify&Close" button (open -> verification mode)
 
 # Verification-mode roster actions
 ICON_KICK          = "❌"

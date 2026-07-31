@@ -171,6 +171,32 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
     return None
 
 
+class _ReplayUpdate:
+    """
+    A minimal stand-in for a real Update, used only to replay a hub command
+    after the DM group-picker. The real update.message is None for a
+    callback-query-only update (the actual message lives at
+    update.callback_query.message instead), and Update/CallbackContext
+    objects may be immutable - so rather than risk mutating framework
+    objects, this just exposes exactly what the replayed command functions
+    read: .message (for reply_text), .effective_chat, .effective_user.
+    """
+    def __init__(self, message, chat, user):
+        self.message = message
+        self.effective_chat = chat
+        self.effective_user = user
+        self.effective_message = message
+
+
+class _ReplayContext:
+    """Same idea as _ReplayUpdate, but for CallbackContext - only .bot,
+    .args, and .user_data are ever read by the replayed commands."""
+    def __init__(self, bot, args, user_data):
+        self.bot = bot
+        self.args = args
+        self.user_data = user_data
+
+
 async def hub_pick_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles a tap on the group-picker keyboard shown by resolve_hub_chat_id()."""
     query = update.callback_query
@@ -191,6 +217,8 @@ async def hub_pick_callback_handler(update: Update, context: ContextTypes.DEFAUL
         )
         return
 
-    context.args = pending["args"]
     await query.edit_message_text("Got it \\- running that now\\.\\.\\.", parse_mode="MarkdownV2")
-    await handler_fn(update, context, override_chat_id=chosen_chat_id)
+
+    replay_update = _ReplayUpdate(message=query.message, chat=query.message.chat, user=query.from_user)
+    replay_context = _ReplayContext(bot=context.bot, args=pending["args"], user_data=context.user_data)
+    await handler_fn(replay_update, replay_context, override_chat_id=chosen_chat_id)

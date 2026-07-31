@@ -2256,13 +2256,16 @@ class TestHubResolver:
         query.data = football_button.callback_data
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
+        query.message = make_message(chat=dm_chat)
         upd2 = MagicMock()
         upd2.callback_query = query
-        upd2.message = make_message(chat=dm_chat)
+        # Matches real Telegram: update.message is None for a pure
+        # callback-query update - the real message lives at query.message.
+        upd2.message = None
 
         await hub_resolver.hub_pick_callback_handler(upd2, ctx)
 
-        final_reply = upd2.message.reply_text.call_args.args[0]
+        final_reply = query.message.reply_text.call_args.args[0]
         assert "footballalias" in final_reply
         assert "hoopsalias" not in final_reply, "must only show the CHOSEN group's data, not both"
 
