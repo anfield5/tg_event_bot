@@ -195,7 +195,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/refreshusers \\[\\-r\\|\\-g\\] \\- Sync user list with current group members\n"
         "\\-r refreshes only the current group\\, \\-g refreshes all monitored groups\n"
         "/listusers \\- Show all tracked users\n"
-        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n\n"
+        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
+        "/switchgroup \\- \\(DM only\\) switch which group your commands target\n\n"
         "📚 *More Info*"
     )
 
@@ -483,12 +484,15 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         logger.error(f"Failed to sync event update to Google Sheets: {e}")
 
 
-async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("notify")
+async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Pings all active users who haven't responded to the current event yet.
     Usage: /notify [text_msg]
     """
-    chat_id = str(update.effective_chat.id)
+    chat_id = await resolve_hub_chat_id(update, context, "notify", override_chat_id)
+    if chat_id is None:
+        return
     message = update.message
     args = context.args
 
@@ -641,7 +645,8 @@ async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
-async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("adduser")
+async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Manually adds users to the tracked user list (/listusers).
     Usage: /adduser <user_id|username> [user_id|username ...] [--chat_id chat_id | --monitor name]
@@ -674,7 +679,9 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    chat_id = str(update.effective_chat.id)
+    chat_id = await resolve_hub_chat_id(update, context, "adduser", override_chat_id)
+    if chat_id is None:
+        return
     user_id = update.effective_user.id
 
     # Only admins can use this command
@@ -795,7 +802,8 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 
 
-async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("refreshusers")
+async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Synchronizes the tracked user list (the one /listusers shows) with actual
     chat membership:
@@ -825,13 +833,15 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id, not a @username; they're reported separately rather than
     removed, since we simply have no way to confirm they left.
     """
-    chat_id   = str(update.effective_chat.id)
+    chat_id = await resolve_hub_chat_id(update, context, "refreshusers", override_chat_id)
+    if chat_id is None:
+        return
     purge_unverifiable = any(a.strip().lower() in ("-purge", "--purge-unverifiable") for a in context.args)
     root_sync = any(a.strip().lower() in ("-r", "-root", "--root") for a in context.args)
     global_sync = any(a.strip().lower() in ("-g", "-global", "--global") for a in context.args)
 
     # Only admins may run this
-    if not await is_real_admin(context.bot, update.effective_chat.id, update.effective_user, message=update.message):
+    if not await is_real_admin(context.bot, chat_id, update.effective_user, message=update.message):
         await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /refreshusers\\.", parse_mode="MarkdownV2")
         return
 
@@ -893,7 +903,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ── 2. Add missing chat administrators as 'active' ──────────────────────
         added = []
         try:
-            admins = await context.bot.get_chat_administrators(update.effective_chat.id)
+            admins = await context.bot.get_chat_administrators(chat_id)
             cursor.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (chat_id,))
             already_tracked = {r[0] for r in cursor.fetchall()}
 
@@ -1040,23 +1050,17 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Event sharing
 # ---------------------------------------------------------------------------
 
-async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("shareevent")
+async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Forwards a synced sub-view of the active event to a child group/channel.
     All error messages route back to the main hub group.
     """
-    current_chat_obj = update.effective_chat
-    main_hub_chat_id = current_chat_obj.id
+    main_hub_chat_id = await resolve_hub_chat_id(update, context, "shareevent", override_chat_id)
+    if main_hub_chat_id is None:
+        return
     user_id          = update.effective_user.id
     args             = context.args
-
-    if current_chat_obj.type not in ["group", "supergroup"]:
-        await context.bot.send_message(
-            chat_id=main_hub_chat_id,
-            text="❌ This command can only be used in the main hub group\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
 
     if len(args) < 1:
         await context.bot.send_message(

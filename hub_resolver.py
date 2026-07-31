@@ -1,25 +1,38 @@
 """
-Lets group-configuration commands (currently: /setalias, /removealias,
-/listalias - see HUB_COMMAND_REGISTRY below) work when sent as a direct
-message to the bot, not just from inside the group chat itself.
+Lets EVERY group-scoped command work when sent as a direct message to the
+bot, not just from inside the group chat itself - and, once a group is
+picked in a DM, "sticks" to that group for every following DM command
+until the user explicitly switches (see /switchgroup below), instead of
+asking "which group?" every single time.
 
 How it works:
   1. resolve_hub_chat_id() is the first thing each supported command calls.
      From a group chat, it just returns that chat's own ID immediately -
      zero change from how these commands worked before this feature
-     existed.
-  2. From a private chat (DM), it looks across every group the bot is
-     currently in (all_groups) and checks - with a LIVE get_chat_member
-     call, not a cached/assumed status - whether the person messaging the
-     bot is a real admin there.
-       - No matches: told plainly, nothing else happens.
-       - Exactly one match: used immediately, no extra step.
-       - Multiple matches: an inline keyboard listing the group names is
-         shown, and the original command + its arguments are stashed in
-         context.user_data so they can be replayed once a group is picked.
-  3. hub_pick_callback_handler() handles that keyboard's button clicks -
-     it looks up which underlying command was pending, restores its
-     arguments, and calls it again with the chosen group's ID.
+     existed. The sticky-selection mechanism below never applies inside a
+     group at all.
+  2. From a private chat (DM):
+       - If a group is already "selected" for this conversation
+         (context.user_data["selected_hub_chat_id"]), it's used
+         immediately - no lookup, no picker, no repeated questions.
+       - Otherwise, every group the bot is currently in (all_groups UNIONed
+         with the older main_group_users, which catches groups added
+         before all_groups existed) is checked with a LIVE
+         get_chat_member call - not a cached/assumed status - to see if
+         the person messaging the bot is a real admin there.
+           - No matches: told plainly, nothing else happens.
+           - Exactly one match: used immediately AND remembered as the
+             selected group for next time.
+           - Multiple matches: an inline keyboard listing the group names
+             is shown, and the original command + its arguments are
+             stashed in context.user_data so they can be replayed once a
+             group is picked - the pick is then also remembered.
+  3. hub_pick_callback_handler() handles that keyboard's button taps - it
+     looks up which underlying command was pending, restores its
+     arguments, remembers the chosen group as the new selection, and calls
+     the command again with the chosen group's ID.
+  4. /switchgroup clears the current selection and shows the picker again,
+     the one deliberate action that returns to "which group?" mode.
 
 Extending this to more commands: add the command's name -> function to
 HUB_COMMAND_REGISTRY, and change that command to call
@@ -33,9 +46,9 @@ from telegram.ext import ContextTypes
 from db import get_connection
 from utils import escape_markdown
 
-# Filled in by aliases.py (and whichever other modules opt into this) at
-# import time - kept here rather than imported directly to avoid a circular
-# import (aliases.py needs to import resolve_hub_chat_id from this module).
+# Filled in by aliases.py, handlers.py, monitors.py, subscription.py (and
+# whichever other modules opt into this) at import time - kept here rather
+# than imported directly to avoid a circular import.
 HUB_COMMAND_REGISTRY = {}
 
 
@@ -115,13 +128,51 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    lines = "\n".join(f"• {name}" for _, name in admin_of)
+    names = "\n".join(name for _, name in admin_of)
     await update.message.reply_text(
         f"👋 Hi\\! You're an admin of {len(admin_of)} group\\(s\\) I'm in:\n\n"
-        f"{escape_markdown(lines)}\n\n"
-        f"You can run commands like /newevent, /listusers, /setalias, etc\\. right here in this DM \\- "
-        f"if you're an admin of more than one, I'll ask which group each time\\.",
+        f"{escape_markdown(names)}\n\n"
+        f"You can run commands like /newevent, /listusers, etc\\(check /help for more\\) "
+        f"right here in this DM\\.",
         parse_mode="MarkdownV2",
+    )
+
+
+async def switchgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /switchgroup - the one deliberate action that clears whichever group is
+    currently "stuck" for this DM conversation (see resolve_hub_chat_id)
+    and shows the picker again, so the next DM command can target a
+    different group.
+    """
+    chat = update.effective_chat
+    if chat.type != "private":
+        return
+
+    context.user_data.pop("selected_hub_chat_id", None)
+
+    admin_of = await _get_known_candidate_chats(context, update.effective_user.id)
+    if not admin_of:
+        await update.message.reply_text(
+            "You're not an admin of any group I'm currently in\\.", parse_mode="MarkdownV2"
+        )
+        return
+
+    if len(admin_of) == 1:
+        context.user_data["selected_hub_chat_id"] = admin_of[0][0]
+        await update.message.reply_text(
+            f"You're only an admin of one group I'm in \\({escape_markdown(admin_of[0][1])}\\), "
+            f"so that's still the one selected\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(name, callback_data=f"switchpick_{chat_id}")]
+        for chat_id, name in admin_of
+    ])
+    await update.message.reply_text(
+        "Which group would you like to switch to?", reply_markup=keyboard, parse_mode="MarkdownV2"
     )
 
 
@@ -141,6 +192,14 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
     if chat.type != "private":
         return str(chat.id)
 
+    # Sticky selection: once a group has been picked (or auto-detected as
+    # the only option) for this DM conversation, every following DM command
+    # uses it directly - no repeated lookups, no repeated questions - until
+    # /switchgroup is used.
+    selected = context.user_data.get("selected_hub_chat_id")
+    if selected is not None:
+        return str(selected)
+
     user_id = update.effective_user.id
     admin_of = await _get_known_candidate_chats(context, user_id)
 
@@ -153,6 +212,7 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
         return None
 
     if len(admin_of) == 1:
+        context.user_data["selected_hub_chat_id"] = admin_of[0][0]
         return admin_of[0][0]
 
     context.user_data["pending_hub_command"] = {
@@ -198,11 +258,25 @@ class _ReplayContext:
 
 
 async def hub_pick_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles a tap on the group-picker keyboard shown by resolve_hub_chat_id()."""
+    """
+    Handles a tap on either picker keyboard:
+      - "hubpick_<id>"    - from resolve_hub_chat_id, replays the pending
+                            command for the chosen group.
+      - "switchpick_<id>" - from /switchgroup, just sets the new selection,
+                            nothing to replay.
+    """
     query = update.callback_query
     await query.answer()
 
-    chosen_chat_id = query.data.split("_", 1)[1]
+    action, chosen_chat_id = query.data.split("_", 1)
+
+    if action == "switchpick":
+        context.user_data["selected_hub_chat_id"] = chosen_chat_id
+        await query.edit_message_text(
+            "✅ Switched \\- your next commands will target that group\\.", parse_mode="MarkdownV2"
+        )
+        return
+
     pending = context.user_data.pop("pending_hub_command", None)
     if not pending:
         await query.edit_message_text(
@@ -217,6 +291,7 @@ async def hub_pick_callback_handler(update: Update, context: ContextTypes.DEFAUL
         )
         return
 
+    context.user_data["selected_hub_chat_id"] = chosen_chat_id
     await query.edit_message_text("Got it \\- running that now\\.\\.\\.", parse_mode="MarkdownV2")
 
     replay_update = _ReplayUpdate(message=query.message, chat=query.message.chat, user=query.from_user)
