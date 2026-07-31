@@ -10,16 +10,21 @@ from config import ICON_STATS, logger
 from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import get_connection
 from subscription import require_premium
+from hub_resolver import resolve_hub_chat_id, register_hub_command
 
 
-async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("addmonitor")
+async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Adds a group/channel for monitoring.
     Usage: /addmonitor id_channel or /addmonitor id_group
     The bot must be added to the group/channel and the user must be admin in both
     the main group and the monitored group/channel.
     """
-    if not await require_premium(update, "Monitoring"):
+    main_chat_id = await resolve_hub_chat_id(update, context, "addmonitor", override_chat_id)
+    if main_chat_id is None:
+        return
+    if not await require_premium(update, "Monitoring", chat_id=main_chat_id):
         return
 
     args = context.args
@@ -31,7 +36,6 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target_chat_id = args[0]
-    main_chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
 
     try:
@@ -134,12 +138,16 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("removemonitor")
+async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Removes a group/channel from monitoring.
     Usage: /removemonitor id_channel or /removemonitor id_group
     """
-    if not await require_premium(update, "Monitoring"):
+    hub_chat_id = await resolve_hub_chat_id(update, context, "removemonitor", override_chat_id)
+    if hub_chat_id is None:
+        return
+    if not await require_premium(update, "Monitoring", chat_id=hub_chat_id):
         return
 
     args = context.args
@@ -151,7 +159,6 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target_chat_id = args[0]
-    hub_chat_id    = str(update.effective_chat.id)
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -191,14 +198,17 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("listmonitors")
+async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Lists all monitored groups/channels belonging to THIS hub group.
     """
-    if not await require_premium(update, "Monitoring"):
+    hub_chat_id = await resolve_hub_chat_id(update, context, "listmonitors", override_chat_id)
+    if hub_chat_id is None:
+        return
+    if not await require_premium(update, "Monitoring", chat_id=hub_chat_id):
         return
 
-    hub_chat_id = str(update.effective_chat.id)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(

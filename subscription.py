@@ -16,6 +16,7 @@ from telegram.ext import ContextTypes
 from config import ICON_WARNING, OWNER_USER_IDS, logger
 from utils import escape_markdown, is_real_admin
 from db import get_connection
+from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import sync_control_sheet_main, sync_control_sheet_subconfig, sync_control_sheet_channels, open_spreadsheet
 
 SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
@@ -222,7 +223,8 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("setsheet")
+async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Binds this hub group to its own Google Sheet, by spreadsheet ID or full
     URL (the ID is extracted automatically from a pasted URL). Requires:
@@ -234,7 +236,9 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     verified immediately by actually opening it and reading its title,
     rather than trusting the ID blindly.
     """
-    chat_id = str(update.effective_chat.id)
+    chat_id = await resolve_hub_chat_id(update, context, "setsheet", override_chat_id)
+    if chat_id is None:
+        return
 
     if not is_premium(chat_id):
         await update.message.reply_text(
@@ -245,7 +249,7 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     admin_ok = await is_real_admin(
-        context.bot, update.effective_chat.id, update.effective_user, message=update.message
+        context.bot, chat_id, update.effective_user, message=update.message
     )
     if not admin_ok:
         await update.message.reply_text("⛔️ Only admins can use /setsheet\\.", parse_mode="MarkdownV2")

@@ -2350,3 +2350,129 @@ class TestStartCommand:
 
         reply = msg.reply_text.call_args.args[0]
         assert "Old Legacy Group" in reply
+
+
+class TestStickyHubSelection:
+    """
+    Once a group is picked (or auto-detected as the only option) for a DM
+    conversation, it should "stick" for every following DM command without
+    asking again - until /switchgroup is used.
+    """
+
+    async def test_second_command_reuses_the_first_selection_no_relookup(self, db_path):
+        insert_premium(db_path, chat_id="-100111")
+        insert_premium(db_path, chat_id="-100222")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
+        conn.execute("UPDATE all_groups SET chat_name='Basketball' WHERE chat_id='-100222'")
+        conn.commit()
+        conn.close()
+
+        import hub_resolver
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        ctx = make_context(bot=bot, args=[])  # same ctx.user_data across both calls
+
+        msg1 = make_message(chat=dm_chat)
+        upd1 = make_update(chat=dm_chat, message=msg1)
+        await handlers.listusers(upd1, ctx)
+        keyboard = msg1.reply_text.call_args.kwargs.get("reply_markup")
+        button = next(b for row in keyboard.inline_keyboard for b in row if b.text == "Football")
+
+        query = MagicMock()
+        query.data = button.callback_data
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.message = make_message(chat=dm_chat)
+        cb_upd = MagicMock()
+        cb_upd.callback_query = query
+        cb_upd.message = None
+        await hub_resolver.hub_pick_callback_handler(cb_upd, ctx)
+
+        assert ctx.user_data["selected_hub_chat_id"] == "-100111"
+
+        bot.get_chat_member.reset_mock()
+        msg2 = make_message(chat=dm_chat)
+        upd2 = make_update(chat=dm_chat, message=msg2)
+        await handlers.listusers(upd2, ctx)
+
+        bot.get_chat_member.assert_not_awaited()
+        assert msg2.reply_text.call_args.kwargs.get("reply_markup") is None, \
+            "second command must NOT show a picker again"
+
+    async def test_switchgroup_clears_selection_and_shows_picker(self, db_path):
+        insert_premium(db_path, chat_id="-100111")
+        insert_premium(db_path, chat_id="-100222")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
+        conn.execute("UPDATE all_groups SET chat_name='Basketball' WHERE chat_id='-100222'")
+        conn.commit()
+        conn.close()
+
+        import hub_resolver
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        ctx = make_context(bot=bot, args=[])
+        ctx.user_data["selected_hub_chat_id"] = "-100111"
+
+        msg = make_message(chat=dm_chat)
+        upd = make_update(chat=dm_chat, message=msg)
+        await hub_resolver.switchgroup_command(upd, ctx)
+
+        assert "selected_hub_chat_id" not in ctx.user_data
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup")
+        assert keyboard is not None
+
+    async def test_switchpick_button_sets_new_selection_without_replaying_a_command(self, db_path):
+        import hub_resolver
+        bot = make_bot()
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        ctx = make_context(bot=bot, args=[])
+
+        query = MagicMock()
+        query.data = "switchpick_-100222"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+
+        await hub_resolver.hub_pick_callback_handler(upd, ctx)
+
+        assert ctx.user_data["selected_hub_chat_id"] == "-100222"
+        query.edit_message_text.assert_awaited_once()
+
+
+class TestShareeventFromDM:
+    """/shareevent previously hard-rejected anything but a group/supergroup
+    chat type - it must now work from a DM too, via hub resolution."""
+
+    async def test_shareevent_works_from_dm(self, db_path):
+        insert_event(db_path, event_id="ev1", chat_id="-100111")
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','free')")
+        conn.execute(
+            "INSERT INTO sub_groups (chat_id, alias, owner_chat_id, chat_type) VALUES ('-200','downtown','-100111','group')"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Downtown", type="group"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg = make_message(chat=dm_chat)
+        upd = make_update(chat=dm_chat, message=msg)
+        ctx = make_context(bot=bot, args=["downtown"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.shareevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT event_id, chat_id FROM event_shares").fetchall()
+        assert rows == [("ev1", "-200")]
