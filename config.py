@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.12.0"
+BOT_VERSION = "3.12.1"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -72,7 +72,7 @@ ICON_GUEST_MINUS    = " - "
 ICON_GUEST_PLUS     = " + "
 
 # Event lifecycle buttons
-ICON_ADD            = "+"   # also used for "Add Extra Player"
+ICON_ADD            = "+"   # also used for "Add Extra Member"
 ICON_REMOVE         = "-"
 ICON_CANCEL_EVENT   = "🚫"
 ICON_SAVE           = "💾"
