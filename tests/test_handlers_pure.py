@@ -251,7 +251,7 @@ class TestCreateEventKeyboard:
     def test_verification_has_add_extra_player_button(self):
         kb   = create_event_keyboard(self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
-        assert any("Add Extra Player" in b.text for b in flat)
+        assert any("Add Extra Member" in b.text for b in flat)
 
     def test_verification_participant_uses_two_rows(self):
         """

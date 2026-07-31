@@ -1924,7 +1924,7 @@ class TestButtonHandlerSaveCloseEvent:
 
     async def test_extra_player_is_included_in_event_users_export(self, db_path):
         """
-        Regression test for bug #4: a name added via "Add Extra Player" has
+        Regression test for bug #4: a name added via "Add Extra Member" has
         no real Telegram user_id (no parenthesised "(N)" suffix in the going
         list), so it was silently excluded from the EventUsers export. It
         must now show up there, identified by its username since there's no
@@ -2476,3 +2476,44 @@ class TestShareeventFromDM:
         conn = sqlite3.connect(db_path)
         rows = conn.execute("SELECT event_id, chat_id FROM event_shares").fetchall()
         assert rows == [("ev1", "-200")]
+
+
+class TestHelpPremiumIconsInDM:
+    """
+    Regression test: /help from a DM was always checking the DM chat's own
+    (never-premium) id for the Aliases/Monitoring PRO gating, instead of
+    whichever group is actually selected for that DM conversation - so a
+    genuinely PRO group's buttons showed as locked when /help was run via
+    DM. Must use the sticky-selected group (hub_resolver.py) instead.
+    """
+
+    async def test_pro_group_selected_shows_unlocked_buttons(self, db_path):
+        insert_premium(db_path, chat_id="-100111")
+
+        bot = make_bot()
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg = make_message(chat=dm_chat)
+        upd = make_update(chat=dm_chat, message=msg)
+        ctx = make_context(bot=bot, args=[])
+        ctx.user_data["selected_hub_chat_id"] = "-100111"
+
+        await handlers.help_command(upd, ctx)
+
+        buttons = [b for row in msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
+        alias_btn = next(b for b in buttons if "Aliases" in b.text)
+        assert alias_btn.callback_data == "help_alias"
+        assert "PRO" not in alias_btn.text
+
+    async def test_in_group_free_still_shows_locked_buttons(self, db_path):
+        """Unchanged behavior check: inside a free group, buttons stay locked."""
+        bot = make_bot()
+        chat = make_chat(chat_id=-100999, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.help_command(upd, ctx)
+
+        buttons = [b for row in msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
+        alias_btn = next(b for b in buttons if "Aliases" in b.text)
+        assert alias_btn.callback_data == "noop"

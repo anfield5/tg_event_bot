@@ -137,6 +137,22 @@ def parse_user_args(args: list) -> list:
 # /help
 # ---------------------------------------------------------------------------
 
+def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Which chat's premium status should gate the Aliases/Monitoring help
+    buttons. In a group, that's the group itself. In a DM, use whichever
+    group is currently "stuck" for this conversation (see hub_resolver.py)
+    if one has been selected - otherwise fall back to the DM's own id,
+    which is never premium, so the buttons just show as free/inert until
+    a group has actually been picked. Deliberately does NOT trigger the
+    full picker here - a help menu shouldn't demand a group choice.
+    """
+    chat = update.effective_chat
+    if chat.type != "private":
+        return chat.id
+    return context.user_data.get("selected_hub_chat_id", chat.id)
+
+
 def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
     """
     Aliases/Monitoring buttons are shown either as normal (premium hub) or
@@ -200,7 +216,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📚 *More Info*"
     )
 
-    keyboard = _build_main_help_keyboard(update.effective_chat.id)
+    keyboard = _build_main_help_keyboard(_help_target_chat_id(update, context))
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
@@ -211,7 +227,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     # never sends these callback_data values in the first place (it sends
     # "noop" instead), but re-check here too in case the tier changed
     # between the button being shown and being tapped.
-    if query.data in ("help_alias", "help_monitoring") and not is_premium(update.effective_chat.id):
+    if query.data in ("help_alias", "help_monitoring") and not is_premium(_help_target_chat_id(update, context)):
         await query.answer("This section is PRO-only.", show_alert=True)
         return
 
@@ -248,7 +264,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"  • {ICON_CANCEL_EVENT} Cancel Event \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
             f"  • \\- / \\+ \\- admin only, adjust guest count\n"
-            f"  • \\{ICON_ADD} Add Extra Player \\- admin only, add by username\n"
+            f"  • \\{ICON_ADD} Add Extra Member \\- admin only, add by username\n"
             f"  • {ICON_SAVE} Save & Close Event \\- admin only, finalize and export to EventUsers"
         ),
     }
@@ -277,7 +293,7 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📚 *More Info*"
     )
 
-    keyboard = _build_main_help_keyboard(update.effective_chat.id)
+    keyboard = _build_main_help_keyboard(_help_target_chat_id(update, context))
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
@@ -1966,7 +1982,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if action == "addext":
                         context.user_data["awaiting_extra_player_for"] = event_id
                         await query.message.reply_text(
-                            "📝 *Verification Mode:* Type the extra player's username:",
+                            "📝 *Verification Mode:* Type the extra member's username:",
                             parse_mode="MarkdownV2",
                         )
                         return
@@ -2097,7 +2113,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass  # free tier / no sheet configured / expired - SQLite-only save, nothing more to do
                 else:
                     # 1. Collect master going user_ids (stored as "username (user_id)").
-                    #    Entries added via "Add Extra Player" should have user_id
+                    #    Entries added via "Add Extra Member" should have user_id
                     #    If no user_id is available, use username as fallback
                     master_going_ids = []
                     for entry in going:
