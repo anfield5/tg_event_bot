@@ -17,7 +17,7 @@ from aliases import setalias, removealias, listalias
 from monitors import addmonitor, removemonitor, listmonitors
 
 from config import (
-    DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, ICON_VERIFICATION, ICON_GUEST_DEFAULT, logger,
+    DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, ICON_VERIFICATION, ICON_GUEST, logger,
     ICON_KICK, ICON_RETURN, ICON_ADD,
     ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_PREMIUM,
@@ -1453,7 +1453,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 users_list.append(f"{going_icon} {_mention_link(s_chat_id, username, u_id)}")
                 chat_sum += 1
             if guests > 0:
-                users_list.append(f"{ICON_GUEST_DEFAULT} {guests}, from: {_mention_link(s_chat_id, username, u_id)}")
+                users_list.append(f"{ICON_GUEST} {guests}, from: {_mention_link(s_chat_id, username, u_id)}")
                 chat_sum += guests
 
         child_data[str(s_chat_id)] = {
@@ -1498,11 +1498,11 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         u_name = entry.split(" (")[0]
         u_id   = entry.split("(")[-1].rstrip(")") if "(" in entry else None
         if master_counters.get(u_name, 0) > 0:
-            guest_lines.append(f"{ICON_GUEST_DEFAULT} {master_counters[u_name]}, from: {_mention_link(main_chat_id, u_name, u_id)}")
+            guest_lines.append(f"{ICON_GUEST} {master_counters[u_name]}, from: {_mention_link(main_chat_id, u_name, u_id)}")
     # Also include guests from users who are not going (kicked users with guests)
     for k, count in master_counters.items():
         if k not in {u.split(" (")[0] for u in master_going} and count > 0:
-            guest_lines.append(f"{ICON_GUEST_DEFAULT} {count}, from: {_mention_link(main_chat_id, k)}")
+            guest_lines.append(f"{ICON_GUEST} {count}, from: {_mention_link(main_chat_id, k)}")
 
     going_list_text = "\n".join(going_names_list + guest_lines)
 
