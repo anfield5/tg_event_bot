@@ -2487,6 +2487,30 @@ class TestHelpPremiumIconsInDM:
     DM. Must use the sticky-selected group (hub_resolver.py) instead.
     """
 
+    async def test_pro_group_auto_detected_when_help_is_the_first_command(self, db_path):
+        """
+        The exact reported bug: /help run as the very FIRST command in a DM
+        conversation, before any sticky selection exists yet, still showed
+        PRO buttons as locked even though the user administers exactly one
+        (genuinely PRO) group. Must auto-detect it, same as other commands.
+        """
+        insert_premium(db_path, chat_id="-100111")
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg = make_message(chat=dm_chat)
+        upd = make_update(chat=dm_chat, message=msg)
+        ctx = make_context(bot=bot, args=[])  # no selected_hub_chat_id set at all
+
+        await handlers.help_command(upd, ctx)
+
+        buttons = [b for row in msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
+        alias_btn = next(b for b in buttons if "Aliases" in b.text)
+        assert alias_btn.callback_data == "help_alias"
+        assert "PRO" not in alias_btn.text
+        assert ctx.user_data.get("selected_hub_chat_id") == "-100111"
+
     async def test_pro_group_selected_shows_unlocked_buttons(self, db_path):
         insert_premium(db_path, chat_id="-100111")
 

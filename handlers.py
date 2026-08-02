@@ -25,7 +25,7 @@ from config import (
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import track_user, DB_PATH, get_connection, get_display_name
-from hub_resolver import resolve_hub_chat_id, register_hub_command
+from hub_resolver import resolve_hub_chat_id, register_hub_command, _get_known_candidate_chats
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet,
     log_user_presence,
@@ -137,20 +137,33 @@ def parse_user_args(args: list) -> list:
 # /help
 # ---------------------------------------------------------------------------
 
-def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Which chat's premium status should gate the Aliases/Monitoring help
-    buttons. In a group, that's the group itself. In a DM, use whichever
-    group is currently "stuck" for this conversation (see hub_resolver.py)
-    if one has been selected - otherwise fall back to the DM's own id,
-    which is never premium, so the buttons just show as free/inert until
-    a group has actually been picked. Deliberately does NOT trigger the
-    full picker here - a help menu shouldn't demand a group choice.
+    buttons. In a group, that's the group itself. In a DM:
+      - Use whichever group is currently "stuck" for this conversation
+        (see hub_resolver.py) if one has already been selected.
+      - Otherwise, look up admin groups the same way other DM commands do.
+        If there's exactly one, use it AND remember it as the selection
+        (so /help behaves consistently whether or not it's the first
+        command run in the conversation). With zero or multiple matches,
+        fall back to the DM's own id (never premium) rather than forcing
+        a picker here - a help menu shouldn't demand a group choice.
     """
     chat = update.effective_chat
     if chat.type != "private":
         return chat.id
-    return context.user_data.get("selected_hub_chat_id", chat.id)
+
+    selected = context.user_data.get("selected_hub_chat_id")
+    if selected is not None:
+        return selected
+
+    admin_of = await _get_known_candidate_chats(context, update.effective_user.id)
+    if len(admin_of) == 1:
+        context.user_data["selected_hub_chat_id"] = admin_of[0][0]
+        return admin_of[0][0]
+
+    return chat.id
 
 
 def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
@@ -216,7 +229,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📚 *More Info*"
     )
 
-    keyboard = _build_main_help_keyboard(_help_target_chat_id(update, context))
+    keyboard = _build_main_help_keyboard(await _help_target_chat_id(update, context))
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
@@ -227,7 +240,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     # never sends these callback_data values in the first place (it sends
     # "noop" instead), but re-check here too in case the tier changed
     # between the button being shown and being tapped.
-    if query.data in ("help_alias", "help_monitoring") and not is_premium(_help_target_chat_id(update, context)):
+    if query.data in ("help_alias", "help_monitoring") and not is_premium(await _help_target_chat_id(update, context)):
         await query.answer("This section is PRO-only.", show_alert=True)
         return
 
@@ -293,7 +306,7 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📚 *More Info*"
     )
 
-    keyboard = _build_main_help_keyboard(_help_target_chat_id(update, context))
+    keyboard = _build_main_help_keyboard(await _help_target_chat_id(update, context))
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
