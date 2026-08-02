@@ -15,7 +15,7 @@ from handlers import (
     help_command, help_callback_handler, help_back_handler, userid, chatid,
     newevent, editevent,
     notify,
-    updateuser, listusers, refreshusers, adduser,
+    updateuser, listusers, refreshusers, refreshusersall, adduser,
     shareevent,
     setalias, removealias, listalias,
     addmonitor, removemonitor, listmonitors,
@@ -23,7 +23,7 @@ from handlers import (
     button_handler,
     global_text_router,
 )
-from subscription import setsub, setsheet, syncgroups, _push_control_sheet_main, _push_control_sheet_channels, FEATURE_MATRIX
+from subscription import setsub, setsheet, status_command, _push_control_sheet_main, _push_control_sheet_channels, FEATURE_MATRIX
 from utils import now2ddmmyy
 
 
@@ -61,7 +61,7 @@ async def _sync_control_sheet_on_startup(application):
     Runs once after the bot finishes initializing. If CONTROL_SHEET_ID is
     configured, pushes the current all_groups + all_channels + feature
     matrix to the Control Sheet right away - otherwise the sheet would stay
-    empty until the first /setsub call or a manual /syncgroups.
+    empty until the first /setsub call.
     """
     if not CONTROL_SHEET_ID:
         return
@@ -202,6 +202,7 @@ def main():
     app.add_handler(CommandHandler("updateuser",   updateuser))
     app.add_handler(CommandHandler("listusers",    listusers))
     app.add_handler(CommandHandler("refreshusers", refreshusers))
+    app.add_handler(CommandHandler("refreshusersall", refreshusersall))
     app.add_handler(CommandHandler("adduser",      adduser))
     app.add_handler(CommandHandler("shareevent",   shareevent))
 
@@ -218,7 +219,7 @@ def main():
     # 6. Subscription control (owner-only, checked inside setsub itself)
     app.add_handler(CommandHandler("setsub", setsub))
     app.add_handler(CommandHandler("setsheet", setsheet))
-    app.add_handler(CommandHandler("syncgroups", syncgroups))
+    app.add_handler(CommandHandler("status", status_command))
 
     # 5. Text message router (extra player input + @everyone)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, global_text_router))

@@ -128,12 +128,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    names = "\n".join(name for _, name in admin_of)
+    if len(admin_of) == 1:
+        context.user_data["selected_hub_chat_id"] = admin_of[0][0]
+        await update.message.reply_text(
+            f"👋 Hi\\! You're an admin of 1 group I'm in: {escape_markdown(admin_of[0][1])}\\.\n\n"
+            f"You can run commands like /newevent, /listusers, etc\\(check /help for more\\) "
+            f"right here in this DM\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(name, callback_data=f"switchpick_{chat_id}")]
+        for chat_id, name in admin_of
+    ])
     await update.message.reply_text(
-        f"👋 Hi\\! You're an admin of {len(admin_of)} group\\(s\\) I'm in:\n\n"
-        f"{escape_markdown(names)}\n\n"
+        f"👋 Hi\\! You're an admin of {len(admin_of)} groups I'm in \\- which one would you like to work with?\n\n"
         f"You can run commands like /newevent, /listusers, etc\\(check /help for more\\) "
-        f"right here in this DM\\.",
+        f"right here in this DM once you pick one\\.",
+        reply_markup=keyboard,
         parse_mode="MarkdownV2",
     )
 
