@@ -18,6 +18,7 @@ from tests.helpers import (
     make_update, make_context, make_callback_update,
 )
 import handlers
+import subscription
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -991,6 +992,28 @@ class TestSetsub:
 
             msg.reply_text.assert_not_awaited()
 
+    async def test_anonymous_sender_gets_an_explicit_message(self, db_path):
+        """
+        Posting anonymously (as the group/channel itself) substitutes a
+        shared, non-personal user_id that can never match OWNER_USER_IDS -
+        there's no way to verify it's really the owner. Unlike a regular
+        non-owner (silently ignored, so as not to reveal this command
+        exists), an anonymous sender gets told explicitly why nothing
+        happened, since the real owner might be the one posting anonymously
+        and would otherwise have no idea what went wrong.
+        """
+        with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}):
+            chat = make_chat()
+            user = make_user(user_id=1087968824)  # GROUP_ANONYMOUS_BOT_ID
+            msg  = make_message(chat=chat)
+            upd  = make_update(chat=chat, user=user, message=msg)
+            ctx  = make_context(args=["-100", "on", "30"])
+
+            await handlers.setsub(upd, ctx)
+
+            msg.reply_text.assert_awaited_once()
+            assert "anonymously" in msg.reply_text.call_args.args[0].lower()
+
     async def test_owner_can_turn_on(self, db_path):
         with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}), \
              patch("subscription.sync_control_sheet_main", new_callable=AsyncMock):
@@ -1297,8 +1320,15 @@ class TestRefreshusers:
 
         assert dict(get_users(db_path)).get("carol") == "active"
 
-    async def test_users_without_id_are_skipped_not_removed(self, db_path):
-        # Insert a user without a user_id
+    async def test_users_without_id_are_removed_by_default(self, db_path):
+        """
+        Regression test for the new default behavior: users with no stored
+        user_id can never be membership-checked (getChatMember requires a
+        numeric ID), so there's no way to ever confirm they're still here -
+        they're now removed outright by default (this used to require the
+        separate -purge flag; that flag no longer exists, this is just how
+        /refreshusers behaves now).
+        """
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',NULL,'active')")
         conn.commit()
@@ -1314,14 +1344,10 @@ class TestRefreshusers:
 
         await handlers.refreshusers(upd, ctx)
 
-        # bob has no stored user_id, so he can't be membership-checked -
-        # he must be left alone (not removed), and the reply should call
-        # out that some users couldn't be verified.
         users = get_users(db_path)
-        assert dict(users)["bob"] == "active"
-        msg.reply_text.assert_awaited_once()
+        assert "bob" not in dict(users)
         reply = msg.reply_text.call_args.args[0]
-        assert "⚠️" in reply
+        assert "bob" in reply
 
     async def test_adds_missing_chat_administrator_as_active(self, db_path):
         """
@@ -1389,7 +1415,13 @@ class TestRefreshusers:
 
         msg.reply_text.assert_awaited_once()
 
-    async def test_without_root_flag_does_not_touch_google_sheets(self, db_path):
+    async def test_syncs_google_sheets_by_default(self, db_path):
+        """
+        Regression test for the new default behavior: Google Sheets sync
+        used to require the separate -r flag; that flag no longer exists,
+        so /refreshusers now always attempts the sync (a no-op on the free
+        tier, since sheets are premium-only - see sync_users_sheet).
+        """
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
 
@@ -1402,14 +1434,14 @@ class TestRefreshusers:
         with patch("handlers.sync_users_sheet", sync_mock):
             await handlers.refreshusers(upd, ctx)
 
-        sync_mock.assert_not_awaited()
+        sync_mock.assert_awaited_once()
         reply = msg.reply_text.call_args.args[0]
-        assert "Users tab" not in reply
+        assert "Users tab" in reply
 
-    async def test_root_flag_appends_new_member_to_users_sheet(self, db_path):
+    async def test_appends_new_member_to_users_sheet(self, db_path):
         """
-        -r/-root: a chat administrator not yet present in the Users tab must
-        get a new row: USER_ID, USER_NAME, PLACE_ID, STATUS="MEMBER", a live
+        A chat administrator not yet present in the Users tab must get a
+        new row: USER_ID, USER_NAME, PLACE_ID, STATUS="MEMBER", a live
         DATE_start timestamp, blank DATE_end, blank ARCHIVED_USER_NAME.
         """
         bot = make_bot()
@@ -1421,7 +1453,7 @@ class TestRefreshusers:
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context(bot=bot, args=["-r"])
+        ctx  = make_context(bot=bot, args=[])
 
         fake_ss = FakeSpreadsheet()
         with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
@@ -1437,31 +1469,7 @@ class TestRefreshusers:
         reply = msg.reply_text.call_args.args[0]
         assert "Users tab" in reply
 
-    async def test_root_long_form_flag_also_works(self, db_path):
-        bot = make_bot()
-        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
-        admin_user = make_user(user_id=555, username="newadmin", first_name="New")
-        admin_user.is_bot = False
-        bot.get_chat_administrators = AsyncMock(return_value=[MagicMock(user=admin_user)])
-
-        chat = make_chat(chat_id=-100123)
-        msg  = make_message(chat=chat)
-        upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context(bot=bot, args=["-root"])
-
-        fake_ss = FakeSpreadsheet()
-        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
-            await handlers.refreshusers(upd, ctx)
-
-        ws = fake_ss.worksheets["Users"]
-        assert len(ws.appended_rows) == 1
-        row = ws.appended_rows[0]
-        assert row[0:4] == ["555", "newadmin", "-100123", "MEMBER"]
-        assert row[4], "DATE_start must be set to a live timestamp"
-        assert row[5:7] == ["", ""]
-
-    async def test_root_flag_archives_changed_username(self, db_path):
+    async def test_archives_changed_username(self, db_path):
         """A changed USER_NAME must be archived (comma-joined) and updated, not overwritten silently."""
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','oldname','111','active')")
@@ -1482,7 +1490,7 @@ class TestRefreshusers:
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context(bot=bot, args=["-r"])
+        ctx  = make_context(bot=bot, args=[])
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
@@ -1497,7 +1505,7 @@ class TestRefreshusers:
         assert ws.cell_updates["B2"] == [["newname"]]
         assert ws.cell_updates["G2"] == [["oldname"]]
 
-    async def test_root_flag_appends_further_archived_names_with_comma(self, db_path):
+    async def test_appends_further_archived_names_with_comma(self, db_path):
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','secondname','111','active')")
         conn.commit()
@@ -1514,7 +1522,7 @@ class TestRefreshusers:
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context(bot=bot, args=["-r"])
+        ctx  = make_context(bot=bot, args=[])
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
@@ -1528,7 +1536,7 @@ class TestRefreshusers:
 
         assert ws.cell_updates["G2"] == [["firstname,secondname"]]
 
-    async def test_root_flag_marks_departed_user_as_left_in_sheet(self, db_path):
+    async def test_marks_departed_user_as_left_in_sheet(self, db_path):
         """A Users-sheet row for this PLACE_ID whose person is confirmed gone must get STATUS=Left."""
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','gone','222','active')")
@@ -1544,7 +1552,7 @@ class TestRefreshusers:
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context(bot=bot, args=["-r"])
+        ctx  = make_context(bot=bot, args=[])
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
@@ -1558,7 +1566,7 @@ class TestRefreshusers:
 
         assert ws.cell_updates["D2"] == [["LEFT"]]
 
-    async def test_root_flag_does_not_touch_rows_from_other_places(self, db_path):
+    async def test_does_not_touch_rows_from_other_places(self, db_path):
         """A Users-sheet row belonging to a DIFFERENT PLACE_ID must never be touched by this chat's refresh."""
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
@@ -1567,7 +1575,7 @@ class TestRefreshusers:
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context(bot=bot, args=["-r"])
+        ctx  = make_context(bot=bot, args=[])
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
@@ -1581,6 +1589,130 @@ class TestRefreshusers:
 
         assert ws.cell_updates == {}
         assert ws.appended_rows == []
+
+
+class TestRefreshusersall:
+    """/refreshusersall - the former /refreshusers -g, now its own command."""
+
+    async def test_no_monitors_configured(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        await handlers.refreshusersall(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "No monitored" in reply
+
+    async def test_non_admin_is_rejected(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        await handlers.refreshusersall(upd, ctx)
+
+        assert "⛔️" in msg.reply_text.call_args.args[0]
+
+    async def test_syncs_each_monitored_group(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO sub_groups (chat_id, chat_name, is_monitored, owner_chat_id) VALUES ('-200','Downtown',1,'-100123')"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        fake_ss = FakeSpreadsheet()
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await handlers.refreshusersall(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Downtown" in reply
+        assert "Synced" in reply
+
+
+class TestStatusCommand:
+    """/status - shows Type/Due Date/Sheet for the current (or DM-selected) hub."""
+
+    async def test_free_group(self, db_path):
+        bot = make_bot()
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        await subscription.status_command(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "free" in reply
+        assert "unlimited" in reply
+
+    async def test_pro_group_with_sheet(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET sheet_id='abc', sheet_name='MySheet' WHERE chat_id='-100123'")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        await subscription.status_command(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "PRO" in reply
+        assert "MySheet" in reply
+
+
+class TestHelpOwnerFlag:
+    """/help -a shows owner-only commands, but only to actual owners."""
+
+    async def test_owner_sees_owner_commands(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}), patch("handlers.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-100123)
+            user = make_user(user_id=555)
+            msg  = make_message(chat=chat)
+            upd  = make_update(chat=chat, user=user, message=msg)
+            ctx  = make_context(bot=bot, args=["-a"])
+
+            await handlers.help_command(upd, ctx)
+
+            reply = msg.reply_text.call_args.args[0]
+            assert "/setsub" in reply
+
+    async def test_non_owner_gets_regular_help(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}), patch("handlers.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-100123)
+            user = make_user(user_id=999)  # not the owner
+            msg  = make_message(chat=chat)
+            upd  = make_update(chat=chat, user=user, message=msg)
+            ctx  = make_context(bot=bot, args=["-a"])
+
+            await handlers.help_command(upd, ctx)
+
+            reply = msg.reply_text.call_args.args[0]
+            assert "Main Commands" in reply
+            assert "/setsub" not in reply
 
 
 # ── button_handler ───────────────────────────────────────────────────────────
@@ -2293,6 +2425,39 @@ class TestStartCommand:
 
         reply = msg.reply_text.call_args.args[0]
         assert "Football" in reply
+        assert ctx.user_data["selected_hub_chat_id"] == "-100111", \
+            "the only admin group should be auto-selected, no need to ask"
+
+    async def test_shows_picker_immediately_with_multiple_admin_groups(self, db_path):
+        """
+        The very first interaction (/start) must ask which group to work
+        with when the user administers more than one, not just list names
+        informationally.
+        """
+        insert_premium(db_path, chat_id="-100111")
+        insert_premium(db_path, chat_id="-100222")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
+        conn.execute("UPDATE all_groups SET chat_name='Basketball' WHERE chat_id='-100222'")
+        conn.commit()
+        conn.close()
+
+        import hub_resolver
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        dm_chat = make_chat(chat_id=555555, chat_type="private")
+        msg     = make_message(chat=dm_chat)
+        upd     = make_update(chat=dm_chat, message=msg)
+        ctx     = make_context(bot=bot, args=[])
+
+        await hub_resolver.start_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup")
+        assert keyboard is not None, "must show a picker, not just an informational list"
+        names = [b.text for row in keyboard.inline_keyboard for b in row]
+        assert "Football" in names and "Basketball" in names
+        assert "selected_hub_chat_id" not in ctx.user_data, "must wait for an explicit pick"
 
     async def test_tells_the_truth_when_not_admin_anywhere(self, db_path):
         import hub_resolver

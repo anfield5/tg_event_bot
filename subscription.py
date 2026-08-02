@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import ICON_WARNING, OWNER_USER_IDS, logger
-from utils import escape_markdown, is_real_admin
+from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
+from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import get_connection
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import sync_control_sheet_main, sync_control_sheet_subconfig, sync_control_sheet_channels, open_spreadsheet
@@ -126,7 +126,17 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     needing to run any command.
     """
     if update.effective_user.id not in OWNER_USER_IDS:
-        return  # silent - don't reveal this command exists to non-owners
+        is_anonymous = (
+            update.effective_user.id == GROUP_ANONYMOUS_BOT_ID
+            or getattr(update.message, "sender_chat", None) is not None
+        )
+        if is_anonymous:
+            await update.message.reply_text(
+                "⛔️ Owner\\-only commands can't be verified while posting anonymously \\- "
+                "please disable \"Remain anonymous\" and try again\\.",
+                parse_mode="MarkdownV2",
+            )
+        return  # otherwise silent - don't reveal this command exists to non-owners
 
     args = context.args
     if len(args) < 2:
@@ -302,35 +312,44 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     await _push_control_sheet_main()
 
 
-async def syncgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("status")
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
-    Owner-only. Manually pushes the current all_groups, all_channels, and
-    the free/PRO feature matrix to the Control Sheet, without needing to
-    change anyone's subscription first (e.g. right after setting up
-    CONTROL_SHEET_ID for the first time).
+    Shows this hub's current subscription tier, when it expires (if PRO),
+    and which Google Sheet it's bound to (if any). Read-only - just a quick
+    way to check settings without hunting through other commands or the
+    Control Sheet (which only the bot owner can see).
     """
-    if update.effective_user.id not in OWNER_USER_IDS:
+    chat_id = await resolve_hub_chat_id(update, context, "status", override_chat_id)
+    if chat_id is None:
         return
 
-    groups_ok     = await _push_control_sheet_main()
-    channels_ok   = await _push_control_sheet_channels()
-    subconfig_ok  = await sync_control_sheet_subconfig(FEATURE_MATRIX)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT type, subs_date_end, sheet_id, sheet_name FROM all_groups WHERE chat_id = ?",
+            (chat_id,),
+        )
+        row = cursor.fetchone()
 
-    if groups_ok and channels_ok and subconfig_ok:
-        await update.message.reply_text(
-            "✅ Control Sheet synced \\(GROUPS \\+ CHANNELS \\+ SUB\\_CONFIG\\)\\.", parse_mode="MarkdownV2"
-        )
+    pro = is_premium(chat_id)
+    type_line = "PRO" if pro else "free"
+
+    if pro:
+        due_date = row[1] if row and row[1] else "unknown"
+        due_line = escape_markdown(due_date)
     else:
-        failed = []
-        if not groups_ok:
-            failed.append("GROUPS")
-        if not channels_ok:
-            failed.append("CHANNELS")
-        if not subconfig_ok:
-            failed.append("SUB_CONFIG")
-        await update.message.reply_text(
-            f"❌ Sync failed for: {escape_markdown(', '.join(failed))}\\. Check CONTROL_SHEET_ID is set, the sheet is "
-            f"shared with the bot's service account \\(Editor access\\), and all three tabs exist with the "
-            f"exact names `GROUPS`, `CHANNELS`, and `SUB_CONFIG`\\. See server logs for the specific error\\.",
-            parse_mode="MarkdownV2",
-        )
+        due_line = "unlimited"
+
+    if pro and row and row[2] and row[3]:
+        sheet_line = escape_markdown(row[3])
+    else:
+        sheet_line = ""
+
+    await update.message.reply_text(
+        f"{ICON_STATS} *Status*\n\n"
+        f"Type: {type_line}\n"
+        f"Due Date: {due_line}\n"
+        f"Sheet: {sheet_line}",
+        parse_mode="MarkdownV2",
+    )

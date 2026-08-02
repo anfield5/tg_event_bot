@@ -10,7 +10,7 @@ from telegram.error import BadRequest
 
 from keyboard import create_event_keyboard
 from subscription import (
-    is_premium, require_premium, setsub, syncgroups,
+    is_premium, require_premium, setsub,
     FEATURE_MATRIX, SUBS_DATE_FORMAT, _push_control_sheet_main,
 )
 from aliases import setalias, removealias, listalias
@@ -21,7 +21,7 @@ from config import (
     ICON_KICK, ICON_RETURN, ICON_ADD,
     ICON_CANCEL_EVENT, ICON_SAVE, ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_ERROR, ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_PREMIUM,
-    FREE_SHAREEVENT_LIMIT_PER_TARGET,
+    FREE_SHAREEVENT_LIMIT_PER_TARGET, OWNER_USER_IDS,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import track_user, DB_PATH, get_connection, get_display_name
@@ -214,6 +214,19 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    is_owner_request = bool(context.args) and context.args[0].strip().lower() in ("-a", "--admin", "--owner")
+    if is_owner_request and update.effective_user.id in OWNER_USER_IDS:
+        owner_help = (
+            "🔑 *Owner\\-Only Commands*\n\n"
+            "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
+            "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n\n"
+            "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
+            "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
+            "can't be verified and will be rejected\\."
+        )
+        await update.message.reply_text(owner_help, parse_mode="MarkdownV2")
+        return
+
     main_help = (
         "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
@@ -221,10 +234,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
         "/editevent \\[name\\] \\[\\-date \\.\\.\\.\\] \\- Edit the active event\n"
         "/notify \\- Ping users who haven't responded\n"
-        "/refreshusers \\[\\-r\\|\\-g\\] \\- Sync user list with current group members\n"
-        "\\-r refreshes only the current group\\, \\-g refreshes all monitored groups\n"
+        "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group\n"
+        "/refreshusersall \\- Same as /refreshusers, but for every monitored group/channel\n"
         "/listusers \\- Show all tracked users\n"
         "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
+        "/status \\- Show this group's subscription type\\, due date\\, and bound sheet\n"
         "/switchgroup \\- \\(DM only\\) switch which group your commands target\n\n"
         "📚 *More Info*"
     )
@@ -300,9 +314,12 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
         "/editevent \\[name\\] \\[\\-date \\.\\.\\.\\] \\- Edit the active event\n"
         "/notify \\- Ping users who haven't responded\n"
-        "/refreshusers \\[\\-r\\|\\-g\\] \\- Sync user list with current group members\n"
+        "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group\n"
+        "/refreshusersall \\- Same as /refreshusers, but for every monitored group/channel\n"
         "/listusers \\- Show all tracked users\n"
-        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n\n"
+        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
+        "/status \\- Show this group's subscription type\\, due date\\, and bound sheet\n"
+        "/switchgroup \\- \\(DM only\\) switch which group your commands target\n\n"
         "📚 *More Info*"
     )
 
@@ -835,20 +852,20 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
 async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Synchronizes the tracked user list (the one /listusers shows) with actual
-    chat membership:
+    chat membership, for THIS group only:
       - Removes (deletes) tracked users who are confirmed to have left/been
         kicked from the group, don't exist as Telegram users anymore, or are
         otherwise stale/unresolvable records.
       - Adds any chat administrator who isn't tracked yet, with status
         'active' by default.
+      - Removes tracked users with no stored user_id outright (there's no
+        reliable way to verify their membership without one - see the note
+        below), instead of leaving them around forever.
+      - Syncs the Google Sheets "Users" tab for this group (no-op on the
+        free tier, since sheets are premium-only).
 
-    Flags:
-      - No flag: Sync with /listusers only (local DB)
-      - -r: Sync with /listusers AND Google Sheets Users tab for current group
-      - -g: Sync with /listusers AND Google Sheets Users tab for all monitored groups/channels
-      - -purge: Remove tracked users with no stored user_id outright, instead
-        of leaving them alone forever (see the note below on why they can't
-        be auto-verified). Review the ⚠️ list from a normal run first.
+    To sync ALL monitored groups/channels in one go instead of just this
+    one, see /refreshusersall.
 
     On the "adding missing members" side: the Telegram Bot API has no
     endpoint that lists every regular member of a group (only admins, via
@@ -857,17 +874,14 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
     either the moment they join (ChatMemberHandler in main.py) or the first
     time they click a button/send a message - not retroactively by this
     command alone. Users without a stored user_id yet (i.e. who joined
-    before that tracking existed and have never interacted) can't be
-    membership-checked here either, since getChatMember requires a numeric
-    user_id, not a @username; they're reported separately rather than
-    removed, since we simply have no way to confirm they left.
+    before that tracking existed and have never interacted) get removed
+    outright by this command, since getChatMember requires a numeric
+    user_id, not a @username, so there's no way to ever confirm they're
+    still here.
     """
     chat_id = await resolve_hub_chat_id(update, context, "refreshusers", override_chat_id)
     if chat_id is None:
         return
-    purge_unverifiable = any(a.strip().lower() in ("-purge", "--purge-unverifiable") for a in context.args)
-    root_sync = any(a.strip().lower() in ("-r", "-root", "--root") for a in context.args)
-    global_sync = any(a.strip().lower() in ("-g", "-global", "--global") for a in context.args)
 
     # Only admins may run this
     if not await is_real_admin(context.bot, chat_id, update.effective_user, message=update.message):
@@ -881,20 +895,18 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         )
         rows = cursor.fetchall()
 
-        # ── 1. Remove confirmed-departed/invalid users, track who's still here ──
+        # ── 1. Remove confirmed-departed/invalid/unverifiable users ──────────
         removed        = []
-        unverifiable   = []  # no stored user_id - can't be membership-checked at all
         still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
 
         for username, user_id, status in rows:
             if not user_id:
-                if purge_unverifiable:
-                    removed.append(username)
-                else:
-                    # User without stored ID - keep them in list for now
-                    # They might have been added via /adduser without verification
-                    still_present.append((username, username, None, None))
-                    unverifiable.append(username)
+                # No stored user_id at all - can never be membership-checked
+                # (getChatMember requires a numeric ID, not a @username), so
+                # there's no way to confirm they're still here. Remove
+                # outright rather than keeping stale/unverifiable rows
+                # around forever.
+                removed.append(username)
                 continue
             try:
                 m = await context.bot.get_chat_member(
@@ -960,117 +972,135 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
     lines = []
     if removed:
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in removed)
-        lines.append(f"{ICON_CLEAN} Removed \\(left or invalid\\): {mentions}")
+        lines.append(f"{ICON_CLEAN} Removed \\(left, invalid, or unverifiable\\): {mentions}")
     if added:
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in added)
         lines.append(f"➕ Added \\(new admins found\\): {mentions}")
-    if unverifiable:
-        mentions = ", ".join(f"@{escape_markdown(u)}" for u in unverifiable)
-        lines.append(
-            f"{ICON_WARNING} Could not verify \\(no stored user\\_id, left as\\-is\\): {mentions}"
-        )
     if not lines:
         lines.append("✅ Nothing to change \\- list already matches the group\\.")
 
-    # ── 3. Optionally sync the Google Sheets "Users" tab too ────────────────
-    if root_sync or global_sync:
+    # ── 3. Sync the Google Sheets "Users" tab too (no-op on free tier) ──────
+    try:
+        await sync_users_sheet(chat_id, still_present)
+        lines.append(f"{ICON_STATS} Users tab in Google Sheets synced\\.")
+    except Exception as e:
+        logger.error(f"refreshusers: Users sheet sync failed: {e}")
+        lines.append(f"{ICON_WARNING} Could not sync the Users tab in Google Sheets\\.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
+
+
+@register_hub_command("refreshusersall")
+async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+    """
+    Same as /refreshusers, but for every monitored group/channel under this
+    hub in one go (see /addmonitor). This is a heavier, potentially slow
+    bulk operation - it makes live Telegram API calls for every tracked
+    user AND every admin in EVERY monitored chat, one after another - so
+    it's kept as its own explicit command rather than a flag on the
+    lightweight, everyday /refreshusers.
+    """
+    chat_id = await resolve_hub_chat_id(update, context, "refreshusersall", override_chat_id)
+    if chat_id is None:
+        return
+
+    if not await is_real_admin(context.bot, chat_id, update.effective_user, message=update.message):
+        await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /refreshusersall\\.", parse_mode="MarkdownV2")
+        return
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT chat_id, chat_type, chat_name FROM sub_groups WHERE is_monitored = 1 AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            (chat_id,),
+        )
+        monitors = cursor.fetchall()
+
+    if not monitors:
+        await update.message.reply_text(
+            f"{ICON_GLOBE} No monitored groups/channels configured\\. See /addmonitor\\.", parse_mode="MarkdownV2"
+        )
+        return
+
+    lines = [f"{ICON_GLOBE} *Processing monitored groups/channels:*"]
+    for monitor_chat_id, chat_type, chat_name in monitors:
         try:
-            await sync_users_sheet(chat_id, still_present)
-            lines.append(f"{ICON_STATS} Users tab in Google Sheets synced\\.")
-        except Exception as e:
-            logger.error(f"refreshusers: Users sheet sync failed: {e}")
-            lines.append(f"{ICON_WARNING} Could not sync the Users tab in Google Sheets\\.")
+            with get_connection() as conn_mon:
+                cursor_mon = conn_mon.cursor()
 
-    # ── 4. Global sync: process all monitored groups/channels ─────────────
-    if global_sync:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT chat_id, chat_type, chat_name FROM sub_groups WHERE is_monitored = 1 AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                (chat_id,),
-            )
-            monitors = cursor.fetchall()
+                # Local sync for monitored group (remove departed, add admins)
+                cursor_mon.execute(
+                    "SELECT username, user_id, status FROM main_group_users WHERE chat_id = ?",
+                    (monitor_chat_id,),
+                )
+                monitor_rows = cursor_mon.fetchall()
 
-        if monitors:
-            lines.append(f"\n{ICON_GLOBE} *Global sync processing monitored groups/channels:*")
-            for monitor_chat_id, chat_type, chat_name in monitors:
-                try:
-                    with get_connection() as conn_mon:
-                        cursor_mon = conn_mon.cursor()
+                monitor_removed = []
+                monitor_present = []
 
-                        # Local sync for monitored group (remove departed, add admins)
-                        cursor_mon.execute(
-                            "SELECT username, user_id, status FROM main_group_users WHERE chat_id = ?",
-                            (monitor_chat_id,),
+                for username, user_id, status in monitor_rows:
+                    if not user_id:
+                        monitor_removed.append(username)
+                        continue
+                    try:
+                        m = await context.bot.get_chat_member(
+                            chat_id=int(monitor_chat_id), user_id=int(user_id)
                         )
-                        monitor_rows = cursor_mon.fetchall()
+                        if m.status in ["left", "kicked"]:
+                            monitor_removed.append(username)
+                        else:
+                            live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
+                            monitor_present.append((user_id, live_username, m.user.first_name, m.user.last_name))
+                    except BadRequest:
+                        monitor_removed.append(username)
+                    except Exception:
+                        monitor_removed.append(username)
 
-                        monitor_removed = []
-                        monitor_present = []
+                if monitor_removed:
+                    cursor_mon.executemany(
+                        "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
+                        [(monitor_chat_id, u) for u in monitor_removed],
+                    )
+                    conn_mon.commit()
 
-                        for username, user_id, status in monitor_rows:
-                            if not user_id:
-                                monitor_removed.append(username)
-                                continue
-                            try:
-                                m = await context.bot.get_chat_member(
-                                    chat_id=int(monitor_chat_id), user_id=int(user_id)
-                                )
-                                if m.status in ["left", "kicked"]:
-                                    monitor_removed.append(username)
-                                else:
-                                    live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
-                                    monitor_present.append((user_id, live_username, m.user.first_name, m.user.last_name))
-                            except BadRequest:
-                                monitor_removed.append(username)
-                            except Exception:
-                                monitor_removed.append(username)
+                # Add missing admins for monitored group
+                monitor_added = []
+                try:
+                    monitor_admins = await context.bot.get_chat_administrators(int(monitor_chat_id))
+                    cursor_mon.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (monitor_chat_id,))
+                    monitor_tracked = {r[0] for r in cursor_mon.fetchall()}
 
-                        if monitor_removed:
-                            cursor_mon.executemany(
-                                "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
-                                [(monitor_chat_id, u) for u in monitor_removed],
-                            )
-                            conn_mon.commit()
-
-                        # Add missing admins for monitored group
-                        monitor_added = []
-                        try:
-                            monitor_admins = await context.bot.get_chat_administrators(int(monitor_chat_id))
-                            cursor_mon.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (monitor_chat_id,))
-                            monitor_tracked = {r[0] for r in cursor_mon.fetchall()}
-
-                            for admin_member in monitor_admins:
-                                u = admin_member.user
-                                if u.is_bot:
-                                    continue
-                                uname = u.username or u.first_name or f"user{u.id}"
-                                if uname not in monitor_tracked:
-                                    track_user(monitor_chat_id, uname, "active", user_id=str(u.id),
-                                               first_name=u.first_name, last_name=u.last_name)
-                                    monitor_added.append(uname)
-                                monitor_present.append((str(u.id), uname, u.first_name, u.last_name))
-                        except Exception as e:
-                            logger.error(f"Global sync: could not fetch admins for {chat_name}: {e}")
-
-                    # Dedupe monitor_present
-                    monitor_present = list({
-                        str(uid): (uid, uname, first_name, last_name)
-                        for uid, uname, first_name, last_name in monitor_present
-                    }.values())
-
-                    # Sync to sheets with place_id (each monitor gets its own place_id)
-                    await sync_users_sheet(monitor_chat_id, monitor_present)
-
-                    status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"
-                    if monitor_removed:
-                        status_line += f" \\(-{len(monitor_removed)}\\)"
-                    if monitor_added:
-                        status_line += f" \\(+{len(monitor_added)}\\)"
-                    lines.append(status_line)
+                    for admin_member in monitor_admins:
+                        u = admin_member.user
+                        if u.is_bot:
+                            continue
+                        uname = u.username or u.first_name or f"user{u.id}"
+                        if uname not in monitor_tracked:
+                            track_user(monitor_chat_id, uname, "active", user_id=str(u.id),
+                                       first_name=u.first_name, last_name=u.last_name)
+                            monitor_added.append(uname)
+                        monitor_present.append((str(u.id), uname, u.first_name, u.last_name))
                 except Exception as e:
-                    logger.error(f"Global sync failed for {chat_name}: {e}")
-                    lines.append(f"  ❌ Failed: `{escape_markdown(chat_name)}`")
+                    logger.error(f"refreshusersall: could not fetch admins for {chat_name}: {e}")
+
+            # Dedupe monitor_present
+            monitor_present = list({
+                str(uid): (uid, uname, first_name, last_name)
+                for uid, uname, first_name, last_name in monitor_present
+            }.values())
+
+            # Sync to sheets with place_id (each monitor gets its own place_id)
+            await sync_users_sheet(monitor_chat_id, monitor_present)
+
+            status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"
+            if monitor_removed:
+                status_line += f" \\(-{len(monitor_removed)}\\)"
+            if monitor_added:
+                status_line += f" \\(+{len(monitor_added)}\\)"
+            lines.append(status_line)
+        except Exception as e:
+            logger.error(f"refreshusersall failed for {chat_name}: {e}")
+            lines.append(f"  ❌ Failed: `{escape_markdown(chat_name)}`")
 
     await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
 
