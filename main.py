@@ -12,7 +12,7 @@ from db import init_db, track_user, register_chat_added, register_chat_removed
 from sheets import log_user_presence, sync_control_sheet_subconfig
 from hub_resolver import hub_pick_callback_handler, start_command, switchgroup_command
 from handlers import (
-    help_command, help_callback_handler, help_back_handler, userid, chatid,
+    help_command, help_callback_handler, help_back_handler, upgrade_info_callback_handler, userid, chatid,
     newevent, editevent,
     notify,
     updateuser, listusers, refreshusers, refreshusersall, adduser,
@@ -85,7 +85,7 @@ async def on_my_chat_member_update(update, context):
     group or channel) - a DIFFERENT Telegram update type from regular user
     membership changes (see on_chat_member_update above, which only fires
     for OTHER users). Populates all_groups/all_channels the instant the bot
-    joins a new chat (default type 'free' for groups), and moves that row
+    joins a new chat (default type 'FREE' for groups), and moves that row
     into all_chats_bot_log with a removal timestamp the instant it's kicked
     or leaves. Also pushes the Control Sheet's GROUPS/CHANNELS tabs right
     away, so they never lag behind reality waiting for the next /setsub or
@@ -182,6 +182,7 @@ def main():
     # button would always fall through to help_callback_handler's "Unknown
     # section" fallback instead of returning to the main help menu.
     app.add_handler(CallbackQueryHandler(help_back_handler, pattern="^help_back$"))
+    app.add_handler(CallbackQueryHandler(upgrade_info_callback_handler, pattern="^upgrade_info$"))
     app.add_handler(CallbackQueryHandler(help_callback_handler, pattern="^help_"))
     app.add_handler(CallbackQueryHandler(hub_pick_callback_handler, pattern="^(hubpick|switchpick)_"))
     app.add_handler(CallbackQueryHandler(button_handler))

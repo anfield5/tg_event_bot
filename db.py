@@ -80,7 +80,7 @@ def init_db(db_path: str = DB_PATH):
     if has_legacy_chat_settings and not has_new_chat_settings:
         cursor.execute("ALTER TABLE chat_settings RENAME TO main_chat_settings")
         cursor.execute("ALTER TABLE main_chat_settings RENAME COLUMN sheet_name TO sheet_id")
-        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN type TEXT DEFAULT 'free'")
+        cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN type TEXT DEFAULT 'FREE'")
         cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_start TEXT DEFAULT NULL")
         cursor.execute("ALTER TABLE main_chat_settings ADD COLUMN subs_date_end TEXT DEFAULT NULL")
 
@@ -104,7 +104,7 @@ def init_db(db_path: str = DB_PATH):
         CREATE TABLE IF NOT EXISTS all_groups (
             chat_id TEXT PRIMARY KEY,
             chat_name TEXT DEFAULT NULL,
-            type TEXT DEFAULT 'free',
+            type TEXT DEFAULT 'FREE',
             sheet_id TEXT UNIQUE,
             sheet_name TEXT DEFAULT NULL,
             subs_date_start TEXT DEFAULT NULL,
@@ -314,7 +314,7 @@ def init_db(db_path: str = DB_PATH):
     cursor.execute("PRAGMA table_info(all_groups)")
     mcs_cols = [col[1] for col in cursor.fetchall()]
     if "type" not in mcs_cols:
-        cursor.execute("ALTER TABLE all_groups ADD COLUMN type TEXT DEFAULT 'free'")
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN type TEXT DEFAULT 'FREE'")
     if "subs_date_start" not in mcs_cols:
         cursor.execute("ALTER TABLE all_groups ADD COLUMN subs_date_start TEXT DEFAULT NULL")
     if "subs_date_end" not in mcs_cols:
@@ -327,6 +327,11 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE all_groups ADD COLUMN visibility TEXT DEFAULT NULL")
     if "date_bot_add" not in mcs_cols:
         cursor.execute("ALTER TABLE all_groups ADD COLUMN date_bot_add TEXT DEFAULT NULL")
+
+    # 0a2. Normalize any pre-existing lowercase 'free'/'pro' type values to
+    # 'FREE'/'PRO' - covers rows written before this uppercase convention.
+    cursor.execute("UPDATE all_groups SET type = 'FREE' WHERE type = 'free'")
+    cursor.execute("UPDATE all_groups SET type = 'PRO' WHERE type = 'pro'")
 
     # 0b. Add `chat_type`/`chat_name` to sub_groups if it exists from an
     # earlier version of this same migration that predates them.
@@ -486,7 +491,7 @@ def register_chat_added(chat_id: str, chat_name: str, chat_type: str, visibility
     """
     Called the moment the bot is added to a group/channel (see main.py's
     on_my_chat_member_update). Groups go into all_groups (default type
-    'free'), channels go into all_channels - both are simple "the bot is
+    'FREE'), channels go into all_channels - both are simple "the bot is
     currently present here" registries, kept separate since groups have a
     subscription/sheet-binding concept that channels don't.
 
@@ -511,7 +516,7 @@ def register_chat_added(chat_id: str, chat_name: str, chat_type: str, visibility
     else:
         cursor.execute("""
             INSERT INTO all_groups (chat_id, chat_name, type, visibility, date_bot_add)
-            VALUES (?, ?, 'free', ?, ?)
+            VALUES (?, ?, 'FREE', ?, ?)
             ON CONFLICT(chat_id) DO UPDATE
                 SET chat_name = excluded.chat_name,
                     visibility = excluded.visibility,

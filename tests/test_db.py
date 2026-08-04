@@ -222,7 +222,7 @@ class TestMigrationChatSettingsRename:
         assert "chat_settings" not in tables
         assert "main_chat_settings" not in tables
         rows = fetch_all(path, "SELECT chat_id, sheet_id, type FROM all_groups WHERE chat_id='-1001234567890'")
-        assert rows == [("-1001234567890", "TestEventsSheet", "free")]
+        assert rows == [("-1001234567890", "TestEventsSheet", "FREE")]
 
     def test_idempotent_after_rename(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -257,7 +257,7 @@ class TestMigrationMainChatSettingsRename:
         assert "all_groups" in tables
         assert "main_chat_settings" not in tables
         rows = fetch_all(path, "SELECT chat_id, type, sheet_id FROM all_groups WHERE chat_id='-200'")
-        assert rows == [("-200", "pro", "SheetB")]
+        assert rows == [("-200", "PRO", "SheetB")]
 
     def test_idempotent_after_rename(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -454,3 +454,32 @@ class TestTrackUser:
         track_user("chat1", "carol", db_path=path)  # no explicit status
         rows = fetch_all(path, "SELECT status FROM main_group_users WHERE username='carol'")
         assert rows[0][0] == "active"
+
+
+class TestTypeCaseNormalization:
+    """
+    all_groups.type values must always be uppercase ('FREE'/'PRO'), even
+    for rows already stored lowercase by an older bot version - init_db()
+    normalizes them on every run.
+    """
+
+    def test_normalizes_existing_lowercase_values(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        run_sql(path, "INSERT INTO all_groups (chat_id, type) VALUES ('-1', 'free')")
+        run_sql(path, "INSERT INTO all_groups (chat_id, type) VALUES ('-2', 'pro')")
+
+        init_db(db_path=path)  # re-run triggers the normalization step
+
+        rows = fetch_all(path, "SELECT chat_id, type FROM all_groups ORDER BY chat_id")
+        assert rows == [("-1", "FREE"), ("-2", "PRO")]
+
+    def test_already_uppercase_values_are_left_alone(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        run_sql(path, "INSERT INTO all_groups (chat_id, type) VALUES ('-3', 'PRO')")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT chat_id, type FROM all_groups WHERE chat_id='-3'")
+        assert rows == [("-3", "PRO")]

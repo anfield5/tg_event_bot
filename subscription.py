@@ -27,7 +27,7 @@ SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
 def is_premium(chat_id: str) -> bool:
     """
     True if this hub currently has an active premium subscription.
-    Auto-expires: type='pro' with a subs_date_end in the past is treated
+    Auto-expires: type='PRO' with a subs_date_end in the past is treated
     as NOT premium, without needing any background job to flip the flag back -
     the flag only ever matters at the moment a premium-gated command runs.
     """
@@ -39,7 +39,7 @@ def is_premium(chat_id: str) -> bool:
         )
         row = cursor.fetchone()
 
-    if not row or row[0] != "pro" or not row[1]:
+    if not row or row[0] != "PRO" or not row[1]:
         return False
     try:
         return datetime.strptime(row[1], SUBS_DATE_FORMAT) > datetime.now()
@@ -170,12 +170,12 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mode == "off":
             if existing:
                 cursor.execute(
-                    "UPDATE all_groups SET type = 'free', chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
+                    "UPDATE all_groups SET type = 'FREE', chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
                     (chat_name, target_chat_id),
                 )
             else:
                 cursor.execute(
-                    "INSERT INTO all_groups (chat_id, chat_name, type) VALUES (?, ?, 'free')",
+                    "INSERT INTO all_groups (chat_id, chat_name, type) VALUES (?, ?, 'FREE')",
                     (target_chat_id, chat_name),
                 )
             conn.commit()
@@ -198,7 +198,7 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # date, not to "now" - otherwise renewing a few days early would
             # throw away the remaining days instead of stacking on top.
             base = datetime.now()
-            if existing and existing[0] == "pro" and existing[1]:
+            if existing and existing[0] == "PRO" and existing[1]:
                 try:
                     prior_end = datetime.strptime(existing[1], SUBS_DATE_FORMAT)
                     if prior_end > base:
@@ -207,16 +207,16 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
 
             new_end = (base + timedelta(days=days)).strftime(SUBS_DATE_FORMAT)
-            new_start = existing[1] if existing and existing[0] == "pro" and existing[1] else datetime.now().strftime(SUBS_DATE_FORMAT)
+            new_start = existing[1] if existing and existing[0] == "PRO" and existing[1] else datetime.now().strftime(SUBS_DATE_FORMAT)
 
             if existing:
                 cursor.execute(
-                    "UPDATE all_groups SET type = 'pro', subs_date_start = ?, subs_date_end = ?, chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
+                    "UPDATE all_groups SET type = 'PRO', subs_date_start = ?, subs_date_end = ?, chat_name = COALESCE(?, chat_name) WHERE chat_id = ?",
                     (new_start, new_end, chat_name, target_chat_id),
                 )
             else:
                 cursor.execute(
-                    "INSERT INTO all_groups (chat_id, chat_name, type, subs_date_start, subs_date_end) VALUES (?, ?, 'pro', ?, ?)",
+                    "INSERT INTO all_groups (chat_id, chat_name, type, subs_date_start, subs_date_end) VALUES (?, ?, 'PRO', ?, ?)",
                     (target_chat_id, chat_name, new_start, new_end),
                 )
             conn.commit()
@@ -333,7 +333,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
         row = cursor.fetchone()
 
     pro = is_premium(chat_id)
-    type_line = "PRO" if pro else "free"
+    type_line = "PRO" if pro else "FREE"
 
     if pro:
         due_date = row[1] if row and row[1] else "unknown"

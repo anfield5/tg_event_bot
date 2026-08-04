@@ -44,7 +44,7 @@ def insert_premium(db_path, chat_id="-100123", days=30):
     end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO all_groups (chat_id, type, subs_date_start, subs_date_end) VALUES (?, 'pro', ?, ?)",
+        "INSERT INTO all_groups (chat_id, type, subs_date_start, subs_date_end) VALUES (?, 'PRO', ?, ?)",
         (chat_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), end),
     )
     conn.commit()
@@ -953,7 +953,7 @@ class TestIsPremium:
 
     def test_free_type_is_not_premium(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-100','free')")
+        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-100','FREE')")
         conn.commit()
         conn.close()
         assert handlers.is_premium("-100") is False
@@ -968,7 +968,7 @@ class TestIsPremium:
 
     def test_premium_type_but_null_end_date_is_not_premium(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-100','pro')")
+        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-100','PRO')")
         conn.commit()
         conn.close()
         assert handlers.is_premium("-100") is False
@@ -1085,8 +1085,8 @@ class TestHelpTierAwareKeyboard:
         monitor_btn = next(b for b in flat if "Monitoring" in b.text)
         assert handlers.ICON_PREMIUM in alias_btn.text
         assert handlers.ICON_PREMIUM in monitor_btn.text
-        assert alias_btn.callback_data == "noop"
-        assert monitor_btn.callback_data == "noop"
+        assert alias_btn.callback_data == "upgrade_info"
+        assert monitor_btn.callback_data == "upgrade_info"
 
     async def test_premium_hub_shows_active_alias_and_monitoring_buttons(self, db_path):
         insert_premium(db_path, chat_id="-100123")
@@ -1659,7 +1659,7 @@ class TestStatusCommand:
         await subscription.status_command(upd, ctx)
 
         reply = msg.reply_text.call_args.args[0]
-        assert "free" in reply
+        assert "FREE" in reply
         assert "unlimited" in reply
 
     async def test_pro_group_with_sheet(self, db_path):
@@ -1682,7 +1682,40 @@ class TestStatusCommand:
         assert "MySheet" in reply
 
 
-class TestHelpOwnerFlag:
+class TestUpgradeInfoCallback:
+    """Tapping the locked Aliases/Monitoring button opens an upgrade-info
+    message instead of the old dead-end alert."""
+
+    async def test_shows_feature_list_status_and_contact_button(self, db_path):
+        bot = make_bot()
+        chat = make_chat(chat_id=-100123)
+
+        query = MagicMock()
+        query.data = "upgrade_info"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_chat = chat
+        upd.effective_user = make_user()
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.upgrade_info_callback_handler(upd, ctx)
+
+        query.edit_message_text.assert_awaited_once()
+        text = query.edit_message_text.call_args.args[0]
+        assert "PRO" in text
+        assert "FREE" in text
+
+        keyboard = query.edit_message_text.call_args.kwargs["reply_markup"]
+        buttons = [b for row in keyboard.inline_keyboard for b in row]
+        contact_btn = next(b for b in buttons if "owner" in b.text.lower())
+        assert contact_btn.url == "https://t.me/anefex"
+        back_btn = next(b for b in buttons if "Back" in b.text)
+        assert back_btn.callback_data == "help_back"
+
+
+
     """/help -a shows owner-only commands, but only to actual owners."""
 
     async def test_owner_sees_owner_commands(self, db_path):
@@ -2292,7 +2325,7 @@ class TestHubResolver:
 
     async def test_dm_with_no_admin_groups_is_told_plainly(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','free')")
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','FREE')")
         conn.commit()
         conn.close()
 
@@ -2618,7 +2651,7 @@ class TestShareeventFromDM:
     async def test_shareevent_works_from_dm(self, db_path):
         insert_event(db_path, event_id="ev1", chat_id="-100111")
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','free')")
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','FREE')")
         conn.execute(
             "INSERT INTO sub_groups (chat_id, alias, owner_chat_id, chat_type) VALUES ('-200','downtown','-100111','group')"
         )
@@ -2705,4 +2738,4 @@ class TestHelpPremiumIconsInDM:
 
         buttons = [b for row in msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
         alias_btn = next(b for b in buttons if "Aliases" in b.text)
-        assert alias_btn.callback_data == "noop"
+        assert alias_btn.callback_data == "upgrade_info"
