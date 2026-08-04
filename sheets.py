@@ -70,7 +70,7 @@ async def get_sheet_for_chat(chat_id):
         return None  # unregistered hub defaults to free - no Sheets writes
 
     chat_type, sheet_id, subs_date_end = row
-    if chat_type != "pro":
+    if chat_type != "PRO":
         return None
 
     if not subs_date_end:

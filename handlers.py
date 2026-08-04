@@ -169,19 +169,18 @@ async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYP
 def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
     """
     Aliases/Monitoring buttons are shown either as normal (premium hub) or
-    marked with ICON_PREMIUM and made inert (free hub) - tapping the free
-    version does nothing (callback_data='noop', already ignored globally by
-    button_handler) rather than opening a section that just repeats "this
-    is premium-only" at you.
+    marked with ICON_PREMIUM (free hub). Tapping the free version opens an
+    upgrade-info message (see upgrade_info_callback_handler) instead of
+    doing nothing, so there's an actual next step rather than a dead end.
     """
     premium = is_premium(chat_id)
     alias_btn = InlineKeyboardButton(
         "⚙️ Aliases" if premium else f"⚙️ Aliases {ICON_PREMIUM}",
-        callback_data="help_alias" if premium else "noop",
+        callback_data="help_alias" if premium else "upgrade_info",
     )
     monitor_btn = InlineKeyboardButton(
         "🔍 Monitoring" if premium else f"🔍 Monitoring {ICON_PREMIUM}",
-        callback_data="help_monitoring" if premium else "noop",
+        callback_data="help_monitoring" if premium else "upgrade_info",
     )
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
@@ -252,7 +251,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Defensive: these two sections are premium-only. The free-tier keyboard
     # never sends these callback_data values in the first place (it sends
-    # "noop" instead), but re-check here too in case the tier changed
+    # "upgrade_info" instead), but re-check here too in case the tier changed
     # between the button being shown and being tapped.
     if query.data in ("help_alias", "help_monitoring") and not is_premium(await _help_target_chat_id(update, context)):
         await query.answer("This section is PRO-only.", show_alert=True)
@@ -325,6 +324,35 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = _build_main_help_keyboard(await _help_target_chat_id(update, context))
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
+
+
+async def upgrade_info_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shown when a free-tier hub taps the locked Aliases/Monitoring button on
+    /help - replaces the old dead-end alert ("This section is PRO-only.")
+    with an actual next step: what PRO unlocks, the hub's current tier, a
+    button to message the bot owner directly, and a way back to /help
+    instead of a conversational dead end.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = await _help_target_chat_id(update, context)
+    current_tier = "PRO" if is_premium(chat_id) else "FREE"
+
+    text = (
+        f"⚡ *Aliases and Monitoring are PRO features*\n\n"
+        f"With PRO, this hub gets:\n"
+        f"• Custom aliases for child groups/channels\n"
+        f"• Group/channel monitoring \\(/addmonitor\\)\n"
+        f"• Your own Google Sheet, auto\\-synced with every event\n\n"
+        f"Currently: {current_tier}"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Message the bot owner", url="https://t.me/anefex")],
+        [InlineKeyboardButton("◀️ Back to /help", callback_data="help_back")],
+    ])
+    await query.edit_message_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
 
 
 # ---------------------------------------------------------------------------

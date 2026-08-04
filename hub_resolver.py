@@ -285,8 +285,22 @@ async def hub_pick_callback_handler(update: Update, context: ContextTypes.DEFAUL
 
     if action == "switchpick":
         context.user_data["selected_hub_chat_id"] = chosen_chat_id
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (chosen_chat_id,))
+            row = cursor.fetchone()
+        chat_name = row[0] if row and row[0] else None
+        if not chat_name:
+            try:
+                chat_obj = await context.bot.get_chat(int(chosen_chat_id))
+                chat_name = chat_obj.title or chat_obj.username or chosen_chat_id
+            except Exception:
+                chat_name = chosen_chat_id
+
         await query.edit_message_text(
-            "✅ Switched \\- your next commands will target that group\\.", parse_mode="MarkdownV2"
+            f"✅ Switched \\- your next commands will target \"{escape_markdown(chat_name)}\"\\.",
+            parse_mode="MarkdownV2",
         )
         return
 
