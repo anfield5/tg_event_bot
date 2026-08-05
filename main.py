@@ -27,6 +27,38 @@ from subscription import setsub, setsheet, status_command, _push_control_sheet_m
 from utils import now2ddmmyy
 
 
+async def track_command_interaction(update, context):
+    """
+    Fires before every /command in every group chat (registered in an
+    earlier handler group in main() below, so it runs alongside - not
+    instead of - the actual command's own handler). Marks the invoking
+    user as tracked, the same way a Going/Not Going click already does.
+
+    The point: previously, purely informational commands like /help never
+    left any trace in main_group_users at all - only actual event
+    interactions or /refreshusers did. That made older groups (added
+    before all_groups existed) invisible for the DM hub-resolution
+    backfill unless someone happened to click an event button. Now ANY
+    command run inside a group is enough to register it.
+
+    Skipped entirely for DMs (private chats aren't "groups" to track
+    membership for) and for bot senders (channel posts forwarded through
+    a linked discussion group show up as sent by a bot account).
+    """
+    chat = update.effective_chat
+    if chat is None or chat.type == "private":
+        return
+    user = update.effective_user
+    if user is None or user.is_bot:
+        return
+
+    username = user.username or user.first_name or f"user{user.id}"
+    track_user(
+        str(chat.id), username, "active",
+        user_id=str(user.id), first_name=user.first_name, last_name=user.last_name,
+    )
+
+
 async def on_chat_member_update(update, context):
     """
     Automatically tracks users who join the group as 'active',
@@ -190,6 +222,11 @@ def main():
     # 2. Chat member join/leave tracking
     app.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(ChatMemberHandler(on_my_chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
+    # Runs in an earlier group (-1) so it fires alongside every command's
+    # own handler (registered in the default group 0 below), not instead
+    # of it - marks the invoker as tracked for ANY command, not just
+    # event-button clicks or /refreshusers (see track_command_interaction).
+    app.add_handler(MessageHandler(filters.COMMAND, track_command_interaction), group=-1)
 
     # 3. Core commands
     app.add_handler(CommandHandler("start",        start_command))
@@ -227,7 +264,7 @@ def main():
 
     logger.info(f"Bot v{BOT_VERSION} started. Polling...")
     logger.info(f"OWNER_USER_IDS configured: {OWNER_USER_IDS or '(empty - no owner-only commands will work)'}")
-    app.run_polling(allowed_updates=["message", "callback_query", "chat_member"])
+    app.run_polling(allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"])
 
 
 if __name__ == "__main__":
