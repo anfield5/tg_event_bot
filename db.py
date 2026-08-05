@@ -141,6 +141,21 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
+    # Every command invocation, across every chat - foundation for usage
+    # statistics (which groups are actually active, which commands get
+    # used). Deliberately NOT tied to any specific command's own logic -
+    # see main.py's generic command-logging handler, which populates this
+    # for every registered command without needing per-command changes.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS command_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            user_id TEXT DEFAULT NULL,
+            command TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    """)
+
     # Storage for active voting events within the system.
     # event_status: -1 canceled / 0 open / 1 verification / 2 closed
     cursor.execute("""
@@ -562,4 +577,23 @@ def register_chat_removed(chat_id: str, date_bot_removed: str, db_path: str = No
         cursor.execute("DELETE FROM all_channels WHERE chat_id = ?", (str(chat_id),))
         conn.commit()
 
+    conn.close()
+
+
+def log_command_usage(chat_id: str, user_id, command: str, timestamp: str, db_path: str = None):
+    """
+    Records one command invocation. Called generically for every command
+    (see main.py's log_command_usage_handler), not from inside each
+    command's own logic - so adding a new command automatically gets
+    logged without needing to remember to add a line for it.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO command_log (chat_id, user_id, command, timestamp) VALUES (?, ?, ?, ?)",
+        (str(chat_id), str(user_id) if user_id is not None else None, command, timestamp),
+    )
+    conn.commit()
     conn.close()
