@@ -2739,3 +2739,120 @@ class TestHelpPremiumIconsInDM:
         buttons = [b for row in msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
         alias_btn = next(b for b in buttons if "Aliases" in b.text)
         assert alias_btn.callback_data == "upgrade_info"
+
+
+class TestAllgroupsAllchannels:
+    """Owner-only /allgroups (with -pro filter) and /allchannels, paginated 10 at a time."""
+
+    async def test_lists_all_groups(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, visibility) VALUES ('-1','Football','PRO','public')")
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, visibility) VALUES ('-2','Basketball','FREE','private')")
+        conn.commit()
+        conn.close()
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=[])
+
+            await subscription.allgroups_command(upd, ctx)
+
+            reply = msg.reply_text.call_args.args[0]
+            assert "Football" in reply and "Basketball" in reply
+
+    async def test_pro_filter_excludes_free(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, visibility) VALUES ('-1','Football','PRO','public')")
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, visibility) VALUES ('-2','Basketball','FREE','private')")
+        conn.commit()
+        conn.close()
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=["-pro"])
+
+            await subscription.allgroups_command(upd, ctx)
+
+            reply = msg.reply_text.call_args.args[0]
+            assert "Football" in reply
+            assert "Basketball" not in reply
+
+    async def test_non_owner_is_silently_ignored(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=999)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=[])
+
+            await subscription.allgroups_command(upd, ctx)
+
+            msg.reply_text.assert_not_awaited()
+
+    async def test_pagination_next_and_prev_buttons(self, db_path):
+        conn = sqlite3.connect(db_path)
+        for i in range(15):
+            conn.execute(
+                "INSERT INTO all_groups (chat_id, chat_name, type, visibility) VALUES (?,?,?,?)",
+                (f"-{i}", f"Group{i}", "FREE", "public"),
+            )
+        conn.commit()
+        conn.close()
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=[])
+
+            await subscription.allgroups_command(upd, ctx)
+            keyboard = msg.reply_text.call_args.kwargs["reply_markup"]
+            buttons = [b for row in keyboard.inline_keyboard for b in row]
+            assert any(b.text == "Next ▶️" for b in buttons)
+            assert not any(b.text == "◀️ Prev" for b in buttons)
+
+            query = MagicMock()
+            query.data = "allgroups_1"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd2 = MagicMock()
+            upd2.callback_query = query
+            upd2.effective_user = user
+
+            await subscription.allgroups_page_callback_handler(upd2, ctx)
+
+            keyboard2 = query.edit_message_text.call_args.kwargs["reply_markup"]
+            buttons2 = [b for row in keyboard2.inline_keyboard for b in row]
+            assert any(b.text == "◀️ Prev" for b in buttons2)
+            assert not any(b.text == "Next ▶️" for b in buttons2)
+
+    async def test_lists_all_channels(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_channels (chat_id, chat_name, visibility) VALUES ('-1','News Channel','public')")
+        conn.commit()
+        conn.close()
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=[])
+
+            await subscription.allchannels_command(upd, ctx)
+
+            reply = msg.reply_text.call_args.args[0]
+            assert "News Channel" in reply
+            assert "visible" in reply
