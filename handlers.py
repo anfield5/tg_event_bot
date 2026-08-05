@@ -218,7 +218,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_help = (
             "🔑 *Owner\\-Only Commands*\n\n"
             "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
-            "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n\n"
+            "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
+            "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
+            "/allchannels \\- List every channel the bot is in, 10 at a time\n\n"
             "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
             "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
             "can't be verified and will be rejected\\."

@@ -23,7 +23,11 @@ from handlers import (
     button_handler,
     global_text_router,
 )
-from subscription import setsub, setsheet, status_command, _push_control_sheet_main, _push_control_sheet_channels, FEATURE_MATRIX
+from subscription import (
+    setsub, setsheet, status_command, allgroups_command, allgroups_page_callback_handler,
+    allchannels_command, allchannels_page_callback_handler,
+    _push_control_sheet_main, _push_control_sheet_channels, FEATURE_MATRIX,
+)
 from utils import now2ddmmyy
 
 
@@ -217,6 +221,8 @@ def main():
     app.add_handler(CallbackQueryHandler(upgrade_info_callback_handler, pattern="^upgrade_info$"))
     app.add_handler(CallbackQueryHandler(help_callback_handler, pattern="^help_"))
     app.add_handler(CallbackQueryHandler(hub_pick_callback_handler, pattern="^(hubpick|switchpick)_"))
+    app.add_handler(CallbackQueryHandler(allgroups_page_callback_handler, pattern="^allgroups"))
+    app.add_handler(CallbackQueryHandler(allchannels_page_callback_handler, pattern="^allchannels_"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # 2. Chat member join/leave tracking
@@ -258,6 +264,8 @@ def main():
     app.add_handler(CommandHandler("setsub", setsub))
     app.add_handler(CommandHandler("setsheet", setsheet))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("allgroups", allgroups_command))
+    app.add_handler(CommandHandler("allchannels", allchannels_command))
 
     # 5. Text message router (extra player input + @everyone)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, global_text_router))

@@ -10,7 +10,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
@@ -353,3 +353,155 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
         f"Sheet: {sheet_line}",
         parse_mode="MarkdownV2",
     )
+
+
+# ---------------------------------------------------------------------------
+# Owner-only: browse every group/channel the bot is in
+# ---------------------------------------------------------------------------
+
+_PAGE_SIZE = 10
+
+
+def _paginate_groups_text(rows, page: int):
+    """
+    rows: list of (chat_id, chat_name, type, visibility) tuples, already
+    filtered/sorted by the caller. Returns (text, has_prev, has_next) for
+    the given 0-indexed page.
+    """
+    start = page * _PAGE_SIZE
+    page_rows = rows[start:start + _PAGE_SIZE]
+
+    blocks = []
+    for chat_id, chat_name, chat_type, visibility in page_rows:
+        vis_line = "visible\\(1\\)" if visibility == "public" else "hidden\\(0\\)"
+        blocks.append(
+            f"id\\_group: {escape_markdown(chat_id)}\n"
+            f"group name: {escape_markdown(chat_name or 'unknown')}\n"
+            f"subscription\\_status: {chat_type}\n"
+            f"visibility: {vis_line}"
+        )
+    text = "\n\n".join(blocks) if blocks else "No groups found\\."
+
+    has_prev = page > 0
+    has_next = start + _PAGE_SIZE < len(rows)
+    return text, has_prev, has_next
+
+
+def _paginate_channels_text(rows, page: int):
+    """rows: list of (chat_id, chat_name, visibility) tuples."""
+    start = page * _PAGE_SIZE
+    page_rows = rows[start:start + _PAGE_SIZE]
+
+    blocks = []
+    for chat_id, chat_name, visibility in page_rows:
+        vis_line = "visible\\(1\\)" if visibility == "public" else "hidden\\(0\\)"
+        blocks.append(
+            f"id\\_channel: {escape_markdown(chat_id)}\n"
+            f"channel name: {escape_markdown(chat_name or 'unknown')}\n"
+            f"visibility: {vis_line}"
+        )
+    text = "\n\n".join(blocks) if blocks else "No channels found\\."
+
+    has_prev = page > 0
+    has_next = start + _PAGE_SIZE < len(rows)
+    return text, has_prev, has_next
+
+
+def _pagination_keyboard(has_prev: bool, has_next: bool, callback_prefix: str, page: int):
+    if not has_prev and not has_next:
+        return None
+    row = []
+    if has_prev:
+        row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"{callback_prefix}_{page - 1}"))
+    if has_next:
+        row.append(InlineKeyboardButton("Next ▶️", callback_data=f"{callback_prefix}_{page + 1}"))
+    return InlineKeyboardMarkup([row])
+
+
+async def allgroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only. Lists every group the bot is currently in (all_groups),
+    10 at a time with Prev/Next buttons. /allgroups -pro shows only PRO
+    groups.
+    """
+    if update.effective_user.id not in OWNER_USER_IDS:
+        return
+
+    pro_only = bool(context.args) and context.args[0].strip().lower() in ("-pro", "--pro")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if pro_only:
+            cursor.execute(
+                "SELECT chat_id, chat_name, type, visibility FROM all_groups WHERE type = 'PRO' ORDER BY chat_id"
+            )
+        else:
+            cursor.execute("SELECT chat_id, chat_name, type, visibility FROM all_groups ORDER BY chat_id")
+        rows = cursor.fetchall()
+
+    prefix = "allgroupspro" if pro_only else "allgroups"
+    text, has_prev, has_next = _paginate_groups_text(rows, 0)
+    keyboard = _pagination_keyboard(has_prev, has_next, prefix, 0)
+    await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
+
+
+async def allgroups_page_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the Prev/Next buttons under /allgroups (and /allgroups -pro)."""
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id not in OWNER_USER_IDS:
+        return
+
+    prefix, page_str = query.data.rsplit("_", 1)
+    page = int(page_str)
+    pro_only = prefix == "allgroupspro"
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if pro_only:
+            cursor.execute(
+                "SELECT chat_id, chat_name, type, visibility FROM all_groups WHERE type = 'PRO' ORDER BY chat_id"
+            )
+        else:
+            cursor.execute("SELECT chat_id, chat_name, type, visibility FROM all_groups ORDER BY chat_id")
+        rows = cursor.fetchall()
+
+    text, has_prev, has_next = _paginate_groups_text(rows, page)
+    keyboard = _pagination_keyboard(has_prev, has_next, prefix, page)
+    await query.edit_message_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
+
+
+async def allchannels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner-only. Lists every channel the bot is currently in (all_channels), 10 at a time."""
+    if update.effective_user.id not in OWNER_USER_IDS:
+        return
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, chat_name, visibility FROM all_channels ORDER BY chat_id")
+        rows = cursor.fetchall()
+
+    text, has_prev, has_next = _paginate_channels_text(rows, 0)
+    keyboard = _pagination_keyboard(has_prev, has_next, "allchannels", 0)
+    await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
+
+
+async def allchannels_page_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the Prev/Next buttons under /allchannels."""
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id not in OWNER_USER_IDS:
+        return
+
+    page = int(query.data.rsplit("_", 1)[1])
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, chat_name, visibility FROM all_channels ORDER BY chat_id")
+        rows = cursor.fetchall()
+
+    text, has_prev, has_next = _paginate_channels_text(rows, page)
+    keyboard = _pagination_keyboard(has_prev, has_next, "allchannels", page)
+    await query.edit_message_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
