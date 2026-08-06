@@ -49,6 +49,47 @@ async def run_db(func, *args, **kwargs):
     return await loop.run_in_executor(None, call)
 
 
+def _seed_feature_flags(cursor):
+    """
+    Populates feature_flags with the current, actually-audited access tier
+    for every gated feature in the codebase (checked against every
+    is_premium()/require_premium() and OWNER_USER_IDS check as of when this
+    was written - see subscription.py, aliases.py, monitors.py, handlers.py).
+
+    INSERT OR IGNORE: only fills in rows that don't already exist, so
+    re-running init_db() never clobbers a flag that's since been changed
+    by hand or by a future admin command.
+    """
+    seed_rows = [
+        ("event_lifecycle", "Event Lifecycle (/newevent, /editevent, /notify, /refreshusers, /refreshusersall, /listusers, /adduser)", "FREE",
+         "Core event creation, editing, and roster management - available to every group regardless of tier."),
+        ("shareevent_basic", "/shareevent (per target group/channel)", "FREE",
+         "Sharing an event to a child group/channel - limited to FREE_SHAREEVENT_LIMIT_PER_TARGET distinct events per target on FREE."),
+        ("status", "/status", "FREE",
+         "Shows the hub's own subscription type, due date, and bound sheet."),
+        ("switchgroup", "/switchgroup (DM only)", "FREE",
+         "Switch which admin group a DM conversation's commands target."),
+        ("aliases", "Aliases (/setalias, /removealias, /listalias)", "PRO",
+         "Custom short names for child groups/channels, used with /shareevent."),
+        ("monitoring", "Monitoring (/addmonitor, /removemonitor, /listmonitors)", "PRO",
+         "Marks a child group/channel as included in /refreshusersall."),
+        ("custom_sheet", "Custom Google Sheet (/setsheet)", "PRO",
+         "Binds the hub to its own Google Sheet (Users/Events/Actions/EventUsers/UserPresenceLog tabs)."),
+        ("shareevent_unlimited", "Unlimited /shareevent targets", "PRO",
+         "Removes the per-target share limit that applies on FREE."),
+        ("setsub", "/setsub (manage subscriptions)", "ADMIN",
+         "Activate, extend, or deactivate PRO for any group. Gated on OWNER_USER_IDS, not chat admin status."),
+        ("allgroups", "/allgroups (view all groups)", "ADMIN",
+         "Lists every group the bot is in, paginated, with an optional -pro filter."),
+        ("allchannels", "/allchannels (view all channels)", "ADMIN",
+         "Lists every channel the bot is in, paginated."),
+    ]
+    cursor.executemany(
+        "INSERT OR IGNORE INTO feature_flags (feature_key, feature_label, min_tier, description) VALUES (?, ?, ?, ?)",
+        seed_rows,
+    )
+
+
 def init_db(db_path: str = DB_PATH):
     """
     Initializes the database schema and performs required migrations.
@@ -152,9 +193,25 @@ def init_db(db_path: str = DB_PATH):
             chat_id TEXT NOT NULL,
             user_id TEXT DEFAULT NULL,
             command TEXT NOT NULL,
+            command_text TEXT DEFAULT NULL,
             timestamp TEXT NOT NULL
         )
     """)
+
+    # The single source of truth for what's available at each subscription
+    # tier - FREE / PRO / ADMIN, in that ascending order (ADMIN can do
+    # everything PRO can, PRO can do everything FREE can). Mirrored to the
+    # Control Sheet's "BOTCONFIG" tab (see sheets.sync_control_sheet_botconfig)
+    # every time this table changes - see db.set_feature_flag().
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feature_flags (
+            feature_key TEXT PRIMARY KEY,
+            feature_label TEXT NOT NULL,
+            min_tier TEXT NOT NULL DEFAULT 'FREE',
+            description TEXT DEFAULT NULL
+        )
+    """)
+    _seed_feature_flags(cursor)
 
     # Storage for active voting events within the system.
     # event_status: -1 canceled / 0 open / 1 verification / 2 closed
@@ -347,6 +404,13 @@ def init_db(db_path: str = DB_PATH):
     # 'FREE'/'PRO' - covers rows written before this uppercase convention.
     cursor.execute("UPDATE all_groups SET type = 'FREE' WHERE type = 'free'")
     cursor.execute("UPDATE all_groups SET type = 'PRO' WHERE type = 'pro'")
+
+    # 0a3. Add `command_text` to command_log if it exists from an earlier
+    # version that predates it.
+    cursor.execute("PRAGMA table_info(command_log)")
+    command_log_cols = [col[1] for col in cursor.fetchall()]
+    if "command_text" not in command_log_cols:
+        cursor.execute("ALTER TABLE command_log ADD COLUMN command_text TEXT DEFAULT NULL")
 
     # 0b. Add `chat_type`/`chat_name` to sub_groups if it exists from an
     # earlier version of this same migration that predates them.
@@ -580,20 +644,63 @@ def register_chat_removed(chat_id: str, date_bot_removed: str, db_path: str = No
     conn.close()
 
 
-def log_command_usage(chat_id: str, user_id, command: str, timestamp: str, db_path: str = None):
+def log_command_usage(chat_id: str, user_id, command: str, command_text: str, timestamp: str, db_path: str = None):
     """
-    Records one command invocation. Called generically for every command
-    (see main.py's log_command_usage_handler), not from inside each
-    command's own logic - so adding a new command automatically gets
-    logged without needing to remember to add a line for it.
+    Records one command invocation, including the full raw text as typed
+    (command_text) - not just the parsed command name. Called generically
+    for every command (see main.py's log_command_usage_handler), not from
+    inside each command's own logic - so adding a new command automatically
+    gets logged without needing to remember to add a line for it.
     """
     if db_path is None:
         db_path = DB_PATH
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO command_log (chat_id, user_id, command, timestamp) VALUES (?, ?, ?, ?)",
-        (str(chat_id), str(user_id) if user_id is not None else None, command, timestamp),
+        "INSERT INTO command_log (chat_id, user_id, command, command_text, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (str(chat_id), str(user_id) if user_id is not None else None, command, command_text, timestamp),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_feature_flags(db_path: str = None):
+    """
+    Returns every row of feature_flags as (feature_key, feature_label,
+    min_tier, description) tuples, ordered by min_tier (FREE first) then
+    feature_key - this is what sync_control_sheet_botconfig() mirrors to
+    the Control Sheet's "BOTCONFIG" tab.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT feature_key, feature_label, min_tier, description FROM feature_flags "
+        "ORDER BY CASE min_tier WHEN 'FREE' THEN 0 WHEN 'PRO' THEN 1 WHEN 'ADMIN' THEN 2 ELSE 3 END, feature_key"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def update_feature_flag(feature_key: str, min_tier: str, db_path: str = None):
+    """
+    Changes which tier a feature requires. Plain, synchronous DB write -
+    see subscription.set_feature_flag() for the async wrapper that also
+    re-syncs the Control Sheet's BOTCONFIG tab immediately after, which is
+    the actual guarantee that BOTCONFIG never drifts out of date with this
+    table. Call THROUGH that wrapper, not this function directly, unless
+    you're deliberately skipping the sync (e.g. inside a bulk migration
+    that syncs once at the end).
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE feature_flags SET min_tier = ? WHERE feature_key = ?",
+        (min_tier, feature_key),
     )
     conn.commit()
     conn.close()

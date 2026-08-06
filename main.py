@@ -8,8 +8,7 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
-from db import init_db, track_user, register_chat_added, register_chat_removed
-from sheets import log_user_presence, sync_control_sheet_subconfig
+from db import init_db, track_user, register_chat_added, register_chat_removed, log_command_usage
 from hub_resolver import hub_pick_callback_handler, start_command, switchgroup_command
 from handlers import (
     help_command, help_callback_handler, help_back_handler, upgrade_info_callback_handler, userid, chatid,
@@ -26,7 +25,7 @@ from handlers import (
 from subscription import (
     setsub, setsheet, status_command, allgroups_command, allgroups_page_callback_handler,
     allchannels_command, allchannels_page_callback_handler,
-    _push_control_sheet_main, _push_control_sheet_channels, FEATURE_MATRIX,
+    _push_control_sheet_main, _push_control_sheet_channels, _push_control_sheet_botconfig,
 )
 from utils import now2ddmmyy
 
@@ -63,12 +62,41 @@ async def track_command_interaction(update, context):
     )
 
 
+async def log_command_usage_handler(update, context):
+    """
+    Fires before every /command in EVERY chat, including DMs (unlike
+    track_command_interaction above, which only cares about group
+    presence - this is about usage statistics generally, and a DM command
+    is still a real use of the bot). Registered in the same early handler
+    group, so it runs alongside - not instead of - the actual command's
+    own handler.
+
+    Records both the parsed command name (e.g. "newevent") and the full
+    raw text as typed (e.g. "/newevent Friday Football -date 25.12.2026")
+    via command_text - the parsed name is what you'd group/count by, the
+    raw text is what you'd want if you ever need to see exactly what
+    someone typed.
+    """
+    chat = update.effective_chat
+    message = update.effective_message
+    user = update.effective_user
+    if chat is None or message is None or not message.text:
+        return
+    if user is None or user.is_bot:
+        return
+
+    command = message.text.split()[0].lstrip("/").split("@")[0]
+    log_command_usage(str(chat.id), user.id, command, message.text, now2ddmmyy())
+
+
 async def on_chat_member_update(update, context):
     """
     Automatically tracks users who join the group as 'active',
     and marks users who leave/are kicked as 'passive'.
     This powers /refreshusers without requiring manual /adduser.
-    Also logs user presence to UserPresenceLog sheet.
+    Does NOT write to Google Sheets itself - UserPresenceLog gets updated
+    later, separately, by sync_users_sheet when it next runs and notices
+    the MEMBER -> LEFT transition (see sheets.py).
     """
     result = update.chat_member
     if not result:
@@ -103,15 +131,15 @@ async def _sync_control_sheet_on_startup(application):
         return
     groups_ok    = await _push_control_sheet_main()
     channels_ok  = await _push_control_sheet_channels()
-    subconfig_ok = await sync_control_sheet_subconfig(FEATURE_MATRIX)
+    subconfig_ok = await _push_control_sheet_botconfig()
     if groups_ok and channels_ok and subconfig_ok:
-        logger.info("Control Sheet synced at startup (GROUPS + CHANNELS + SUB_CONFIG).")
+        logger.info("Control Sheet synced at startup (GROUPS + CHANNELS + BOTCONFIG).")
     else:
         logger.error(
             f"Control Sheet startup sync incomplete - GROUPS: {'ok' if groups_ok else 'FAILED'}, "
             f"CHANNELS: {'ok' if channels_ok else 'FAILED'}, "
-            f"SUB_CONFIG: {'ok' if subconfig_ok else 'FAILED'}. Check CONTROL_SHEET_ID, sharing "
-            f"permissions, and that all three tabs exist with the exact names 'GROUPS', 'CHANNELS', and 'SUB_CONFIG'."
+            f"BOTCONFIG: {'ok' if subconfig_ok else 'FAILED'}. Check CONTROL_SHEET_ID, sharing "
+            f"permissions, and that all three tabs exist with the exact names 'GROUPS', 'CHANNELS', and 'BOTCONFIG'."
         )
 
 
@@ -233,6 +261,7 @@ def main():
     # of it - marks the invoker as tracked for ANY command, not just
     # event-button clicks or /refreshusers (see track_command_interaction).
     app.add_handler(MessageHandler(filters.COMMAND, track_command_interaction), group=-1)
+    app.add_handler(MessageHandler(filters.COMMAND, log_command_usage_handler), group=-2)
 
     # 3. Core commands
     app.add_handler(CommandHandler("start",        start_command))

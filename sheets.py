@@ -218,22 +218,6 @@ async def sync_event_users_sheet(chat_id, event_id, user_ids):
         logger.error(f"Google Sheets EventUsers synchronization failed: {repr(e)}")
 
 
-async def log_user_presence(chat_id, user_id, date_start, date_end):
-    """
-    Logs user presence to UserPresenceLog sheet when a user leaves a monitored
-    group or the main group.
-    Columns: USER_ID, PLACE_ID, DATE_start, DATE_end
-    """
-    sheet_target = await get_sheet_for_chat(chat_id)
-    ss = await open_spreadsheet(sheet_target)
-    if not ss:
-        return  # free tier / no sheet configured / subscription expired - nothing to write
-    try:
-        ws = await ss.worksheet("UserPresenceLog")
-        await ws.append_row([str(user_id), str(chat_id), date_start, date_end])
-    except Exception as e:
-        logger.error(f"Google Sheets UserPresenceLog synchronization failed: {repr(e)}")
-
 async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start, date_end):
     """
     Logs user presence to UserPresenceLog sheet when a user leaves a monitored
@@ -346,24 +330,40 @@ async def sync_control_sheet_channels(rows: list) -> bool:
         return False
 
 
-async def sync_control_sheet_subconfig(feature_rows: list):
+_TIER_ORDER = {"FREE": 0, "PRO": 1, "ADMIN": 2}
+
+
+async def sync_control_sheet_botconfig(feature_rows: list):
     """
-    Overwrites the "SUB_CONFIG" tab of the Control Sheet with the free vs
-    premium feature matrix. feature_rows: list of
-    (feature, free_status, premium_status) tuples - see
-    handlers.FEATURE_MATRIX, which is the actual source of truth this sheet
-    documents (kept as plain reference data here, not read back by the bot).
+    Overwrites the "BOTCONFIG" tab of the Control Sheet with the current
+    feature_flags table (db.get_feature_flags()) - the actual source of
+    truth for what's available at each tier, not just reference data.
+
+    feature_rows: list of (feature_key, feature_label, min_tier,
+    description) tuples. For each row, FREE/PRO/ADMIN columns are computed
+    from the tier hierarchy (ADMIN >= PRO >= FREE): a feature with
+    min_tier='PRO' shows "yes" under PRO and ADMIN, "no" under FREE.
+
     Returns True on success, False on failure (logged either way).
     """
     if not CONTROL_SHEET_ID:
-        logger.error("sync_control_sheet_subconfig: CONTROL_SHEET_ID is not configured.")
+        logger.error("sync_control_sheet_botconfig: CONTROL_SHEET_ID is not configured.")
         return False
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
-        ws = await ss.worksheet("SUB_CONFIG")
-        header = ["FEATURE", "FREE", "PREMIUM"]
-        body   = [[str(v) for v in row] for row in feature_rows]
-        grid   = [header] + body
+        ws = await ss.worksheet("BOTCONFIG")
+        header = ["FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
+        body = []
+        for feature_key, feature_label, min_tier, description in feature_rows:
+            required = _TIER_ORDER.get(min_tier, 0)
+            body.append([
+                feature_label,
+                "yes" if _TIER_ORDER["FREE"] >= required else "no",
+                "yes" if _TIER_ORDER["PRO"] >= required else "no",
+                "yes" if _TIER_ORDER["ADMIN"] >= required else "no",
+                description or "",
+            ])
+        grid = [header] + body
 
         try:
             existing_row_count = len(await ws.get_all_values())
@@ -377,5 +377,5 @@ async def sync_control_sheet_subconfig(feature_rows: list):
 
         return True
     except Exception as e:
-        logger.error(f"Google Sheets Control/sub_config sync failed: {repr(e)}")
+        logger.error(f"Google Sheets Control/BOTCONFIG sync failed: {repr(e)}")
         return False

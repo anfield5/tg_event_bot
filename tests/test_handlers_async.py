@@ -2856,3 +2856,124 @@ class TestAllgroupsAllchannels:
             reply = msg.reply_text.call_args.args[0]
             assert "News Channel" in reply
             assert "visible" in reply
+
+
+class TestLogCommandUsageHandler:
+    """main.log_command_usage_handler logs every command, including DMs (unlike track_command_interaction)."""
+
+    async def test_logs_command_in_group_with_full_text(self, db_path):
+        import main as main_mod
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        upd = MagicMock()
+        upd.effective_chat = chat
+        upd.effective_message = MagicMock(text="/newevent Friday Football -date 25.12.2026")
+        upd.effective_user = make_user(user_id=42)
+        upd.effective_user.is_bot = False
+        ctx = MagicMock()
+
+        await main_mod.log_command_usage_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT chat_id, command, command_text FROM command_log").fetchall()
+        assert rows == [("-100123", "newevent", "/newevent Friday Football -date 25.12.2026")]
+
+    async def test_logs_command_in_dm_too(self, db_path):
+        import main as main_mod
+        chat = make_chat(chat_id=555555, chat_type="private")
+        upd = MagicMock()
+        upd.effective_chat = chat
+        upd.effective_message = MagicMock(text="/status")
+        upd.effective_user = make_user(user_id=42)
+        upd.effective_user.is_bot = False
+        ctx = MagicMock()
+
+        await main_mod.log_command_usage_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT chat_id, command FROM command_log WHERE chat_id='555555'").fetchall()
+        assert rows == [("555555", "status")]
+
+    async def test_skips_bot_senders(self, db_path):
+        import main as main_mod
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        upd = MagicMock()
+        upd.effective_chat = chat
+        upd.effective_message = MagicMock(text="/newevent")
+        bot_user = make_user(user_id=999)
+        bot_user.is_bot = True
+        upd.effective_user = bot_user
+        ctx = MagicMock()
+
+        await main_mod.log_command_usage_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT COUNT(*) FROM command_log").fetchone()
+        assert rows[0] == 0
+
+
+class TestFeatureFlagsSync:
+    """subscription.set_feature_flag() and _push_control_sheet_botconfig() keep BOTCONFIG in sync."""
+
+    async def test_set_feature_flag_updates_db_and_resyncs_botconfig(self, db_path):
+        class FakeWorksheet:
+            def __init__(self):
+                self.updates = []
+            async def get_all_values(self):
+                return []
+            async def update(self, cell_range, values):
+                self.updates.append(values)
+            async def batch_clear(self, ranges):
+                pass
+
+        class FakeSpreadsheet:
+            def __init__(self):
+                self.worksheets = {}
+            async def worksheet(self, name):
+                if name not in self.worksheets:
+                    self.worksheets[name] = FakeWorksheet()
+                return self.worksheets[name]
+
+        fake_ss = FakeSpreadsheet()
+        with patch("sheets.CONTROL_SHEET_ID", "fake"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            result = await subscription.set_feature_flag("monitoring", "ADMIN")
+
+        assert result is True
+        conn = sqlite3.connect(db_path)
+        stored = conn.execute("SELECT min_tier FROM feature_flags WHERE feature_key='monitoring'").fetchone()
+        assert stored == ("ADMIN",)
+
+        ws = fake_ss.worksheets["BOTCONFIG"]
+        grid = ws.updates[0]
+        assert grid[0] == ["FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
+        monitoring_row = next(r for r in grid if "Monitoring" in r[0])
+        assert monitoring_row[1:4] == ["no", "no", "yes"]
+
+    async def test_free_feature_shows_yes_for_all_three_tiers(self, db_path):
+        class FakeWorksheet:
+            def __init__(self):
+                self.updates = []
+            async def get_all_values(self):
+                return []
+            async def update(self, cell_range, values):
+                self.updates.append(values)
+            async def batch_clear(self, ranges):
+                pass
+
+        class FakeSpreadsheet:
+            def __init__(self):
+                self.worksheets = {}
+            async def worksheet(self, name):
+                if name not in self.worksheets:
+                    self.worksheets[name] = FakeWorksheet()
+                return self.worksheets[name]
+
+        fake_ss = FakeSpreadsheet()
+        with patch("sheets.CONTROL_SHEET_ID", "fake"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await subscription._push_control_sheet_botconfig()
+
+        ws = fake_ss.worksheets["BOTCONFIG"]
+        grid = ws.updates[0]
+        status_row = next(r for r in grid if r[0] == "/status")
+        assert status_row[1:4] == ["yes", "yes", "yes"]
