@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.16.0"
+BOT_VERSION = "3.17.0"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -40,7 +40,7 @@ OWNER_USER_IDS = {
 # The single "Control" spreadsheet (separate from any hub's own event sheet)
 # where the bot mirrors all_groups ("GROUPS" tab, one row per hub -
 # for you to see every group using the bot and its subscription status at a
-# glance) and the free/premium feature matrix ("sub_config" tab, static
+# glance) and the free/premium feature matrix ("BOTCONFIG" tab, static
 # reference data). This sheet must be shared with the SAME service account
 # (GOOGLE_CREDENTIALS_JSON) as every other sheet the bot writes to.
 CONTROL_SHEET_ID = os.getenv("CONTROL_SHEET_ID") or None

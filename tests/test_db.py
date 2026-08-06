@@ -10,7 +10,7 @@ since those functions accept an optional path argument.
 
 import sqlite3
 import pytest
-from db import init_db, track_user
+from db import init_db, track_user, get_feature_flags, update_feature_flag, log_command_usage
 
 
 # ---------------------------------------------------------------------------
@@ -483,3 +483,87 @@ class TestTypeCaseNormalization:
 
         rows = fetch_all(path, "SELECT chat_id, type FROM all_groups WHERE chat_id='-3'")
         assert rows == [("-3", "PRO")]
+
+
+class TestCommandLog:
+    """command_log records every command invocation, including the full raw text typed."""
+
+    def test_has_command_text_column(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert "command_text" in get_columns(path, "command_log")
+
+    def test_log_command_usage_stores_full_text(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        log_command_usage("-100123", "42", "newevent", "/newevent Friday Football -date 25.12.2026",
+                           "01.01.2026 12:00:00", db_path=path)
+        rows = fetch_all(path, "SELECT chat_id, user_id, command, command_text FROM command_log")
+        assert rows == [("-100123", "42", "newevent", "/newevent Friday Football -date 25.12.2026")]
+
+    def test_command_text_column_added_to_existing_table(self, tmp_path):
+        """A command_log table from before command_text existed must get the column added."""
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE command_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                user_id TEXT DEFAULT NULL,
+                command TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            )
+        """)
+        init_db(db_path=path)
+        assert "command_text" in get_columns(path, "command_log")
+
+
+class TestFeatureFlags:
+    """
+    feature_flags is the single source of truth for what's available at
+    each tier (FREE/PRO/ADMIN) - seeded automatically on init_db(), never
+    overwritten by a second init_db() call.
+    """
+
+    def test_seeds_eleven_flags_on_fresh_db(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        rows = get_feature_flags(db_path=path)
+        assert len(rows) == 11
+
+    def test_free_pro_admin_tiers_all_present(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        rows = get_feature_flags(db_path=path)
+        tiers = {r[2] for r in rows}
+        assert tiers == {"FREE", "PRO", "ADMIN"}
+
+    def test_known_features_have_the_expected_tier(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        assert by_key["event_lifecycle"] == "FREE"
+        assert by_key["aliases"] == "PRO"
+        assert by_key["monitoring"] == "PRO"
+        assert by_key["custom_sheet"] == "PRO"
+        assert by_key["setsub"] == "ADMIN"
+        assert by_key["allgroups"] == "ADMIN"
+        assert by_key["allchannels"] == "ADMIN"
+
+    def test_reseeding_does_not_overwrite_a_manually_changed_flag(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        update_feature_flag("aliases", "ADMIN", db_path=path)
+
+        init_db(db_path=path)  # re-run must NOT reset aliases back to PRO
+
+        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        assert by_key["aliases"] == "ADMIN"
+
+    def test_update_feature_flag_changes_only_the_target_row(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        update_feature_flag("status", "PRO", db_path=path)
+
+        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        assert by_key["status"] == "PRO"
+        assert by_key["event_lifecycle"] == "FREE"  # untouched

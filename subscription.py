@@ -15,9 +15,9 @@ from telegram.ext import ContextTypes
 
 from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
 from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import get_connection
+from db import get_connection, get_feature_flags, update_feature_flag
 from hub_resolver import resolve_hub_chat_id, register_hub_command
-from sheets import sync_control_sheet_main, sync_control_sheet_subconfig, sync_control_sheet_channels, open_spreadsheet
+from sheets import sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels, open_spreadsheet
 
 SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
 # isn't relied upon anywhere - always parsed via strptime, but kept
@@ -47,20 +47,10 @@ def is_premium(chat_id: str) -> bool:
         return False
 
 
-# Source of truth for both /help's wording and the Control Sheet's
-# "sub_config" tab (sheets.sync_control_sheet_subconfig mirrors this list
-# verbatim) - keeping ONE list means the sheet can never silently drift from
-# what the bot actually enforces.
-FEATURE_MATRIX = [
-    # (feature label,                 free,       premium)
-    ("/newevent",                     "available", "available"),
-    ("/editevent",                    "available", "available"),
-    ("/listusers",                    "available", "available"),
-    ("/notify",                       "available", "available"),
-    ("/shareevent (per target group/channel)", "limited (3)", "available"),
-    ("Aliases (/setalias etc.)",      "not available", "available"),
-    ("Monitoring (/addmonitor etc.)", "not available", "available"),
-]
+# feature_flags (db.get_feature_flags) is now the single source of truth
+# for what's available at each tier - see set_feature_flag() below and
+# _push_control_sheet_botconfig(), which mirrors it to the Control Sheet's
+# "BOTCONFIG" tab every time it's called.
 
 
 async def require_premium(update: Update, feature_label: str, chat_id: str = None) -> bool:
@@ -364,21 +354,25 @@ _PAGE_SIZE = 10
 
 def _paginate_groups_text(rows, page: int):
     """
-    rows: list of (chat_id, chat_name, type, visibility) tuples, already
-    filtered/sorted by the caller. Returns (text, has_prev, has_next) for
-    the given 0-indexed page.
+    rows: list of (chat_id, chat_name, type, visibility, sheet_name,
+    owner_group_id) tuples, already filtered/sorted by the caller. Returns
+    (text, has_prev, has_next) for the given 0-indexed page.
     """
     start = page * _PAGE_SIZE
     page_rows = rows[start:start + _PAGE_SIZE]
 
     blocks = []
-    for chat_id, chat_name, chat_type, visibility in page_rows:
-        vis_line = "visible\\(1\\)" if visibility == "public" else "hidden\\(0\\)"
+    for chat_id, chat_name, chat_type, visibility, sheet_name, owner_group_id in page_rows:
+        vis_line = "visible" if visibility == "public" else "hidden"
+        owner_line = escape_markdown(owner_group_id) if owner_group_id else "none"
+        sheet_line = escape_markdown(sheet_name) if sheet_name else "none"
         blocks.append(
             f"id\\_group: {escape_markdown(chat_id)}\n"
             f"group name: {escape_markdown(chat_name or 'unknown')}\n"
             f"subscription\\_status: {chat_type}\n"
-            f"visibility: {vis_line}"
+            f"visibility: {vis_line}\n"
+            f"owner\\_group\\_id: {owner_line}\n"
+            f"sheetname: {sheet_line}"
         )
     text = "\n\n".join(blocks) if blocks else "No groups found\\."
 
@@ -388,17 +382,19 @@ def _paginate_groups_text(rows, page: int):
 
 
 def _paginate_channels_text(rows, page: int):
-    """rows: list of (chat_id, chat_name, visibility) tuples."""
+    """rows: list of (chat_id, chat_name, visibility, owner_group_id) tuples."""
     start = page * _PAGE_SIZE
     page_rows = rows[start:start + _PAGE_SIZE]
 
     blocks = []
-    for chat_id, chat_name, visibility in page_rows:
-        vis_line = "visible\\(1\\)" if visibility == "public" else "hidden\\(0\\)"
+    for chat_id, chat_name, visibility, owner_group_id in page_rows:
+        vis_line = "visible" if visibility == "public" else "hidden"
+        owner_line = escape_markdown(owner_group_id) if owner_group_id else "none"
         blocks.append(
             f"id\\_channel: {escape_markdown(chat_id)}\n"
             f"channel name: {escape_markdown(chat_name or 'unknown')}\n"
-            f"visibility: {vis_line}"
+            f"visibility: {vis_line}\n"
+            f"owner\\_group\\_id: {owner_line}"
         )
     text = "\n\n".join(blocks) if blocks else "No channels found\\."
 
@@ -433,10 +429,16 @@ async def allgroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor = conn.cursor()
         if pro_only:
             cursor.execute(
-                "SELECT chat_id, chat_name, type, visibility FROM all_groups WHERE type = 'PRO' ORDER BY chat_id"
+                "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
+                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "FROM all_groups g WHERE g.type = 'PRO' ORDER BY g.chat_id"
             )
         else:
-            cursor.execute("SELECT chat_id, chat_name, type, visibility FROM all_groups ORDER BY chat_id")
+            cursor.execute(
+                "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
+                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "FROM all_groups g ORDER BY g.chat_id"
+            )
         rows = cursor.fetchall()
 
     prefix = "allgroupspro" if pro_only else "allgroups"
@@ -461,10 +463,16 @@ async def allgroups_page_callback_handler(update: Update, context: ContextTypes.
         cursor = conn.cursor()
         if pro_only:
             cursor.execute(
-                "SELECT chat_id, chat_name, type, visibility FROM all_groups WHERE type = 'PRO' ORDER BY chat_id"
+                "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
+                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "FROM all_groups g WHERE g.type = 'PRO' ORDER BY g.chat_id"
             )
         else:
-            cursor.execute("SELECT chat_id, chat_name, type, visibility FROM all_groups ORDER BY chat_id")
+            cursor.execute(
+                "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
+                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "FROM all_groups g ORDER BY g.chat_id"
+            )
         rows = cursor.fetchall()
 
     text, has_prev, has_next = _paginate_groups_text(rows, page)
@@ -479,7 +487,11 @@ async def allchannels_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, chat_name, visibility FROM all_channels ORDER BY chat_id")
+        cursor.execute(
+            "SELECT c.chat_id, c.chat_name, c.visibility, "
+            "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = c.chat_id LIMIT 1) "
+            "FROM all_channels c ORDER BY c.chat_id"
+        )
         rows = cursor.fetchall()
 
     text, has_prev, has_next = _paginate_channels_text(rows, 0)
@@ -499,9 +511,35 @@ async def allchannels_page_callback_handler(update: Update, context: ContextType
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, chat_name, visibility FROM all_channels ORDER BY chat_id")
+        cursor.execute(
+            "SELECT c.chat_id, c.chat_name, c.visibility, "
+            "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = c.chat_id LIMIT 1) "
+            "FROM all_channels c ORDER BY c.chat_id"
+        )
         rows = cursor.fetchall()
 
     text, has_prev, has_next = _paginate_channels_text(rows, page)
     keyboard = _pagination_keyboard(has_prev, has_next, "allchannels", page)
     await query.edit_message_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)
+
+
+async def _push_control_sheet_botconfig() -> bool:
+    """Reads all of feature_flags and pushes it to the Control Sheet's 'BOTCONFIG' tab."""
+    rows = get_feature_flags()
+    return await sync_control_sheet_botconfig(rows)
+
+
+async def set_feature_flag(feature_key: str, min_tier: str) -> bool:
+    """
+    THE way to change what tier a feature requires - writes to feature_flags
+    (db.update_feature_flag) and then immediately re-syncs the Control
+    Sheet's BOTCONFIG tab, so it can never drift out of date with the
+    table. Nothing currently calls this from a live command (there's no
+    /setfeature yet) - it exists as the sanctioned write path for whenever
+    one is added, so that guarantee holds from day one rather than being
+    bolted on later.
+
+    min_tier must be one of "FREE", "PRO", "ADMIN".
+    """
+    update_feature_flag(feature_key, min_tier)
+    return await _push_control_sheet_botconfig()

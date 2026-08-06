@@ -10,8 +10,7 @@ from telegram.error import BadRequest
 
 from keyboard import create_event_keyboard
 from subscription import (
-    is_premium, require_premium, setsub,
-    FEATURE_MATRIX, SUBS_DATE_FORMAT, _push_control_sheet_main,
+    is_premium, require_premium, setsub, _push_control_sheet_main,
 )
 from aliases import setalias, removealias, listalias
 from monitors import addmonitor, removemonitor, listmonitors
@@ -28,7 +27,6 @@ from db import track_user, DB_PATH, get_connection, get_display_name
 from hub_resolver import resolve_hub_chat_id, register_hub_command, _get_known_candidate_chats
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, sync_event_users_sheet,
-    log_user_presence,
 )
 
 # One lock per event_id so that two near-simultaneous button clicks on the
