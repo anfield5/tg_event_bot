@@ -98,7 +98,7 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_id FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT chat_id FROM sub_chats WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (alias_name, hub_chat_id),
         )
         if cursor.fetchone():
@@ -106,7 +106,7 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
             return
 
         cursor.execute(
-            "SELECT alias FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT alias FROM sub_chats WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (str(target_chat_id), hub_chat_id),
         )
         existing_row = cursor.fetchone()
@@ -119,18 +119,18 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
 
         try:
             if existing_row is not None:
-                # A sub_groups row already exists for this (owner, chat_id)
+                # A sub_chats row already exists for this (owner, chat_id)
                 # pair - it just came from /addmonitor (is_monitored=1,
                 # alias still NULL). Set the alias on that same row instead
                 # of inserting a second one, which would violate
                 # UNIQUE(owner_chat_id, chat_id).
                 cursor.execute(
-                    "UPDATE sub_groups SET alias = ? WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                    "UPDATE sub_chats SET alias = ? WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                     (alias_name, str(target_chat_id), hub_chat_id),
                 )
             else:
                 cursor.execute(
-                    "INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES (?, ?, ?)",
+                    "INSERT INTO sub_chats (chat_id, alias, owner_chat_id) VALUES (?, ?, ?)",
                     (str(target_chat_id), alias_name, hub_chat_id),
                 )
             conn.commit()
@@ -173,7 +173,7 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE, overri
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT is_monitored FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT is_monitored FROM sub_chats WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (alias_name, hub_chat_id),
         )
         row = cursor.fetchone()
@@ -185,12 +185,12 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE, overri
             # This chat is also monitored - only clear the alias, keep the
             # row (and its monitoring) intact.
             cursor.execute(
-                "UPDATE sub_groups SET alias = NULL WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                "UPDATE sub_chats SET alias = NULL WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                 (alias_name, hub_chat_id),
             )
         else:
             cursor.execute(
-                "DELETE FROM sub_groups WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                "DELETE FROM sub_chats WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                 (alias_name, hub_chat_id),
             )
         conn.commit()
@@ -211,7 +211,7 @@ async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT alias, chat_id FROM sub_groups WHERE alias IS NOT NULL "
+            "SELECT alias, chat_id FROM sub_chats WHERE alias IS NOT NULL "
             "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (hub_chat_id,),
         )

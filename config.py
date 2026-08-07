@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.17.0"
+BOT_VERSION = "3.19.0"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -86,5 +86,5 @@ ICON_CLOCK          = "🕐"   # event date/time display
 ICON_NOTIFY         = "🔔"
 ICON_CLEAN          = "🧹"   # /refreshusers removal summary
 ICON_ADMIN_ONLY     = "⛔️"
-ICON_GLOBE          = "🌍"   # /refreshusers -g global sync section
+ICON_GLOBE          = "🌍"   # /refreshusersall global sync section
 ICON_PREMIUM        = "⚡ᴾᴿᴼ"   # marks premium-only features (e.g. Aliases/Monitoring on /help)

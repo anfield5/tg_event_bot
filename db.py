@@ -61,22 +61,31 @@ def _seed_feature_flags(cursor):
     by hand or by a future admin command.
     """
     seed_rows = [
-        ("event_lifecycle", "Event Lifecycle (/newevent, /editevent, /notify, /refreshusers, /refreshusersall, /listusers, /adduser)", "FREE",
-         "Core event creation, editing, and roster management - available to every group regardless of tier."),
+        ("newevent", "/newevent (create a new event)", "FREE",
+         "Creates a new event with optional custom Going/Not Going icons and a date."),
+        ("editevent", "/editevent (edit the active event)", "FREE",
+         "Edits the name/date/icons of the currently active event."),
+        ("verification", "Verification step before closing an event", "FREE",
+         "The review step (kick/return, +/- guest, Add Extra Member) between OPEN and CLOSED. "
+         "If disabled, the OPEN-state button closes the event directly instead of entering review. "
+         "Locked in per-event at creation time - changing this later never affects an event already running."),
+        ("add_extra_member", "Add Extra Member button (during verification)", "FREE",
+         "Lets an admin add someone by username during the verification step, without them having clicked Going themselves. "
+         "Locked in per-event at creation time, same as verification."),
+        ("user_management", "User Management (/adduser, /listusers, /updateuser, /notify, /refreshusers)", "FREE",
+         "Tracking, notifying, and syncing the roster of users for THIS group - available to every group regardless of tier."),
         ("shareevent_basic", "/shareevent (per target group/channel)", "FREE",
-         "Sharing an event to a child group/channel - limited to FREE_SHAREEVENT_LIMIT_PER_TARGET distinct events per target on FREE."),
-        ("status", "/status", "FREE",
-         "Shows the hub's own subscription type, due date, and bound sheet."),
-        ("switchgroup", "/switchgroup (DM only)", "FREE",
-         "Switch which admin group a DM conversation's commands target."),
+         "Sharing an event to a child group/channel - limited to 3 distinct events per target on FREE."),
         ("aliases", "Aliases (/setalias, /removealias, /listalias)", "PRO",
          "Custom short names for child groups/channels, used with /shareevent."),
         ("monitoring", "Monitoring (/addmonitor, /removemonitor, /listmonitors)", "PRO",
          "Marks a child group/channel as included in /refreshusersall."),
+        ("refreshusersall", "/refreshusersall (sync every monitored group/channel)", "PRO",
+         "Requires monitored chats, which can only ever be configured via /addmonitor (itself PRO-only) - so this is functionally inert on FREE regardless."),
         ("custom_sheet", "Custom Google Sheet (/setsheet)", "PRO",
          "Binds the hub to its own Google Sheet (Users/Events/Actions/EventUsers/UserPresenceLog tabs)."),
         ("shareevent_unlimited", "Unlimited /shareevent targets", "PRO",
-         "Removes the per-target share limit that applies on FREE."),
+         "Removes the 3-per-target share limit that applies on FREE."),
         ("setsub", "/setsub (manage subscriptions)", "ADMIN",
          "Activate, extend, or deactivate PRO for any group. Gated on OWNER_USER_IDS, not chat admin status."),
         ("allgroups", "/allgroups (view all groups)", "ADMIN",
@@ -87,6 +96,26 @@ def _seed_feature_flags(cursor):
     cursor.executemany(
         "INSERT OR IGNORE INTO feature_flags (feature_key, feature_label, min_tier, description) VALUES (?, ?, ?, ?)",
         seed_rows,
+    )
+    # feature_label/description are developer-owned reference text, not
+    # user-configurable (unlike min_tier, which set_feature_flag() may have
+    # since changed and must never be overwritten here) - always refresh
+    # them so a pre-existing database seeded before a wording/scope change
+    # (e.g. refreshusersall moving out of event_lifecycle's bundle) picks
+    # up the correction too, not just brand-new databases.
+    cursor.executemany(
+        "UPDATE feature_flags SET feature_label = ?, description = ? WHERE feature_key = ?",
+        [(label, desc, key) for key, label, _tier, desc in seed_rows],
+    )
+    # Retire feature_keys that no longer exist in the current seed list
+    # (e.g. event_lifecycle + updateuser were decomposed into
+    # newevent/editevent/user_management) - without this, a pre-existing
+    # database would keep the old rows around forever, orphaned and stale.
+    current_keys = [row[0] for row in seed_rows]
+    placeholders = ",".join("?" * len(current_keys))
+    cursor.execute(
+        f"DELETE FROM feature_flags WHERE feature_key NOT IN ({placeholders})",
+        current_keys,
     )
 
 
@@ -228,7 +257,8 @@ def init_db(db_path: str = DB_PATH):
             notgoing_data TEXT,
             counters_data TEXT,
             event_date TEXT DEFAULT NULL,
-            kicked_data TEXT DEFAULT '[]'
+            kicked_data TEXT DEFAULT '[]',
+            feature_snapshot TEXT DEFAULT NULL
         )
     """)
 
@@ -351,8 +381,20 @@ def init_db(db_path: str = DB_PATH):
     # entirely different chats) without colliding. UNIQUE(owner_chat_id,
     # chat_id) means one row per (hub, target chat) pair - a chat can be
     # aliased, monitored, or both, but always through the same single row.
+    # Rename: 'sub_groups' -> 'sub_chats' - the old name implied "only
+    # groups", but this table has always covered both groups and channels
+    # (see chat_type). Must run before CREATE TABLE IF NOT EXISTS, since
+    # 'sub_chats' is a brand new name that "IF NOT EXISTS" would happily
+    # create empty alongside the still-existing old table.
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sub_groups'")
+    has_sub_groups = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sub_chats'")
+    has_sub_chats = cursor.fetchone() is not None
+    if has_sub_groups and not has_sub_chats:
+        cursor.execute("ALTER TABLE sub_groups RENAME TO sub_chats")
+
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sub_groups (
+        CREATE TABLE IF NOT EXISTS sub_chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id TEXT,
             owner_chat_id TEXT DEFAULT NULL,
@@ -412,14 +454,24 @@ def init_db(db_path: str = DB_PATH):
     if "command_text" not in command_log_cols:
         cursor.execute("ALTER TABLE command_log ADD COLUMN command_text TEXT DEFAULT NULL")
 
-    # 0b. Add `chat_type`/`chat_name` to sub_groups if it exists from an
+    # 0a4. Add `feature_snapshot` to events if it exists from an earlier
+    # version that predates it. NULL for every pre-existing event means
+    # "created before this mechanism existed" - handled as "everything
+    # enabled" wherever the snapshot is read, so old events keep working
+    # exactly as they always did.
+    cursor.execute("PRAGMA table_info(events)")
+    events_cols = [col[1] for col in cursor.fetchall()]
+    if "feature_snapshot" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN feature_snapshot TEXT DEFAULT NULL")
+
+    # 0b. Add `chat_type`/`chat_name` to sub_chats if it exists from an
     # earlier version of this same migration that predates them.
-    cursor.execute("PRAGMA table_info(sub_groups)")
+    cursor.execute("PRAGMA table_info(sub_chats)")
     sg_cols = [c[1] for c in cursor.fetchall()]
     if "chat_type" not in sg_cols:
-        cursor.execute("ALTER TABLE sub_groups ADD COLUMN chat_type TEXT DEFAULT NULL")
+        cursor.execute("ALTER TABLE sub_chats ADD COLUMN chat_type TEXT DEFAULT NULL")
     if "chat_name" not in sg_cols:
-        cursor.execute("ALTER TABLE sub_groups ADD COLUMN chat_name TEXT DEFAULT NULL")
+        cursor.execute("ALTER TABLE sub_chats ADD COLUMN chat_name TEXT DEFAULT NULL")
 
     # 1. Add `status` column to main_group_users if missing (old schema)
     cursor.execute("PRAGMA table_info(main_group_users)")

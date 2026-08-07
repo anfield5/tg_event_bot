@@ -26,6 +26,8 @@ def create_event_keyboard(
     is_child: bool = False,
     child_users_rows: list = None,
     kicked_users: set = None,
+    verification_enabled: bool = True,
+    add_extra_member_enabled: bool = True,
 ) -> InlineKeyboardMarkup:
     """
     Generates dynamic inline keyboards.
@@ -43,6 +45,21 @@ def create_event_keyboard(
                     (including Telegram's own) already render them in an
                     orange/rust tone by default; there's no way to force a
                     different or more saturated orange beyond that.
+
+    verification_enabled / add_extra_member_enabled: read from the event's
+    OWN stored feature_snapshot (see db.events.feature_snapshot), NOT the
+    hub's current live tier - an event keeps whatever rules applied when it
+    was created, even if the hub's tier or feature_flags change later.
+    verification_enabled=False changes the OPEN-state button to
+    "Save&Close" (callback "directclose_") instead of "Verify&Close"
+    (callback "close_") - skipping the review step entirely, since there's
+    nothing to gate it into. add_extra_member_enabled=False simply omits
+    the "Add Extra Member" button during verification, rather than showing
+    it disabled - a tier limit applies to the whole event/group, not to one
+    specific clicking user, so hiding it outright is less confusing than an
+    inert button (see the admin-only buttons elsewhere, which DO stay
+    visible-but-inert since those gate on the clicking individual, not on
+    the group's own tier).
     """
     if event_status in (-1, 2):
         return InlineKeyboardMarkup([])
@@ -59,8 +76,13 @@ def create_event_keyboard(
             InlineKeyboardButton(f"{ICON_REMOVE} Remove", callback_data=f"sub_{event_id}"),
         ])
         if not is_child:
+            close_button = (
+                InlineKeyboardButton(f"{ICON_VERIFICATION} Verify&Close", callback_data=f"close_{event_id}")
+                if verification_enabled else
+                InlineKeyboardButton(f"{ICON_SAVE} Save&Close", callback_data=f"directclose_{event_id}")
+            )
             buttons.append([
-                InlineKeyboardButton(f"{ICON_VERIFICATION} Verify&Close", callback_data=f"close_{event_id}"),
+                close_button,
                 InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel Event", callback_data=f"cancel_{event_id}"),
             ])
 
@@ -132,9 +154,10 @@ def create_event_keyboard(
                 InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:ch-{ch_username}"),
             ])
 
-        buttons.append([
-            InlineKeyboardButton(f"{ICON_ADD} Add Extra Member", callback_data=f"addext_{event_id}"),
-        ])
+        if add_extra_member_enabled:
+            buttons.append([
+                InlineKeyboardButton(f"{ICON_ADD} Add Extra Member", callback_data=f"addext_{event_id}"),
+            ])
         buttons.append([
             InlineKeyboardButton(f"{ICON_SAVE} Save & Close Event", callback_data=f"save_{event_id}"),
         ])

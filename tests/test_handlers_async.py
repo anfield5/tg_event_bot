@@ -18,7 +18,9 @@ from tests.helpers import (
     make_update, make_context, make_callback_update,
 )
 import handlers
+import event_engine
 import subscription
+import config
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -635,7 +637,7 @@ class TestAliasCommands:
     def _insert_alias(self, db_path, alias, chat_id="-200"):
         conn = sqlite3.connect(db_path)
         conn.execute(
-            "INSERT INTO sub_groups (chat_id, alias) VALUES (?, ?)", (chat_id, alias)
+            "INSERT INTO sub_chats (chat_id, alias) VALUES (?, ?)", (chat_id, alias)
         )
         conn.commit()
         conn.close()
@@ -652,7 +654,7 @@ class TestAliasCommands:
 
         conn   = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM sub_groups WHERE alias = 'myalias'")
+        cursor.execute("SELECT * FROM sub_chats WHERE alias = 'myalias'")
         assert cursor.fetchone() is None
         conn.close()
 
@@ -857,7 +859,7 @@ class TestPremiumGating:
         # And it must not have actually created anything
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM sub_groups")
+        cursor.execute("SELECT COUNT(*) FROM sub_chats")
         count = cursor.fetchone()[0]
         conn.close()
         assert count == 0
@@ -919,7 +921,7 @@ class TestPremiumGating:
 
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT alias FROM sub_groups WHERE chat_id='-200'")
+        cursor.execute("SELECT alias FROM sub_chats WHERE chat_id='-200'")
         row = cursor.fetchone()
         conn.close()
         assert row == ("downtown",)
@@ -938,7 +940,7 @@ class TestPremiumGating:
 
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT is_monitored FROM sub_groups WHERE chat_id='-200'")
+        cursor.execute("SELECT is_monitored FROM sub_chats WHERE chat_id='-200'")
         row = cursor.fetchone()
         conn.close()
         assert row == (1,)
@@ -988,7 +990,7 @@ class TestSetsub:
             upd  = make_update(chat=chat, user=user, message=msg)
             ctx  = make_context(args=["-100", "on", "30"])
 
-            await handlers.setsub(upd, ctx)
+            await subscription.setsub(upd, ctx)
 
             msg.reply_text.assert_not_awaited()
 
@@ -1009,7 +1011,7 @@ class TestSetsub:
             upd  = make_update(chat=chat, user=user, message=msg)
             ctx  = make_context(args=["-100", "on", "30"])
 
-            await handlers.setsub(upd, ctx)
+            await subscription.setsub(upd, ctx)
 
             msg.reply_text.assert_awaited_once()
             assert "anonymously" in msg.reply_text.call_args.args[0].lower()
@@ -1024,7 +1026,7 @@ class TestSetsub:
             ctx  = make_context(args=["-100", "on", "30"])
             ctx.bot.get_chat = AsyncMock(return_value=MagicMock(title="Some Group", username=None))
 
-            await handlers.setsub(upd, ctx)
+            await subscription.setsub(upd, ctx)
 
             assert handlers.is_premium("-100") is True
 
@@ -1039,7 +1041,7 @@ class TestSetsub:
             ctx  = make_context(args=["-100", "off"])
             ctx.bot.get_chat = AsyncMock(return_value=MagicMock(title="Some Group", username=None))
 
-            await handlers.setsub(upd, ctx)
+            await subscription.setsub(upd, ctx)
 
             assert handlers.is_premium("-100") is False
 
@@ -1054,7 +1056,7 @@ class TestSetsub:
             ctx  = make_context(args=["-100", "on", "5"])
             ctx.bot.get_chat = AsyncMock(return_value=MagicMock(title="Some Group", username=None))
 
-            await handlers.setsub(upd, ctx)
+            await subscription.setsub(upd, ctx)
 
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
@@ -1083,8 +1085,8 @@ class TestHelpTierAwareKeyboard:
         flat = [btn for row in keyboard.inline_keyboard for btn in row]
         alias_btn   = next(b for b in flat if "Alias" in b.text)
         monitor_btn = next(b for b in flat if "Monitoring" in b.text)
-        assert handlers.ICON_PREMIUM in alias_btn.text
-        assert handlers.ICON_PREMIUM in monitor_btn.text
+        assert config.ICON_PREMIUM in alias_btn.text
+        assert config.ICON_PREMIUM in monitor_btn.text
         assert alias_btn.callback_data == "upgrade_info"
         assert monitor_btn.callback_data == "upgrade_info"
 
@@ -1101,8 +1103,8 @@ class TestHelpTierAwareKeyboard:
         flat = [btn for row in keyboard.inline_keyboard for btn in row]
         alias_btn   = next(b for b in flat if "Alias" in b.text)
         monitor_btn = next(b for b in flat if "Monitoring" in b.text)
-        assert handlers.ICON_PREMIUM not in alias_btn.text
-        assert handlers.ICON_PREMIUM not in monitor_btn.text
+        assert config.ICON_PREMIUM not in alias_btn.text
+        assert config.ICON_PREMIUM not in monitor_btn.text
         assert alias_btn.callback_data == "help_alias"
         assert monitor_btn.callback_data == "help_monitoring"
 
@@ -1594,7 +1596,28 @@ class TestRefreshusers:
 class TestRefreshusersall:
     """/refreshusersall - the former /refreshusers -g, now its own command."""
 
+    async def test_free_group_is_rejected_with_pro_only_message(self, db_path):
+        """
+        Regression test: monitored chats can only ever be configured via
+        /addmonitor (PRO-only), so this command was already functionally
+        inert on FREE - now it says so explicitly instead of a confusing
+        'No monitored groups configured' response.
+        """
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        await handlers.refreshusersall(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "PRO" in reply
+        assert "No monitored" not in reply
+
     async def test_no_monitors_configured(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
         chat = make_chat(chat_id=-100123)
@@ -1620,9 +1643,10 @@ class TestRefreshusersall:
         assert "⛔️" in msg.reply_text.call_args.args[0]
 
     async def test_syncs_each_monitored_group(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
         conn.execute(
-            "INSERT INTO sub_groups (chat_id, chat_name, is_monitored, owner_chat_id) VALUES ('-200','Downtown',1,'-100123')"
+            "INSERT INTO sub_chats (chat_id, chat_name, is_monitored, owner_chat_id) VALUES ('-200','Downtown',1,'-100123')"
         )
         conn.commit()
         conn.close()
@@ -1716,10 +1740,11 @@ class TestUpgradeInfoCallback:
 
 
 
+class TestHelpOwnerFlag:
     """/help -a shows owner-only commands, but only to actual owners."""
 
     async def test_owner_sees_owner_commands(self, db_path):
-        with patch("subscription.OWNER_USER_IDS", {555}), patch("handlers.OWNER_USER_IDS", {555}):
+        with patch("subscription.OWNER_USER_IDS", {555}), patch("help_system.OWNER_USER_IDS", {555}):
             bot = make_bot()
             chat = make_chat(chat_id=-100123)
             user = make_user(user_id=555)
@@ -1733,7 +1758,7 @@ class TestUpgradeInfoCallback:
             assert "/setsub" in reply
 
     async def test_non_owner_gets_regular_help(self, db_path):
-        with patch("subscription.OWNER_USER_IDS", {555}), patch("handlers.OWNER_USER_IDS", {555}):
+        with patch("subscription.OWNER_USER_IDS", {555}), patch("help_system.OWNER_USER_IDS", {555}):
             bot = make_bot()
             chat = make_chat(chat_id=-100123)
             user = make_user(user_id=999)  # not the owner
@@ -1766,8 +1791,8 @@ class TestButtonHandlerMasterHub:
         user = make_user(user_id=1, username="alice")
         upd  = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event(db_path, "ev1")
@@ -1788,8 +1813,8 @@ class TestButtonHandlerMasterHub:
         user = make_user(user_id=1, username="alice")
         upd  = make_callback_update("notgoing_ev1", chat_id=int(MAIN_CHAT), user=user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event(db_path, "ev1")
@@ -1807,8 +1832,8 @@ class TestButtonHandlerMasterHub:
         user = make_user(user_id=1, username="alice")
         upd  = make_callback_update("add_ev1", chat_id=int(MAIN_CHAT), user=user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event(db_path, "ev1")
@@ -1840,8 +1865,8 @@ class TestButtonHandlerCrossChatProtection:
         other_alex = make_user(user_id=2, username=None, first_name="Alex")
         upd = make_callback_update("going_ev1", chat_id=-200, user=other_alex)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="2")
@@ -1859,8 +1884,8 @@ class TestButtonHandlerCrossChatProtection:
         same_user = make_user(user_id=1, username="alice")
         upd = make_callback_update("going_ev1", chat_id=-200, user=same_user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1")
@@ -1876,8 +1901,8 @@ class TestButtonHandlerCrossChatProtection:
         user = make_user(user_id=1, username="alice")
         upd  = make_callback_update("notgoing_ev1", chat_id=-200, user=user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1")
@@ -1905,8 +1930,8 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         user = make_user(user_id=1, username="alice")
         upd  = make_callback_update("add_ev1", chat_id=-200, user=user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1")
@@ -1923,13 +1948,13 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         user = make_user(user_id=1, username="alice")
 
         add_upd = make_callback_update("add_ev1", chat_id=-200, user=user)
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(add_upd, ctx)
 
         notgoing_upd = make_callback_update("notgoing_ev1", chat_id=-200, user=user)
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(notgoing_upd, ctx)
 
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1")
@@ -1949,8 +1974,8 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         user = make_user(user_id=1, username="alice")
         upd  = make_callback_update("sub_ev1", chat_id=-200, user=user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1")
@@ -1969,8 +1994,8 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         user = make_user(user_id=1, username="alice")
         upd  = make_callback_update("sub_ev1", chat_id=-200, user=user)
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet",   new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1")
@@ -2024,9 +2049,9 @@ class TestButtonHandlerSaveCloseEvent:
         upd  = make_callback_update("save_ev1", chat_id=int(MAIN_CHAT), user=user)
 
         fake_ss = FakeSpreadsheet()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_sheet", new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
+             patch("event_engine.sync_event_users_sheet", new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         ws = fake_ss.worksheets["Events"]
@@ -2052,9 +2077,9 @@ class TestButtonHandlerSaveCloseEvent:
         ws.records = [{"EVENT_ID": "ev1"}]
         fake_ss.worksheets["Events"] = ws
 
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_sheet", new_callable=AsyncMock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
+             patch("event_engine.sync_event_users_sheet", new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
         assert ws.appended_rows == []
@@ -2076,9 +2101,9 @@ class TestButtonHandlerSaveCloseEvent:
 
         fake_ss   = FakeSpreadsheet()
         sync_mock = AsyncMock()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_sheet", sync_mock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
+             patch("event_engine.sync_event_users_sheet", sync_mock):
             await handlers.button_handler(upd, ctx)
 
         sync_mock.assert_called_once()
@@ -2106,9 +2131,9 @@ class TestButtonHandlerSaveCloseEvent:
 
         fake_ss   = FakeSpreadsheet()
         sync_mock = AsyncMock()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
-             patch("handlers.sync_event_users_sheet", sync_mock):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss), \
+             patch("event_engine.sync_event_users_sheet", sync_mock):
             await handlers.button_handler(upd, ctx)
 
         sync_mock.assert_called_once()
@@ -2132,8 +2157,8 @@ class TestButtonHandlerActionsLogNaming:
         upd  = make_callback_update("incgst_ev1:alice", chat_id=int(MAIN_CHAT), user=user)
 
         fake_ss = FakeSpreadsheet()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.button_handler(upd, ctx)
 
         ws = fake_ss.worksheets["Actions"]
@@ -2151,8 +2176,8 @@ class TestButtonHandlerActionsLogNaming:
         upd  = make_callback_update("decgst_ev1:alice", chat_id=int(MAIN_CHAT), user=user)
 
         fake_ss = FakeSpreadsheet()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.button_handler(upd, ctx)
 
         ws = fake_ss.worksheets["Actions"]
@@ -2167,8 +2192,8 @@ class TestButtonHandlerActionsLogNaming:
         upd  = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user)
 
         fake_ss = FakeSpreadsheet()
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.button_handler(upd, ctx)
 
         ws = fake_ss.worksheets["Actions"]
@@ -2306,7 +2331,7 @@ class TestHubResolver:
         this feature existed - no DM/admin-lookup logic runs at all."""
         insert_premium(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-999','downtown','-100123')")
+        conn.execute("INSERT INTO sub_chats (chat_id, alias, owner_chat_id) VALUES ('-999','downtown','-100123')")
         conn.commit()
         conn.close()
 
@@ -2347,7 +2372,7 @@ class TestHubResolver:
         insert_premium(db_path, chat_id="-100111")
         conn = sqlite3.connect(db_path)
         conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
-        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-999','downtown','-100111')")
+        conn.execute("INSERT INTO sub_chats (chat_id, alias, owner_chat_id) VALUES ('-999','downtown','-100111')")
         conn.commit()
         conn.close()
 
@@ -2399,8 +2424,8 @@ class TestHubResolver:
         conn = sqlite3.connect(db_path)
         conn.execute("UPDATE all_groups SET chat_name='Football' WHERE chat_id='-100111'")
         conn.execute("UPDATE all_groups SET chat_name='Basketball' WHERE chat_id='-100222'")
-        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-999','footballalias','-100111')")
-        conn.execute("INSERT INTO sub_groups (chat_id, alias, owner_chat_id) VALUES ('-888','hoopsalias','-100222')")
+        conn.execute("INSERT INTO sub_chats (chat_id, alias, owner_chat_id) VALUES ('-999','footballalias','-100111')")
+        conn.execute("INSERT INTO sub_chats (chat_id, alias, owner_chat_id) VALUES ('-888','hoopsalias','-100222')")
         conn.commit()
         conn.close()
 
@@ -2653,7 +2678,7 @@ class TestShareeventFromDM:
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','FREE')")
         conn.execute(
-            "INSERT INTO sub_groups (chat_id, alias, owner_chat_id, chat_type) VALUES ('-200','downtown','-100111','group')"
+            "INSERT INTO sub_chats (chat_id, alias, owner_chat_id, chat_type) VALUES ('-200','downtown','-100111','group')"
         )
         conn.commit()
         conn.close()
@@ -2975,5 +3000,148 @@ class TestFeatureFlagsSync:
 
         ws = fake_ss.worksheets["BOTCONFIG"]
         grid = ws.updates[0]
-        status_row = next(r for r in grid if r[0] == "/status")
-        assert status_row[1:4] == ["yes", "yes", "yes"]
+        newevent_row = next(r for r in grid if "newevent" in r[0])
+        assert newevent_row[1:4] == ["yes", "yes", "yes"]
+
+
+class TestFeatureSnapshotGrandfathering:
+    """
+    An event locks in which rules applied to it (verification,
+    add_extra_member) at the moment it was created (db.events.feature_snapshot).
+    A later tier or feature_flags change never retroactively changes an
+    event already in progress - only events created AFTER the change follow
+    the new rules.
+    """
+
+    async def test_newevent_stores_current_tier_snapshot(self, db_path):
+        subscription.update_feature_flag("verification", "PRO", db_path=db_path)
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        msg.text = "/newevent Test"
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot, args=["Test"])
+
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        snapshot = conn.execute("SELECT feature_snapshot FROM events").fetchone()[0]
+        parsed = json.loads(snapshot)
+        assert parsed["verification"] is False  # FREE by default, feature is PRO-gated
+
+    async def test_old_event_keeps_old_rules_after_group_upgraded(self, db_path):
+        """The exact reported scenario: create on FREE, upgrade to PRO, the
+        already-existing event must still behave like a FREE event."""
+        subscription.update_feature_flag("verification", "PRO", db_path=db_path)
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        msg.text = "/newevent OldEvent"
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot, args=["OldEvent"])
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        event_id = conn.execute("SELECT event_id FROM events").fetchone()[0]
+
+        insert_premium(db_path, chat_id="-100123")  # group upgraded to PRO
+
+        keyboard = handlers.create_event_keyboard(
+            event_id, 0, "👍", "❌", [], {}, verification_enabled=False,
+        )
+        close_btn = keyboard.inline_keyboard[2][0]
+        assert "Save&Close" in close_btn.text
+        assert close_btn.callback_data == f"directclose_{event_id}"
+
+    async def test_new_event_gets_new_rules_after_upgrade(self, db_path):
+        subscription.update_feature_flag("verification", "PRO", db_path=db_path)
+        insert_premium(db_path, chat_id="-100123")
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        msg.text = "/newevent NewEvent"
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot, args=["NewEvent"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        snapshot = conn.execute("SELECT feature_snapshot FROM events").fetchone()[0]
+        assert json.loads(snapshot)["verification"] is True
+
+    async def test_directclose_click_closes_event_directly(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, feature_snapshot)
+               VALUES ('ev1','-100123','1','Test','✅','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps({"verification": False, "add_extra_member": False}),),
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        user = make_user(user_id=9, username="admin")
+        upd = make_callback_update("directclose_ev1", chat_id=-100123, user=user)
+        ctx = make_context(bot=bot)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock), \
+             patch("event_engine.sync_event_users_sheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        status = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert status == 2
+
+    async def test_manual_close_click_is_rejected_when_verification_disabled(self, db_path):
+        """Defense in depth: even a manually-crafted close_ callback must not
+        work when this event's own snapshot has verification disabled."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, feature_snapshot)
+               VALUES ('ev1','-100123','1','Test','✅','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps({"verification": False, "add_extra_member": False}),),
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        user = make_user(user_id=9, username="admin")
+        upd = make_callback_update("close_ev1", chat_id=-100123, user=user)
+        ctx = make_context(bot=bot)
+
+        await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        status = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert status == 0
+
+    async def test_null_snapshot_defaults_to_everything_enabled(self, db_path):
+        """Events created before feature_snapshot existed have NULL there -
+        must behave exactly as they always did (everything enabled)."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, feature_snapshot)
+               VALUES ('ev1','-100123','1','Test','✅','❌',0,'[]','[]','{}','[]',NULL)"""
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        user = make_user(user_id=9, username="admin")
+        upd = make_callback_update("close_ev1", chat_id=-100123, user=user)  # old-style close still works
+        ctx = make_context(bot=bot)
+
+        await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        status = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert status == 1  # transitioned into verification, as it always did
