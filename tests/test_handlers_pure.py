@@ -425,3 +425,63 @@ class TestCreateEventKeyboard:
         rows = kb.inline_keyboard
         assert not any("👤 bob" in btn.text for row in rows for btn in row)
         assert any("bob" in btn.text for row in rows for btn in row), "the guest count row must still show"
+
+
+class TestCreateEventKeyboardFeatureSnapshot:
+    """
+    verification_enabled/add_extra_member_enabled - per-event feature
+    gating, driven by the event's own stored feature_snapshot rather than
+    the hub's live tier (see subscription.has_feature and the
+    feature_snapshot column on events).
+    """
+
+    EVENT_ID = "ev1"
+    GOING_ICON = "👍"
+    NOT_GOING_ICN = "❌"
+
+    def test_verification_disabled_shows_save_and_close_not_verify(self):
+        kb = create_event_keyboard(
+            self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN,
+            is_child=False, verification_enabled=False,
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        assert not any("Verify&Close" in b.text for b in flat)
+        assert any("Save&Close" in b.text for b in flat)
+
+    def test_verification_disabled_uses_directclose_callback(self):
+        kb = create_event_keyboard(
+            self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN,
+            is_child=False, verification_enabled=False,
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        save_btn = next(b for b in flat if "Save&Close" in b.text)
+        assert save_btn.callback_data == f"directclose_{self.EVENT_ID}"
+
+    def test_verification_enabled_keeps_current_behavior(self):
+        kb = create_event_keyboard(
+            self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN,
+            is_child=False, verification_enabled=True,
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        close_btn = next(b for b in flat if "Verify&Close" in b.text)
+        assert close_btn.callback_data == f"close_{self.EVENT_ID}"
+
+    def test_add_extra_member_disabled_hides_the_button(self):
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
+            going_list=[], counters={}, kicked_users=set(),
+            add_extra_member_enabled=False,
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        assert not any("Add Extra Member" in b.text for b in flat)
+        # Save & Close Event must still be there - only the one button is gated
+        assert any("Save & Close Event" in b.text for b in flat)
+
+    def test_add_extra_member_enabled_keeps_current_behavior(self):
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
+            going_list=[], counters={}, kicked_users=set(),
+            add_extra_member_enabled=True,
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        assert any("Add Extra Member" in b.text for b in flat)

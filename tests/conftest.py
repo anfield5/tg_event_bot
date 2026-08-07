@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import db as db_module
-import handlers as handlers_module
+import event_engine as event_engine_module
 from db import init_db
 from tests.helpers import (          # re-export so conftest consumers can use them
     make_user, make_chat, make_message, make_bot, make_update, make_context
@@ -40,13 +40,12 @@ from tests.helpers import (          # re-export so conftest consumers can use t
 def db_path(tmp_path, monkeypatch):
     """
     Creates an isolated SQLite database in a temp directory and patches
-    DB_PATH in both `db` and `handlers` so all production code uses it.
-    Returns the path string so tests can open direct connections if needed.
+    DB_PATH in `db` so all production code (via db.get_connection(), the
+    only DB access path used anywhere in this project) uses it. Returns
+    the path string so tests can open direct connections if needed.
     """
     path = str(tmp_path / "test.db")
-    # Patch the module-level constant in both modules
-    monkeypatch.setattr(db_module,       "DB_PATH", path)
-    monkeypatch.setattr(handlers_module, "DB_PATH", path)
+    monkeypatch.setattr(db_module, "DB_PATH", path)
     # Initialise schema (migrations included)
     init_db(db_path=path)
     return path
@@ -66,7 +65,7 @@ def db_conn(db_path):
 @pytest.fixture(autouse=True)
 def _reset_module_level_state():
     """
-    handlers.py keeps two module-level dicts across the whole process
+    event_engine.py keeps two module-level dicts across the whole process
     lifetime: `_event_locks` (per-event asyncio.Lock for the button_handler
     critical section) and `_refresh_state` (per-event coalescing state for
     schedule_view_refresh). Tests freely reuse the same event_id strings
@@ -76,11 +75,11 @@ def _reset_module_level_state():
     using the same event_id to hang waiting on it. Clearing both dicts before
     every test keeps tests fully isolated from each other.
     """
-    handlers_module._event_locks.clear()
-    handlers_module._refresh_state.clear()
+    event_engine_module._event_locks.clear()
+    event_engine_module._refresh_state.clear()
     yield
-    handlers_module._event_locks.clear()
-    handlers_module._refresh_state.clear()
+    event_engine_module._event_locks.clear()
+    event_engine_module._refresh_state.clear()
 
 
 # ---------------------------------------------------------------------------

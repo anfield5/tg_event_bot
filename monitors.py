@@ -102,24 +102,24 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                "SELECT id FROM sub_chats WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                 (target_chat_id, main_chat_id),
             )
             existing = cursor.fetchone()
 
             if existing:
-                # A sub_groups row already exists for this (owner, chat_id)
+                # A sub_chats row already exists for this (owner, chat_id)
                 # pair - possibly an alias-only row from /setalias. Turn on
                 # monitoring on that same row instead of inserting a second
                 # one, which would violate UNIQUE(owner_chat_id, chat_id).
                 cursor.execute(
-                    "UPDATE sub_groups SET is_monitored = 1, chat_type = ?, chat_name = ? "
+                    "UPDATE sub_chats SET is_monitored = 1, chat_type = ?, chat_name = ? "
                     "WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                     (chat_type, chat_name, target_chat_id, main_chat_id),
                 )
             else:
                 cursor.execute(
-                    "INSERT INTO sub_groups (chat_id, chat_type, chat_name, owner_chat_id, is_monitored) "
+                    "INSERT INTO sub_chats (chat_id, chat_type, chat_name, owner_chat_id, is_monitored) "
                     "VALUES (?, ?, ?, ?, 1)",
                     (target_chat_id, chat_type, chat_name, main_chat_id),
                 )
@@ -163,7 +163,7 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, over
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_name, alias FROM sub_groups WHERE chat_id = ? AND is_monitored = 1 "
+            "SELECT chat_name, alias FROM sub_chats WHERE chat_id = ? AND is_monitored = 1 "
             "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (target_chat_id, hub_chat_id),
         )
@@ -181,13 +181,13 @@ async def removemonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, over
             # This chat is also aliased - only turn off monitoring, keep
             # the row (and its alias) intact.
             cursor.execute(
-                "UPDATE sub_groups SET is_monitored = 0 WHERE chat_id = ? "
+                "UPDATE sub_chats SET is_monitored = 0 WHERE chat_id = ? "
                 "AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                 (target_chat_id, hub_chat_id),
             )
         else:
             cursor.execute(
-                "DELETE FROM sub_groups WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+                "DELETE FROM sub_chats WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
                 (target_chat_id, hub_chat_id),
             )
         conn.commit()
@@ -212,7 +212,7 @@ async def listmonitors(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT chat_id, chat_type, chat_name FROM sub_groups WHERE is_monitored = 1 AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
+            "SELECT chat_id, chat_type, chat_name FROM sub_chats WHERE is_monitored = 1 AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
             (hub_chat_id,),
         )
         rows = cursor.fetchall()

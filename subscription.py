@@ -47,6 +47,35 @@ def is_premium(chat_id: str) -> bool:
         return False
 
 
+def has_feature(chat_id: str, feature_key: str) -> bool:
+    """
+    General availability check against feature_flags, for anything beyond
+    the plain PRO/FREE split that is_premium() covers - e.g. "verification"
+    or "add_extra_member", which are independently configurable via
+    set_feature_flag() even though they default to FREE.
+
+    Only meaningful for FREE/PRO-tier features. A group's own subscription
+    is never "ADMIN" (that tier is gated on OWNER_USER_IDS, the caller's own
+    identity - unrelated to any group's subscription), so checking an
+    ADMIN-tier feature_key here will always return False; that's correct,
+    not a bug - use the OWNER_USER_IDS check directly for those instead.
+
+    Unknown feature_key (typo, or not seeded) defaults to False rather than
+    silently allowing everything - fail closed, not open.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT min_tier FROM feature_flags WHERE feature_key = ?", (feature_key,))
+        row = cursor.fetchone()
+
+    if not row:
+        return False
+
+    tier_order = {"FREE": 0, "PRO": 1, "ADMIN": 2}
+    group_tier = "PRO" if is_premium(chat_id) else "FREE"
+    return tier_order.get(group_tier, -1) >= tier_order.get(row[0], 99)
+
+
 # feature_flags (db.get_feature_flags) is now the single source of truth
 # for what's available at each tier - see set_feature_flag() below and
 # _push_control_sheet_botconfig(), which mirrors it to the Control Sheet's
@@ -331,18 +360,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
     else:
         due_line = "unlimited"
 
-    if pro and row and row[2] and row[3]:
-        sheet_line = escape_markdown(row[3])
-    else:
-        sheet_line = ""
+    lines = [
+        f"{ICON_STATS} *Status*",
+        "",
+        f"Type: {type_line}",
+        f"Due Date: {due_line}",
+    ]
+    if pro:
+        sheet_line = escape_markdown(row[3]) if row and row[2] and row[3] else "not bound \\- see /setsheet"
+        lines.append(f"Sheet: {sheet_line}")
 
-    await update.message.reply_text(
-        f"{ICON_STATS} *Status*\n\n"
-        f"Type: {type_line}\n"
-        f"Due Date: {due_line}\n"
-        f"Sheet: {sheet_line}",
-        parse_mode="MarkdownV2",
-    )
+    await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
 
 
 # ---------------------------------------------------------------------------
@@ -430,13 +458,13 @@ async def allgroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pro_only:
             cursor.execute(
                 "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
-                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "(SELECT owner_chat_id FROM sub_chats WHERE chat_id = g.chat_id LIMIT 1) "
                 "FROM all_groups g WHERE g.type = 'PRO' ORDER BY g.chat_id"
             )
         else:
             cursor.execute(
                 "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
-                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "(SELECT owner_chat_id FROM sub_chats WHERE chat_id = g.chat_id LIMIT 1) "
                 "FROM all_groups g ORDER BY g.chat_id"
             )
         rows = cursor.fetchall()
@@ -464,13 +492,13 @@ async def allgroups_page_callback_handler(update: Update, context: ContextTypes.
         if pro_only:
             cursor.execute(
                 "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
-                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "(SELECT owner_chat_id FROM sub_chats WHERE chat_id = g.chat_id LIMIT 1) "
                 "FROM all_groups g WHERE g.type = 'PRO' ORDER BY g.chat_id"
             )
         else:
             cursor.execute(
                 "SELECT g.chat_id, g.chat_name, g.type, g.visibility, g.sheet_name, "
-                "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = g.chat_id LIMIT 1) "
+                "(SELECT owner_chat_id FROM sub_chats WHERE chat_id = g.chat_id LIMIT 1) "
                 "FROM all_groups g ORDER BY g.chat_id"
             )
         rows = cursor.fetchall()
@@ -489,7 +517,7 @@ async def allchannels_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         cursor = conn.cursor()
         cursor.execute(
             "SELECT c.chat_id, c.chat_name, c.visibility, "
-            "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = c.chat_id LIMIT 1) "
+            "(SELECT owner_chat_id FROM sub_chats WHERE chat_id = c.chat_id LIMIT 1) "
             "FROM all_channels c ORDER BY c.chat_id"
         )
         rows = cursor.fetchall()
@@ -513,7 +541,7 @@ async def allchannels_page_callback_handler(update: Update, context: ContextType
         cursor = conn.cursor()
         cursor.execute(
             "SELECT c.chat_id, c.chat_name, c.visibility, "
-            "(SELECT owner_chat_id FROM sub_groups WHERE chat_id = c.chat_id LIMIT 1) "
+            "(SELECT owner_chat_id FROM sub_chats WHERE chat_id = c.chat_id LIMIT 1) "
             "FROM all_channels c ORDER BY c.chat_id"
         )
         rows = cursor.fetchall()

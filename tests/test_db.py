@@ -67,7 +67,7 @@ class TestInitDb:
         "events",
         "main_group_users",
         "event_shares",
-        "sub_groups",
+        "sub_chats",
         "event_users",
     }
 
@@ -135,12 +135,12 @@ class TestInitDb:
                          "subs_date_end", "visibility", "date_bot_add"):
             assert expected in cols, f"all_groups missing '{expected}'"
 
-    def test_sub_groups_columns(self, tmp_path):
+    def test_sub_chats_columns(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        cols = get_columns(path, "sub_groups")
+        cols = get_columns(path, "sub_chats")
         for expected in ("chat_id", "owner_chat_id", "alias", "is_monitored", "chat_type", "chat_name"):
-            assert expected in cols, f"sub_groups missing '{expected}'"
+            assert expected in cols, f"sub_chats missing '{expected}'"
 
     def test_idempotent_second_call(self, tmp_path):
         # Calling init_db twice must not raise (IF NOT EXISTS guards)
@@ -275,7 +275,7 @@ class TestMigrationMainChatSettingsRename:
 
 
 class TestMigrationSubGroupsMerge:
-    """Legacy chat_aliases + monitors must merge into a single sub_groups table."""
+    """Legacy chat_aliases + monitors must merge into a single sub_chats table."""
 
     def test_merges_alias_only_row(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -284,9 +284,9 @@ class TestMigrationSubGroupsMerge:
 
         init_db(db_path=path)
 
-        assert "sub_groups" in get_tables(path)
+        assert "sub_chats" in get_tables(path)
         assert "chat_aliases" not in get_tables(path)
-        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, owner_chat_id FROM sub_groups")
+        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, owner_chat_id FROM sub_chats")
         assert rows == [("-200", "downtown", 0, "-100")]
 
     def test_merges_monitor_only_row(self, tmp_path):
@@ -297,13 +297,13 @@ class TestMigrationSubGroupsMerge:
         init_db(db_path=path)
 
         assert "monitors" not in get_tables(path)
-        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, chat_type, chat_name FROM sub_groups")
+        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, chat_type, chat_name FROM sub_chats")
         assert rows == [("-300", None, 1, "group", "Other Group")]
 
     def test_merges_chat_present_in_both_legacy_tables_into_one_row(self, tmp_path):
         """
         A chat that was BOTH aliased and monitored under the same owner must
-        become a single sub_groups row with both facts set, not two rows.
+        become a single sub_chats row with both facts set, not two rows.
         """
         path = str(tmp_path / "t.db")
         run_sql(path, "CREATE TABLE chat_aliases (chat_id TEXT PRIMARY KEY, alias TEXT UNIQUE, owner_chat_id TEXT)")
@@ -313,7 +313,7 @@ class TestMigrationSubGroupsMerge:
 
         init_db(db_path=path)
 
-        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, chat_type, chat_name FROM sub_groups")
+        rows = fetch_all(path, "SELECT chat_id, alias, is_monitored, chat_type, chat_name FROM sub_chats")
         assert rows == [("-200", "downtown", 1, "channel", "Downtown Channel")]
 
     def test_idempotent_after_merge(self, tmp_path):
@@ -322,7 +322,7 @@ class TestMigrationSubGroupsMerge:
         run_sql(path, "INSERT INTO chat_aliases (chat_id, alias, owner_chat_id) VALUES ('-200','downtown','-100')")
         init_db(db_path=path)
         init_db(db_path=path)  # must not raise or duplicate
-        rows = fetch_all(path, "SELECT chat_id, alias FROM sub_groups")
+        rows = fetch_all(path, "SELECT chat_id, alias FROM sub_chats")
         assert rows == [("-200", "downtown")]
 
 
@@ -524,11 +524,11 @@ class TestFeatureFlags:
     overwritten by a second init_db() call.
     """
 
-    def test_seeds_eleven_flags_on_fresh_db(self, tmp_path):
+    def test_seeds_fourteen_flags_on_fresh_db(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         rows = get_feature_flags(db_path=path)
-        assert len(rows) == 11
+        assert len(rows) == 14
 
     def test_free_pro_admin_tiers_all_present(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -541,13 +541,18 @@ class TestFeatureFlags:
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
-        assert by_key["event_lifecycle"] == "FREE"
+        assert by_key["newevent"] == "FREE"
+        assert by_key["editevent"] == "FREE"
+        assert by_key["user_management"] == "FREE"
         assert by_key["aliases"] == "PRO"
         assert by_key["monitoring"] == "PRO"
         assert by_key["custom_sheet"] == "PRO"
         assert by_key["setsub"] == "ADMIN"
         assert by_key["allgroups"] == "ADMIN"
         assert by_key["allchannels"] == "ADMIN"
+        assert by_key["refreshusersall"] == "PRO"
+        assert by_key["verification"] == "FREE"
+        assert by_key["add_extra_member"] == "FREE"
 
     def test_reseeding_does_not_overwrite_a_manually_changed_flag(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -559,11 +564,92 @@ class TestFeatureFlags:
         by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
         assert by_key["aliases"] == "ADMIN"
 
+    def test_reseeding_refreshes_stale_label_text_but_not_min_tier(self, tmp_path):
+        """
+        feature_label/description are developer-owned reference text, not
+        user-configurable - a pre-existing database seeded before a wording
+        change must pick up the correction on the next init_db(), while a
+        manually-changed min_tier (which IS user-configurable) must survive.
+        """
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        run_sql(path, "UPDATE feature_flags SET feature_label = 'stale old label' WHERE feature_key = 'aliases'")
+        update_feature_flag("aliases", "ADMIN", db_path=path)
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT feature_label, min_tier FROM feature_flags WHERE feature_key = 'aliases'")
+        assert rows[0][0] != "stale old label"
+        assert rows[0][1] == "ADMIN"
+
+    def test_retires_feature_keys_no_longer_in_the_seed_list(self, tmp_path):
+        """
+        event_lifecycle + updateuser were decomposed into
+        newevent/editevent/user_management - a pre-existing database must
+        drop the old, now-orphaned rows on the next init_db(), not keep
+        them around forever alongside the new ones.
+        """
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        run_sql(path, "DELETE FROM feature_flags WHERE feature_key IN ('newevent','editevent','user_management')")
+        run_sql(path, "INSERT INTO feature_flags (feature_key, feature_label, min_tier, description) "
+                       "VALUES ('event_lifecycle','old bundle','FREE','old desc')")
+        run_sql(path, "INSERT INTO feature_flags (feature_key, feature_label, min_tier, description) "
+                       "VALUES ('updateuser','old updateuser','FREE','old desc')")
+
+        init_db(db_path=path)
+
+        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        assert "event_lifecycle" not in by_key
+        assert "updateuser" not in by_key
+        assert by_key["newevent"] == "FREE"
+        assert by_key["editevent"] == "FREE"
+        assert by_key["user_management"] == "FREE"
+
     def test_update_feature_flag_changes_only_the_target_row(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        update_feature_flag("status", "PRO", db_path=path)
+        update_feature_flag("shareevent_basic", "PRO", db_path=path)
 
         by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
-        assert by_key["status"] == "PRO"
-        assert by_key["event_lifecycle"] == "FREE"  # untouched
+        assert by_key["shareevent_basic"] == "PRO"
+        assert by_key["newevent"] == "FREE"  # untouched
+
+
+class TestMigrationSubGroupsRename:
+    """'sub_groups' (the old name) must become 'sub_chats' - the old name
+    implied "only groups", but this table has always covered channels too."""
+
+    def test_renames_and_preserves_data(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE sub_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT, owner_chat_id TEXT, alias TEXT,
+                is_monitored INTEGER DEFAULT 0, chat_type TEXT, chat_name TEXT
+            )
+        """)
+        run_sql(path, "INSERT INTO sub_groups (chat_id, owner_chat_id, alias, is_monitored) VALUES ('-999','-100111','downtown',1)")
+
+        init_db(db_path=path)
+
+        tables = get_tables(path)
+        assert "sub_chats" in tables
+        assert "sub_groups" not in tables
+        rows = fetch_all(path, "SELECT chat_id, owner_chat_id, alias, is_monitored FROM sub_chats")
+        assert rows == [("-999", "-100111", "downtown", 1)]
+
+    def test_idempotent_after_rename(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE sub_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT, owner_chat_id TEXT, alias TEXT,
+                is_monitored INTEGER DEFAULT 0, chat_type TEXT, chat_name TEXT
+            )
+        """)
+        run_sql(path, "INSERT INTO sub_groups (chat_id, alias) VALUES ('-1','test')")
+        init_db(db_path=path)
+        init_db(db_path=path)  # must not raise or duplicate
+        rows = fetch_all(path, "SELECT chat_id, alias FROM sub_chats")
+        assert rows == [("-1", "test")]
