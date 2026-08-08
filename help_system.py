@@ -66,6 +66,8 @@ def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
         callback_data="help_monitoring" if premium else "upgrade_info",
     )
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Users", callback_data="help_users"),
+         InlineKeyboardButton("🔧 Utility", callback_data="help_utility")],
         [InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
          InlineKeyboardButton("📢 Distribution", callback_data="help_distribution")],
         [alias_btn, monitor_btn],
@@ -116,30 +118,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     main_help = (
         "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
+        "/newevent \\[name\\] \\[\\-d\\|\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
         "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "/editevent \\[name\\] \\[\\-date \\.\\.\\.\\] \\- Edit the active event\n"
-        "/notify \\- Ping users who haven't responded\n"
-        "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group\n"
-    )
-    if pro:
-        main_help += "/refreshusersall \\- Same as /refreshusers, but for every monitored group/channel\n"
-    main_help += (
-        "/listusers \\- Show all tracked users\n"
-        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
-        "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
+        "/editevent \\[name\\] \\[\\-d\\|\\-date \\.\\.\\.\\] \\- Edit the active event\n"
     )
     if pro:
         main_help += "/setsheet \\[spreadsheet\\_id\\_or\\_url\\] \\- \\(PRO\\) Bind this group to its own Google Sheet\n"
-    main_help += (
-        "\n🔧 *Utility Commands*\n"
-        "/status \\- Show this group's subscription type\\, due date\\, and bound sheet\n"
-        "/switchgroup \\- \\(DM only\\) switch which group your commands target\n"
-        "/userid \\- Show your own Telegram user ID\n"
-        "/chatid \\- Show this chat's ID\n\n"
-        "📚 *More Info*"
-    )
+    main_help += "\n📚 *More Info*"
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
@@ -159,6 +145,21 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     help_sections = {
+        "help_users": (
+            "👥 *User Management*\n\n"
+            "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
+            "/listusers \\- Show all tracked users\n"
+            "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
+            "/notify \\- Ping users who haven't responded\n"
+            "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group"
+        ),
+        "help_utility": (
+            "🔧 *Utility Commands*\n\n"
+            "/status \\- Show this group's subscription type\\, due date\\, and bound sheet\n"
+            "/switchgroup \\- \\(DM only\\) switch which group your commands target\n"
+            "/userid \\- Show your own Telegram user ID\n"
+            "/chatid \\- Show this chat's ID"
+        ),
         "help_alias": (
             "⚙️ *Alias Subsystem*\n\n"
             "/setalias \\[target\\_id\\] \\[aliasname\\] \\- Bind alias to chat ID\n"
@@ -212,28 +213,12 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     main_help = (
         "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
-        "/editevent \\[name\\] \\[\\-date \\.\\.\\.\\] \\- Edit the active event\n"
-        "/notify \\- Ping users who haven't responded\n"
-        "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group\n"
-    )
-    if pro:
-        main_help += "/refreshusersall \\- Same as /refreshusers, but for every monitored group/channel\n"
-    main_help += (
-        "/listusers \\- Show all tracked users\n"
-        "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
-        "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
+        "/newevent \\[name\\] \\[\\-d\\|\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
+        "/editevent \\[name\\] \\[\\-d\\|\\-date \\.\\.\\.\\] \\- Edit the active event\n"
     )
     if pro:
         main_help += "/setsheet \\[spreadsheet\\_id\\_or\\_url\\] \\- \\(PRO\\) Bind this group to its own Google Sheet\n"
-    main_help += (
-        "\n🔧 *Utility Commands*\n"
-        "/status \\- Show this group's subscription type\\, due date\\, and bound sheet\n"
-        "/switchgroup \\- \\(DM only\\) switch which group your commands target\n"
-        "/userid \\- Show your own Telegram user ID\n"
-        "/chatid \\- Show this chat's ID\n\n"
-        "📚 *More Info*"
-    )
+    main_help += "\n📚 *More Info*"
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)

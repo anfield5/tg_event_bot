@@ -12,6 +12,21 @@ def get_credentials():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     return Credentials.from_service_account_info(credentials_info, scopes=scope)
 
+
+def get_service_account_email():
+    """
+    Returns just the service account's email address (the one that needs
+    Editor access on any Sheet this bot should be able to write to) -
+    used for reminders in /setsub and /setsheet. Returns None if
+    GOOGLE_CREDENTIALS_JSON isn't configured or doesn't parse.
+    """
+    if not GOOGLE_CREDENTIALS_JSON:
+        return None
+    try:
+        return json.loads(GOOGLE_CREDENTIALS_JSON).get("client_email")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
 agcm = gspread_asyncio.AsyncioGspreadClientManager(get_credentials)
 
 # Cache of already-opened spreadsheets, keyed by spreadsheet ID.
@@ -340,9 +355,11 @@ async def sync_control_sheet_botconfig(feature_rows: list):
     truth for what's available at each tier, not just reference data.
 
     feature_rows: list of (feature_key, feature_label, min_tier,
-    description) tuples. For each row, FREE/PRO/ADMIN columns are computed
-    from the tier hierarchy (ADMIN >= PRO >= FREE): a feature with
-    min_tier='PRO' shows "yes" under PRO and ADMIN, "no" under FREE.
+    limit_count, description) tuples. For each row, FREE/PRO/ADMIN columns
+    are computed from the tier hierarchy (ADMIN >= PRO >= FREE): a feature
+    with min_tier='PRO' shows "yes" under PRO and ADMIN, "no" under FREE.
+    A "yes" that also has a limit_count set shows as "yes(limit N)" instead
+    of a plain "yes".
 
     Returns True on success, False on failure (logged either way).
     """
@@ -352,15 +369,22 @@ async def sync_control_sheet_botconfig(feature_rows: list):
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("BOTCONFIG")
-        header = ["FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
+        header = ["FEATURE_KEY", "FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
         body = []
-        for feature_key, feature_label, min_tier, description in feature_rows:
+        for feature_key, feature_label, min_tier, limit_count, description in feature_rows:
             required = _TIER_ORDER.get(min_tier, 0)
+
+            def _cell(tier_name):
+                if _TIER_ORDER[tier_name] < required:
+                    return "no"
+                return f"yes(limit {limit_count})" if limit_count is not None else "yes"
+
             body.append([
+                feature_key,
                 feature_label,
-                "yes" if _TIER_ORDER["FREE"] >= required else "no",
-                "yes" if _TIER_ORDER["PRO"] >= required else "no",
-                "yes" if _TIER_ORDER["ADMIN"] >= required else "no",
+                _cell("FREE"),
+                _cell("PRO"),
+                _cell("ADMIN"),
                 description or "",
             ])
         grid = [header] + body

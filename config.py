@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.19.0"
+BOT_VERSION = "3.20.0"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -47,7 +47,6 @@ CONTROL_SHEET_ID = os.getenv("CONTROL_SHEET_ID") or None
 
 # Free-tier limit: how many DISTINCT events a hub may /shareevent to the
 # same target group/channel before being told to upgrade.
-FREE_SHAREEVENT_LIMIT_PER_TARGET = 3
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 # ---------------------------------------------------------------------------

@@ -732,11 +732,12 @@ class TestShareevent:
         conn.close()
         assert row == ("-visible",)
 
-    async def test_free_tier_blocks_after_3_shares_to_same_target(self, db_path):
+    async def test_blocks_after_reaching_the_default_limit_of_3(self, db_path):
         """
-        Free-tier hubs may share up to FREE_SHAREEVENT_LIMIT_PER_TARGET (3)
-        DISTINCT events to the same target chat - the 4th must be rejected
-        with the exact requested message.
+        /shareevent's limit (feature_flags.shareevent.limit_count, default 3)
+        now applies uniformly regardless of tier - the 4th DISTINCT event
+        shared to the same target chat must be rejected with the exact
+        requested message.
         """
         for i in range(3):
             insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
@@ -768,10 +769,16 @@ class TestShareevent:
         assert count == 3, "the 4th share must have been rejected"
 
         sent_text = ctx.bot.send_message.call_args.kwargs.get("text", "")
-        assert sent_text == "You used all free limit for /shareevent, move to PRO subscription for more"
+        assert sent_text == (
+            "You've reached the /shareevent limit for this target (3). "
+            "Contact the bot owner to raise or remove it."
+        )
 
-    async def test_premium_tier_has_no_shareevent_limit(self, db_path):
-        insert_premium(db_path, chat_id=MAIN_CHAT)
+    async def test_clearing_the_limit_via_updatefeaturelevel_removes_it(self, db_path):
+        """The limit only applies while feature_flags.shareevent.limit_count
+        is set - clearing it (via /updatefeaturelevel ... -limit 0) lifts
+        the cap regardless of tier, matching the new unified model."""
+        subscription.update_feature_flag("shareevent", "FREE", limit_count=None, db_path=db_path)
         for i in range(3):
             insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
             conn = sqlite3.connect(db_path)
@@ -797,7 +804,7 @@ class TestShareevent:
         cursor.execute("SELECT COUNT(*) FROM event_shares WHERE chat_id='-200'")
         count = cursor.fetchone()[0]
         conn.close()
-        assert count == 4, "premium hubs must not be limited"
+        assert count == 4, "limit was explicitly cleared, must not be enforced"
 
     async def test_free_tier_limit_is_per_target_not_global(self, db_path):
         """3 shares to target A must not block sharing to a DIFFERENT target B."""
@@ -1109,7 +1116,7 @@ class TestHelpTierAwareKeyboard:
         assert monitor_btn.callback_data == "help_monitoring"
 
     async def test_row_layout_lifecycle_distribution_first_aliases_monitoring_second(self, db_path):
-        """Row 1: Event Lifecycle + Distribution. Row 2: Aliases + Monitoring."""
+        """Row 1: Users + Utility. Row 2: Event Lifecycle + Distribution. Row 3: Aliases + Monitoring."""
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
@@ -1119,13 +1126,16 @@ class TestHelpTierAwareKeyboard:
 
         keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
         rows = keyboard.inline_keyboard
-        assert len(rows) == 2
+        assert len(rows) == 3
         row1_texts = [b.text for b in rows[0]]
         row2_texts = [b.text for b in rows[1]]
-        assert any("Lifecycle" in t for t in row1_texts)
-        assert any("Distribution" in t for t in row1_texts)
-        assert any("Alias" in t for t in row2_texts)
-        assert any("Monitoring" in t for t in row2_texts)
+        assert any("Users" in t for t in row1_texts)
+        assert any("Utility" in t for t in row1_texts)
+        assert any("Lifecycle" in t for t in row2_texts)
+        assert any("Distribution" in t for t in row2_texts)
+        row3_texts = [b.text for b in rows[2]]
+        assert any("Alias" in t for t in row3_texts)
+        assert any("Monitoring" in t for t in row3_texts)
 
     async def test_distribution_and_lifecycle_buttons_always_active(self, db_path):
         """These two sections are free for everyone, regardless of tier."""
@@ -2675,8 +2685,8 @@ class TestShareeventFromDM:
 
     async def test_shareevent_works_from_dm(self, db_path):
         insert_event(db_path, event_id="ev1", chat_id="-100111")
+        insert_premium(db_path, chat_id="-100111")
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type) VALUES ('-100111','Football','FREE')")
         conn.execute(
             "INSERT INTO sub_chats (chat_id, alias, owner_chat_id, chat_type) VALUES ('-200','downtown','-100111','group')"
         )
@@ -2970,9 +2980,9 @@ class TestFeatureFlagsSync:
 
         ws = fake_ss.worksheets["BOTCONFIG"]
         grid = ws.updates[0]
-        assert grid[0] == ["FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
-        monitoring_row = next(r for r in grid if "Monitoring" in r[0])
-        assert monitoring_row[1:4] == ["no", "no", "yes"]
+        assert grid[0] == ["FEATURE_KEY", "FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
+        monitoring_row = next(r for r in grid if r[0] == "monitoring")
+        assert monitoring_row[2:5] == ["no", "no", "yes"]
 
     async def test_free_feature_shows_yes_for_all_three_tiers(self, db_path):
         class FakeWorksheet:
@@ -3000,8 +3010,8 @@ class TestFeatureFlagsSync:
 
         ws = fake_ss.worksheets["BOTCONFIG"]
         grid = ws.updates[0]
-        newevent_row = next(r for r in grid if "newevent" in r[0])
-        assert newevent_row[1:4] == ["yes", "yes", "yes"]
+        newevent_row = next(r for r in grid if r[0] == "newevent")
+        assert newevent_row[2:5] == ["yes", "yes", "yes"]
 
 
 class TestFeatureSnapshotGrandfathering:

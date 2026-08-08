@@ -17,7 +17,10 @@ from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
 from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import get_connection, get_feature_flags, update_feature_flag
 from hub_resolver import resolve_hub_chat_id, register_hub_command
-from sheets import sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels, open_spreadsheet
+from sheets import (
+    sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels,
+    open_spreadsheet, get_service_account_email,
+)
 
 SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
 # isn't relied upon anywhere - always parsed via strptime, but kept
@@ -239,8 +242,15 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (target_chat_id, chat_name, new_start, new_end),
                 )
             conn.commit()
+            reminder = ""
+            sa_email = get_service_account_email()
+            if sa_email:
+                reminder = (
+                    f"\n\n💡 To let this group use /setsheet, have them share their Google Sheet "
+                    f"with `{escape_markdown(sa_email)}` \\(Editor access\\)\\."
+                )
             await update.message.reply_text(
-                f"✅ Subscription *on* for `{target_chat_id}` until `{new_end}`\\.",
+                f"✅ Subscription *on* for `{target_chat_id}` until `{new_end}`\\.{reminder}",
                 parse_mode="MarkdownV2",
             )
             await _push_control_sheet_main()
@@ -309,6 +319,21 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         )
         return
 
+    # Opening/reading the title above only confirms VIEW access - a
+    # Viewer-only share would ALSO succeed there, then fail on the first
+    # real write later (e.g. appending to Events). Round-trip A1 on the
+    # first worksheet to actually test Editor access: read it, write the
+    # SAME value back. Safe even if something goes wrong mid-way (worst
+    # case A1 gets re-written with its own original value).
+    edit_access_confirmed = True
+    try:
+        first_ws = await ss.sheet1
+        current_a1 = await first_ws.acell("A1")
+        await first_ws.update_acell("A1", current_a1.value or "")
+    except Exception as e:
+        logger.error(f"setsheet: edit-access probe failed for {sheet_id}: {e}")
+        edit_access_confirmed = False
+
     with get_connection() as conn:
         cursor = conn.cursor()
         try:
@@ -324,8 +349,18 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
             )
             return
 
+    warning = ""
+    if not edit_access_confirmed:
+        sa_email = get_service_account_email()
+        email_note = f" \\(`{escape_markdown(sa_email)}`\\)" if sa_email else ""
+        warning = (
+            f"\n\n{ICON_WARNING} Could only confirm *view* access, not *edit* \\- writes to this sheet "
+            f"will likely fail\\. Make sure the bot's service account{email_note} has *Editor* access, "
+            f"not just Viewer\\."
+        )
+
     await update.message.reply_text(
-        f"✅ This group is now bound to `{sheet_name}`\\.",
+        f"✅ This group is now bound to `{sheet_name}`\\.{warning}",
         parse_mode="MarkdownV2",
     )
     await _push_control_sheet_main()
@@ -557,17 +592,99 @@ async def _push_control_sheet_botconfig() -> bool:
     return await sync_control_sheet_botconfig(rows)
 
 
-async def set_feature_flag(feature_key: str, min_tier: str) -> bool:
-    """
-    THE way to change what tier a feature requires - writes to feature_flags
-    (db.update_feature_flag) and then immediately re-syncs the Control
-    Sheet's BOTCONFIG tab, so it can never drift out of date with the
-    table. Nothing currently calls this from a live command (there's no
-    /setfeature yet) - it exists as the sanctioned write path for whenever
-    one is added, so that guarantee holds from day one rather than being
-    bolted on later.
+_LIMIT_NO_CHANGE = object()
 
-    min_tier must be one of "FREE", "PRO", "ADMIN".
+
+async def set_feature_flag(feature_key: str, min_tier: str, limit_count=_LIMIT_NO_CHANGE) -> bool:
     """
-    update_feature_flag(feature_key, min_tier)
+    THE way to change what tier a feature requires (and optionally its
+    usage limit) - writes to feature_flags (db.update_feature_flag) and
+    then immediately re-syncs the Control Sheet's BOTCONFIG tab, so it can
+    never drift out of date with the table. Powers /updatefeaturelevel.
+
+    min_tier must be one of "FREE", "PRO", "ADMIN". limit_count: omit to
+    leave the current limit untouched, pass None to explicitly clear it
+    (unlimited), or an int to set/change it.
+    """
+    if limit_count is _LIMIT_NO_CHANGE:
+        update_feature_flag(feature_key, min_tier)
+    else:
+        update_feature_flag(feature_key, min_tier, limit_count=limit_count)
     return await _push_control_sheet_botconfig()
+
+
+async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only. Changes which tier a feature requires, and optionally its
+    usage limit - the live command powering set_feature_flag().
+
+    Usage: /updatefeaturelevel <feature_key> <free|pro|admin> [-limit N]
+      /updatefeaturelevel shareevent pro -limit 10   - PRO-only, capped at 10
+      /updatefeaturelevel shareevent free -limit 0   - FREE again, no limit (0 clears it)
+      /updatefeaturelevel aliases admin              - ADMIN-only, limit left untouched
+
+    Same OWNER_USER_IDS gating as /setsub, not chat admin status.
+    """
+    if update.effective_user.id not in OWNER_USER_IDS:
+        is_anonymous = (
+            update.effective_user.id == GROUP_ANONYMOUS_BOT_ID
+            or getattr(update.message, "sender_chat", None) is not None
+        )
+        if is_anonymous:
+            await update.message.reply_text(
+                "⛔️ Owner\\-only commands can't be verified while posting anonymously \\- "
+                "please disable \"Remain anonymous\" and try again\\.",
+                parse_mode="MarkdownV2",
+            )
+        return  # otherwise silent - don't reveal this command exists to non-owners
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "❌ *Syntax:* `/updatefeaturelevel <feature_key> <free|pro|admin> [\\-limit N]`\n"
+            "`\\-limit 0` clears an existing limit \\(unlimited\\)\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    feature_key = args[0]
+    level_raw   = args[1].strip().lower()
+    level_map   = {"free": "FREE", "pro": "PRO", "admin": "ADMIN"}
+    if level_raw not in level_map:
+        await update.message.reply_text(
+            "❌ Level must be one of `free`, `pro`, `admin`\\.", parse_mode="MarkdownV2"
+        )
+        return
+    min_tier = level_map[level_raw]
+
+    limit_count = _LIMIT_NO_CHANGE
+    if "-limit" in args:
+        idx = args.index("-limit")
+        if idx + 1 >= len(args) or not args[idx + 1].lstrip("-").isdigit():
+            await update.message.reply_text(
+                "❌ `\\-limit` must be followed by a number \\(0 clears the limit\\)\\.", parse_mode="MarkdownV2"
+            )
+            return
+        n = int(args[idx + 1])
+        limit_count = None if n == 0 else n
+
+    existing = get_feature_flags()
+    if feature_key not in {row[0] for row in existing}:
+        await update.message.reply_text(
+            f"🔍 Unknown feature\\_key `{escape_markdown(feature_key)}`\\. "
+            f"Check `BOTCONFIG` in the Control Sheet for valid keys\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    ok = await set_feature_flag(feature_key, min_tier, limit_count=limit_count)
+
+    limit_note = ""
+    if limit_count is not _LIMIT_NO_CHANGE:
+        limit_note = f", limit={'none' if limit_count is None else limit_count}"
+    status_icon = "✅" if ok else f"{ICON_WARNING}"
+    sync_note = "" if ok else " \\(BOTCONFIG sync failed \\- check CONTROL\\_SHEET\\_ID/permissions\\)"
+    await update.message.reply_text(
+        f"{status_icon} `{escape_markdown(feature_key)}` set to *{min_tier}*{escape_markdown(limit_note)}{sync_note}\\.",
+        parse_mode="MarkdownV2",
+    )

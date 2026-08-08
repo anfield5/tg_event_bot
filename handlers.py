@@ -22,10 +22,9 @@ from config import (
     DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, logger,
     ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
-    FREE_SHAREEVENT_LIMIT_PER_TARGET,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import track_user, get_connection
+from db import track_user, get_connection, get_feature_limit
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet,
@@ -985,7 +984,8 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             )
             return
 
-        if not is_premium(main_hub_chat_id):
+        share_limit = get_feature_limit("shareevent")
+        if share_limit is not None:
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM event_shares es
@@ -995,10 +995,11 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
                 (str(main_hub_chat_id), str(target_chat_raw)),
             )
             (share_count,) = cursor.fetchone()
-            if share_count >= FREE_SHAREEVENT_LIMIT_PER_TARGET:
+            if share_count >= share_limit:
                 await context.bot.send_message(
                     chat_id=main_hub_chat_id,
-                    text="You used all free limit for /shareevent, move to PRO subscription for more",
+                    text=f"You've reached the /shareevent limit for this target ({share_limit}). "
+                         f"Contact the bot owner to raise or remove it.",
                 )
                 return
 

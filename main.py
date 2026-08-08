@@ -24,7 +24,7 @@ from handlers import (
 )
 from subscription import (
     setsub, setsheet, status_command, allgroups_command, allgroups_page_callback_handler,
-    allchannels_command, allchannels_page_callback_handler,
+    allchannels_command, allchannels_page_callback_handler, updatefeaturelevel,
     _push_control_sheet_main, _push_control_sheet_channels, _push_control_sheet_botconfig,
 )
 from utils import now2ddmmyy
@@ -291,6 +291,7 @@ def main():
 
     # 6. Subscription control (owner-only, checked inside setsub itself)
     app.add_handler(CommandHandler("setsub", setsub))
+    app.add_handler(CommandHandler("updatefeaturelevel", updatefeaturelevel))
     app.add_handler(CommandHandler("setsheet", setsheet))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("allgroups", allgroups_command))
