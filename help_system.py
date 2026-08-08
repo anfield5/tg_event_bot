@@ -16,8 +16,10 @@ from config import (
     ICON_PREMIUM, OWNER_USER_IDS, ICON_ADD, ICON_CANCEL_EVENT,
     ICON_KICK, ICON_RETURN, ICON_SAVE, ICON_VERIFICATION,
 )
-from subscription import is_premium
+from subscription import is_premium, has_feature
 from hub_resolver import _get_known_candidate_chats
+from db import get_feature_flags
+from utils import escape_markdown
 
 
 async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -49,28 +51,51 @@ async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYP
     return chat.id
 
 
+# Which feature_flags key(s) gate each /help section button. A button is
+# shown locked if ANY of its features aren't accessible to the calling
+# chat - "Utility" maps to nothing since status/switchgroup/userid/chatid
+# are never tier-gated (see the earlier decision to keep them out of
+# feature_flags entirely, matching /userid/chatid/help/start).
+_BUTTON_FEATURE_MAP = {
+    "lifecycle":     ["newevent", "editevent", "verification", "add_extra_member"],
+    "distribution":  ["shareevent"],
+    "users":         ["user_management"],
+    "utility":       [],
+    "aliases":       ["aliases"],
+    "monitoring":    ["monitoring", "refreshusersall"],
+}
+
+_BUTTON_LABELS = {
+    "users":        ("👥", "Users", "help_users"),
+    "utility":      ("🔧", "Utility", "help_utility"),
+    "lifecycle":    ("🗳", "Event Lifecycle", "help_lifecycle"),
+    "distribution": ("📢", "Distribution", "help_distribution"),
+    "aliases":      ("⚙️", "Aliases", "help_alias"),
+    "monitoring":   ("🔍", "Monitoring", "help_monitoring"),
+}
+
+
 def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
     """
-    Aliases/Monitoring buttons are shown either as normal (premium hub) or
-    marked with ICON_PREMIUM (free hub). Tapping the free version opens an
-    upgrade-info message (see upgrade_info_callback_handler) instead of
-    doing nothing, so there's an actual next step rather than a dead end.
+    Every /help section button is tier-aware now, not just Aliases/
+    Monitoring - if ANY feature backing a button (_BUTTON_FEATURE_MAP)
+    isn't accessible to this chat, the button shows ICON_PREMIUM and
+    routes to upgrade_info_<button_key> (see upgrade_info_callback_handler)
+    instead of its normal detail section - an actual next step rather
+    than a dead end.
     """
-    premium = is_premium(chat_id)
-    alias_btn = InlineKeyboardButton(
-        "⚙️ Aliases" if premium else f"⚙️ Aliases {ICON_PREMIUM}",
-        callback_data="help_alias" if premium else "upgrade_info",
-    )
-    monitor_btn = InlineKeyboardButton(
-        "🔍 Monitoring" if premium else f"🔍 Monitoring {ICON_PREMIUM}",
-        callback_data="help_monitoring" if premium else "upgrade_info",
-    )
+    def _make_button(button_key: str) -> InlineKeyboardButton:
+        icon, label, normal_callback = _BUTTON_LABELS[button_key]
+        features = _BUTTON_FEATURE_MAP[button_key]
+        locked = any(not has_feature(chat_id, fk) for fk in features)
+        text = f"{icon} {label} {ICON_PREMIUM}" if locked else f"{icon} {label}"
+        callback = f"upgrade_info_{button_key}" if locked else normal_callback
+        return InlineKeyboardButton(text, callback_data=callback)
+
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Users", callback_data="help_users"),
-         InlineKeyboardButton("🔧 Utility", callback_data="help_utility")],
-        [InlineKeyboardButton("🗳 Event Lifecycle", callback_data="help_lifecycle"),
-         InlineKeyboardButton("📢 Distribution", callback_data="help_distribution")],
-        [alias_btn, monitor_btn],
+        [_make_button("users"), _make_button("utility")],
+        [_make_button("lifecycle"), _make_button("distribution")],
+        [_make_button("aliases"), _make_button("monitoring")],
     ])
 
 
@@ -106,11 +131,11 @@ def _build_main_help_text(pro: bool) -> str:
     """
     text = (
         "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-d\\|\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
+        "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
         "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
         "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "/editevent \\[name\\] \\[\\-d\\|\\-date \\.\\.\\.\\] \\- Edit the active event\n"
+        "/editevent \\[name\\] \\[\\-d \\.\\.\\.\\] \\- Edit the active event\n"
     )
     if pro:
         text += "/setsheet \\[spreadsheet\\_id\\_or\\_url\\] \\- \\(PRO\\) Bind this group to its own Google Sheet\n"
@@ -126,7 +151,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
             "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
             "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
-            "/allchannels \\- List every channel the bot is in, 10 at a time\n\n"
+            "/allchannels \\- List every channel the bot is in, 10 at a time\n"
+            "/updatefeaturelevel \\[feature\\_key\\] \\[free\\|pro\\|admin\\] \\[\\-limitfree N\\] \\[\\-limitpro N\\] \\[\\-limitadmin N\\] "
+            "\\- Change a feature's tier and/or per\\-tier usage limits\n\n"
             "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
             "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
             "can't be verified and will be rejected\\."
@@ -159,8 +186,11 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         "help_users": (
             "👥 *User Management*\n\n"
             "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
+            "username only resolves if they're an admin of this chat or have already interacted with the bot\n"
             "/listusers \\- Show all tracked users\n"
             "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
+            "\\-a \\| \\-active \\- Mark as active\n"
+            "\\-p \\| \\-passive \\- Mark as passive\n"
             "/notify \\- Ping users who haven't responded\n"
             "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group"
         ),
@@ -180,11 +210,11 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ),
         "help_distribution": (
             "📢 *Distribution Control*\n\n"
-            "/shareevent \\[target\\_alias/id\\] \\[\\-v \\| \\-h \\| \\-oc\\] \\- Share active event\n\n"
+            "/shareevent \\[target\\_alias/chatid\\] \\[\\-v\\|\\-h\\|\\-oc\\] \\- Share active event\n\n"
             "Modes:\n"
-            "  • \\-v \\(visible\\): Show full event in child chat\n"
-            "  • \\-h \\(hidden\\): Hide event, only show going/notgoing counts\n"
-            "  • \\-oc \\(onlycount\\): Show only total going count\n\n"
+            "  • \\-v \\| \\-visible: Show full event in child chat\n"
+            "  • \\-h \\| \\-hidden: Hide event, only show going/notgoing counts\n"
+            "  • \\-oc \\| \\-onlycount: Show only total going count\n\n"
             "Defaults to \\-oc if no mode is given"
         ),
         "help_monitoring": (
@@ -196,7 +226,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ),
         "help_lifecycle": (
             f"🗳 *Event Lifecycle Buttons*\n\n"
-            f"  • Going / Not Going / ADD / Remove \\- open voting, available to everyone\n"
+            f"  • Going / Not Going \\- vote, available to everyone\n"
+            f"  • ADD / Remove \\- adjust your own guest count, available to everyone\n"
             f"  • {ICON_VERIFICATION} Verify&Close \\- admin only, locks voting and opens roster review\n"
             f"  • {ICON_CANCEL_EVENT} Cancel Event \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
@@ -229,24 +260,38 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def upgrade_info_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Shown when a free-tier hub taps the locked Aliases/Monitoring button on
-    /help - replaces the old dead-end alert ("This section is PRO-only.")
-    with an actual next step: what PRO unlocks, the hub's current tier, a
-    button to message the bot owner directly, and a way back to /help
-    instead of a conversational dead end.
+    Shown when a hub taps a locked /help section button - replaces the old
+    dead-end alert ("This section is PRO-only.") with an actual next step:
+    what unlocking it gets you (pulled live from feature_flags.description,
+    not a hardcoded message - see task 8), the hub's current tier, a
+    button to message the bot owner directly, and a way back to /help.
+
+    callback_data is "upgrade_info_<button_key>" (e.g. "upgrade_info_aliases")
+    - button_key indexes _BUTTON_FEATURE_MAP to find which feature(s) are
+    actually gating that button, so the message is specific to what was
+    tapped, not a one-size-fits-all Aliases/Monitoring blurb.
     """
     query = update.callback_query
     await query.answer()
+
+    button_key = query.data[len("upgrade_info_"):]
+    button_icon, button_label, _ = _BUTTON_LABELS.get(button_key, ("⚡", "This section", None))
+    feature_keys = _BUTTON_FEATURE_MAP.get(button_key, [])
+
+    all_flags = {row[0]: row for row in get_feature_flags()}
+    lines = []
+    for fk in feature_keys:
+        row = all_flags.get(fk)
+        if row and row[6]:  # row[6] = description
+            lines.append(f"• {row[6]}")
+    features_text = "\n".join(lines) if lines else "Unlocks additional capabilities for this section."
 
     chat_id = await _help_target_chat_id(update, context)
     current_tier = "PRO" if is_premium(chat_id) else "FREE"
 
     text = (
-        f"⚡ *Aliases and Monitoring are PRO features*\n\n"
-        f"With PRO, this hub gets:\n"
-        f"• Custom aliases for child groups/channels\n"
-        f"• Group/channel monitoring \\(/addmonitor\\)\n"
-        f"• Your own Google Sheet, auto\\-synced with every event\n\n"
+        f"{button_icon} *{escape_markdown(button_label)} requires a higher tier*\n\n"
+        f"{escape_markdown(features_text)}\n\n"
         f"Currently: {current_tier}"
     )
     keyboard = InlineKeyboardMarkup([

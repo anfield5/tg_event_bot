@@ -633,11 +633,14 @@ async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     set_feature_flag().
 
     Usage: /updatefeaturelevel <feature_key> <free|pro|admin>
-               [-limitfree N] [-limitpro N] [-limitadmin N]
+               [-limit N] [-limitfree N] [-limitpro N] [-limitadmin N]
+      /updatefeaturelevel shareevent pro -limit 10       - PRO, and PRO's own limit set to 10 (shorthand for -limitpro)
       /updatefeaturelevel shareevent free -limitfree 5   - FREE capped at 5, PRO/ADMIN untouched
       /updatefeaturelevel shareevent free -limitpro 0    - clear PRO's limit (unlimited)
       /updatefeaturelevel aliases admin                  - ADMIN-only, no limits touched
 
+    -limit N is shorthand for whichever tier you're setting the feature
+    to (e.g. "... pro -limit 10" is the same as "... pro -limitpro 10").
     Each tier's limit is fully independent - e.g. FREE can be capped at 3
     while PRO stays unlimited, or vice versa. 0 clears that specific
     tier's limit; omitting a flag leaves that tier's limit untouched.
@@ -678,7 +681,11 @@ async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     min_tier = level_map[level_raw]
 
     limit_kwargs = {}
-    for flag_name, kwarg_name in (("-limitfree", "limit_free"), ("-limitpro", "limit_pro"), ("-limitadmin", "limit_admin")):
+    generic_limit_target = {"free": "limit_free", "pro": "limit_pro", "admin": "limit_admin"}[level_raw]
+    for flag_name, kwarg_name in (
+        ("-limit", generic_limit_target),
+        ("-limitfree", "limit_free"), ("-limitpro", "limit_pro"), ("-limitadmin", "limit_admin"),
+    ):
         if flag_name in args:
             idx = args.index(flag_name)
             if idx + 1 >= len(args) or not args[idx + 1].lstrip("-").isdigit():

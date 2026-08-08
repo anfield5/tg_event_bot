@@ -246,7 +246,7 @@ def main():
     # button would always fall through to help_callback_handler's "Unknown
     # section" fallback instead of returning to the main help menu.
     app.add_handler(CallbackQueryHandler(help_back_handler, pattern="^help_back$"))
-    app.add_handler(CallbackQueryHandler(upgrade_info_callback_handler, pattern="^upgrade_info$"))
+    app.add_handler(CallbackQueryHandler(upgrade_info_callback_handler, pattern="^upgrade_info_"))
     app.add_handler(CallbackQueryHandler(help_callback_handler, pattern="^help_"))
     app.add_handler(CallbackQueryHandler(hub_pick_callback_handler, pattern="^(hubpick|switchpick)_"))
     app.add_handler(CallbackQueryHandler(allgroups_page_callback_handler, pattern="^allgroups"))
