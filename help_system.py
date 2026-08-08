@@ -135,10 +135,11 @@ def _build_main_help_text(pro: bool) -> str:
         "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
         "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "/editevent \\[name\\] \\[\\-d \\.\\.\\.\\] \\- Edit the active event\n"
+        "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Edit the active event \\(same \\-d\\|\\-date as /newevent\\)\n"
     )
     if pro:
-        text += "/setsheet \\[spreadsheet\\_id\\_or\\_url\\] \\- \\(PRO\\) Bind this group to its own Google Sheet\n"
+        text += "/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet\n"
+        text += "sheetid\\|sheeturl \\- either the raw spreadsheet ID, or a full Google Sheets URL \\(the ID is extracted automatically\\)\n"
     text += "\n📚 *More Info*"
     return text
 
@@ -152,8 +153,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
             "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
             "/allchannels \\- List every channel the bot is in, 10 at a time\n"
-            "/updatefeaturelevel \\[feature\\_key\\] \\[free\\|pro\\|admin\\] \\[\\-limitfree N\\] \\[\\-limitpro N\\] \\[\\-limitadmin N\\] "
-            "\\- Change a feature's tier and/or per\\-tier usage limits\n\n"
+            "/updatefeaturelevel \\[feature\\_key\\] \\[free\\|pro\\|admin\\] \\[\\-limit N\\] "
+            "\\- Change a feature's tier and/or its usage limit\n"
+            "\\-limit N \\- always applies to whichever tier you're setting \\(e\\.g\\. \\.\\.\\.pro \\-limit 10 sets PRO's own limit\\)\\. "
+            "0 clears it \\(unlimited\\)\\. To set limits on more than one tier, run the command once per tier\\.\n\n"
             "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
             "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
             "can't be verified and will be rejected\\."

@@ -3201,7 +3201,7 @@ class TestUpdateFeatureLevelInversionWarning:
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
-            ctx = make_context(bot=bot, args=["shareevent", "free", "-limitpro", "10"])
+            ctx = make_context(bot=bot, args=["shareevent", "pro", "-limit", "10"])
 
             await subscription.updatefeaturelevel(upd, ctx)
 
@@ -3218,12 +3218,12 @@ class TestUpdateFeatureLevelInversionWarning:
 
             msg1 = make_message(chat=chat)
             upd1 = make_update(chat=chat, user=user, message=msg1)
-            ctx1 = make_context(bot=bot, args=["shareevent", "free", "-limitpro", "5"])
+            ctx1 = make_context(bot=bot, args=["shareevent", "pro", "-limit", "5"])
             await subscription.updatefeaturelevel(upd1, ctx1)
 
             msg2 = make_message(chat=chat)
             upd2 = make_update(chat=chat, user=user, message=msg2)
-            ctx2 = make_context(bot=bot, args=["shareevent", "free", "-limitfree", "10"])
+            ctx2 = make_context(bot=bot, args=["shareevent", "free", "-limit", "10"])
             await subscription.updatefeaturelevel(upd2, ctx2)
 
             reply = msg2.reply_text.call_args.args[0]
@@ -3241,14 +3241,364 @@ class TestUpdateFeatureLevelInversionWarning:
 
             msg1 = make_message(chat=chat)
             upd1 = make_update(chat=chat, user=user, message=msg1)
-            ctx1 = make_context(bot=bot, args=["shareevent", "free", "-limitpro", "5"])
+            ctx1 = make_context(bot=bot, args=["shareevent", "pro", "-limit", "5"])
             await subscription.updatefeaturelevel(upd1, ctx1)
 
             msg2 = make_message(chat=chat)
             upd2 = make_update(chat=chat, user=user, message=msg2)
-            ctx2 = make_context(bot=bot, args=["shareevent", "free", "-limitfree", "10"])
+            ctx2 = make_context(bot=bot, args=["shareevent", "free", "-limit", "10"])
             await subscription.updatefeaturelevel(upd2, ctx2)
 
             conn = sqlite3.connect(db_path)
             row = conn.execute("SELECT limit_free FROM feature_flags WHERE feature_key='shareevent'").fetchone()
             assert row == (10,), "the inverted value must still have been written"
+
+
+class TestUseridChatid:
+    """Previously had zero test coverage despite being live, user-facing
+    commands - both trivially cheap to cover."""
+
+    async def test_userid_returns_the_callers_own_id(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=987654)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context()
+
+        await handlers.userid(upd, ctx)
+
+        assert "987654" in msg.reply_text.call_args.args[0]
+
+    async def test_chatid_returns_the_current_chats_id(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context()
+
+        await handlers.chatid(upd, ctx)
+
+        assert "-100123" in msg.reply_text.call_args.args[0]
+
+
+class TestSetsheet:
+    """Previously had zero test coverage despite real logic: PRO gating,
+    admin gating, and the edit-access probe added recently."""
+
+    class _FakeCell:
+        def __init__(self, value):
+            self.value = value
+
+    class _FakeWorksheet:
+        async def acell(self, ref):
+            return TestSetsheet._FakeCell("v")
+        async def update_acell(self, ref, val):
+            pass
+
+    class _FakeSpreadsheet:
+        def __init__(self, title="MySheet"):
+            self.title = title
+        @property
+        async def sheet1(self):
+            return TestSetsheet._FakeWorksheet()
+
+    async def test_free_hub_is_rejected(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["abc"])
+
+        await subscription.setsheet(upd, ctx)
+
+        assert "PRO" in msg.reply_text.call_args.args[0]
+
+    async def test_no_args_shows_syntax(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await subscription.setsheet(upd, ctx)
+
+        assert "Syntax" in msg.reply_text.call_args.args[0]
+
+    async def test_pro_hub_with_edit_access_binds_successfully(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["abc123sheetid"])
+
+        with patch("subscription.open_spreadsheet", new_callable=AsyncMock, return_value=self._FakeSpreadsheet()), \
+             patch("subscription._push_control_sheet_main", new_callable=AsyncMock):
+            await subscription.setsheet(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "MySheet" in reply
+        assert "warning" not in reply.lower() and "Editor" not in reply
+
+    async def test_non_admin_is_rejected(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["abc"])
+
+        await subscription.setsheet(upd, ctx)
+
+        assert "admin" in msg.reply_text.call_args.args[0].lower()
+
+
+class TestHandleExtraPlayerInput:
+    """Previously had zero test coverage - the actual text-input step of
+    the 'Add Extra Member' flow, with real username-resolution logic."""
+
+    async def test_known_user_resolves_to_real_user_id(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100123','1','Test','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob','555','active')")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        admin = make_user(user_id=1, username="admin")
+        msg = make_message(chat=chat)
+        msg.text = "bob"
+        msg.delete = AsyncMock()
+        upd = make_update(chat=chat, user=admin, message=msg)
+        ctx = make_context(bot=bot)
+        ctx.user_data["awaiting_extra_player_for"] = "ev1"
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.handle_extra_player_input(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        going = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert "bob (555)" in going
+        assert "awaiting_extra_player_for" not in ctx.user_data
+
+    async def test_unknown_username_falls_back_to_no_id_marker(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100123','1','Test','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        admin = make_user(user_id=1, username="admin")
+        msg = make_message(chat=chat)
+        msg.text = "unknownguy"
+        msg.delete = AsyncMock()
+        upd = make_update(chat=chat, user=admin, message=msg)
+        ctx = make_context(bot=bot)
+        ctx.user_data["awaiting_extra_player_for"] = "ev1"
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.handle_extra_player_input(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        going = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert "unknownguy (no_id_in_main_group)" in going
+
+    async def test_non_admin_is_silently_ignored(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100123','1','Test','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1, username="rando")
+        msg = make_message(chat=chat)
+        msg.text = "somebody"
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot)
+        ctx.user_data["awaiting_extra_player_for"] = "ev1"
+
+        await handlers.handle_extra_player_input(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        going = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert going == "[]"
+
+
+class TestRequirePremium:
+    """Previously had zero direct test coverage (only exercised indirectly
+    through the commands that call it)."""
+
+    async def test_premium_chat_passes_silently(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+
+        result = await subscription.require_premium(upd, "Test Feature")
+
+        assert result is True
+        assert not msg.reply_text.called
+
+    async def test_free_chat_is_blocked_with_feature_label(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+
+        result = await subscription.require_premium(upd, "Test Feature")
+
+        assert result is False
+        assert "Test Feature" in msg.reply_text.call_args.args[0]
+
+
+class TestTrackEveryoneMessage:
+    """Previously had zero test coverage."""
+
+    async def test_mentions_only_active_tracked_users(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-100123','alice','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-100123','bob','passive')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        msg.text = "hey @everyone check this out"
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context()
+
+        await handlers.track_everyone_message(upd, ctx)
+
+        sent = msg.reply_text.call_args.args[0]
+        assert "@alice" in sent
+        assert "@bob" not in sent
+
+    async def test_no_mention_trigger_does_nothing(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-100123','alice','active')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        msg.text = "just a normal message"
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context()
+
+        await handlers.track_everyone_message(upd, ctx)
+
+        assert not msg.reply_text.called
+
+
+class TestHelpCallbackAndBackHandler:
+    """Previously had zero direct test coverage (only ever verified via
+    one-off manual scripts during development, never added to the suite)."""
+
+    async def test_help_callback_handler_shows_the_requested_section(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        query = MagicMock()
+        query.data = "help_utility"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_chat = chat
+        upd.effective_user = make_user(user_id=1)
+        ctx = make_context()
+
+        await handlers.help_callback_handler(upd, ctx)
+
+        assert "Utility" in query.edit_message_text.call_args.args[0]
+
+    async def test_help_back_handler_returns_to_main_commands(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        query = MagicMock()
+        query.data = "help_back"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_chat = chat
+        upd.effective_user = make_user(user_id=1)
+        ctx = make_context()
+
+        await handlers.help_back_handler(upd, ctx)
+
+        assert "Main Commands" in query.edit_message_text.call_args.args[0]
+
+
+class TestAllchannelsPageCallback:
+    """Previously had zero test coverage."""
+
+    async def test_shows_a_page_of_channels(self, db_path):
+        conn = sqlite3.connect(db_path)
+        for i in range(15):
+            conn.execute(
+                "INSERT INTO all_channels (chat_id, chat_name, visibility) VALUES (?,?,'private')",
+                (str(-i - 1), f"Chan{i}"),
+            )
+        conn.commit()
+        conn.close()
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            query = MagicMock()
+            query.data = "allchannels_1"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd = MagicMock()
+            upd.callback_query = query
+            upd.effective_user = make_user(user_id=555)
+            ctx = make_context(bot=make_bot())
+
+            await subscription.allchannels_page_callback_handler(upd, ctx)
+
+            assert query.edit_message_text.called
+
+    async def test_non_owner_is_silently_ignored(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            query = MagicMock()
+            query.data = "allchannels_0"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd = MagicMock()
+            upd.callback_query = query
+            upd.effective_user = make_user(user_id=999)
+            ctx = make_context(bot=make_bot())
+
+            await subscription.allchannels_page_callback_handler(upd, ctx)
+
+            assert not query.edit_message_text.called

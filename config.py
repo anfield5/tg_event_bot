@@ -1,13 +1,11 @@
 import logging
 import os
-import codecs
-import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.22.0"
+BOT_VERSION = "3.22.1"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -45,8 +43,12 @@ OWNER_USER_IDS = {
 # (GOOGLE_CREDENTIALS_JSON) as every other sheet the bot writes to.
 CONTROL_SHEET_ID = os.getenv("CONTROL_SHEET_ID") or None
 
-# Free-tier limit: how many DISTINCT events a hub may /shareevent to the
-# same target group/channel before being told to upgrade.
+# The service account credentials JSON (as a single-line string, not a file
+# path) used to authenticate with the Google Sheets/Drive APIs. Required for
+# any Sheets feature to work at all (Control Sheet, per-hub /setsheet export).
+# Share every Sheet the bot should write to with this service account's
+# client_email, with Editor access (see /setsub's reminder and /setsheet's
+# access check).
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 # ---------------------------------------------------------------------------

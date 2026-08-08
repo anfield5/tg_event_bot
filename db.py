@@ -1,5 +1,4 @@
 import sqlite3
-import json
 import asyncio
 import functools
 from datetime import datetime

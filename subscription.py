@@ -297,7 +297,7 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     args = context.args
     if not args:
         await update.message.reply_text(
-            "❌ *Syntax:* `/setsheet <spreadsheet_id_or_url>`", parse_mode="MarkdownV2"
+            "❌ *Syntax:* `/setsheet <sheetid|sheeturl>`", parse_mode="MarkdownV2"
         )
         return
 
@@ -632,18 +632,16 @@ async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     of its per-tier usage limits - the live command powering
     set_feature_flag().
 
-    Usage: /updatefeaturelevel <feature_key> <free|pro|admin>
-               [-limit N] [-limitfree N] [-limitpro N] [-limitadmin N]
-      /updatefeaturelevel shareevent pro -limit 10       - PRO, and PRO's own limit set to 10 (shorthand for -limitpro)
-      /updatefeaturelevel shareevent free -limitfree 5   - FREE capped at 5, PRO/ADMIN untouched
-      /updatefeaturelevel shareevent free -limitpro 0    - clear PRO's limit (unlimited)
-      /updatefeaturelevel aliases admin                  - ADMIN-only, no limits touched
+    Usage: /updatefeaturelevel <feature_key> <free|pro|admin> [-limit N]
+      /updatefeaturelevel shareevent pro -limit 10   - PRO, capped at 10
+      /updatefeaturelevel shareevent free -limit 0   - FREE, limit cleared (unlimited)
+      /updatefeaturelevel aliases admin              - ADMIN-only, limit left untouched
 
-    -limit N is shorthand for whichever tier you're setting the feature
-    to (e.g. "... pro -limit 10" is the same as "... pro -limitpro 10").
-    Each tier's limit is fully independent - e.g. FREE can be capped at 3
-    while PRO stays unlimited, or vice versa. 0 clears that specific
-    tier's limit; omitting a flag leaves that tier's limit untouched.
+    -limit always applies to whichever tier you're setting in THIS call
+    (the second argument) - e.g. "... pro -limit 10" sets PRO's own limit.
+    Each tier's limit is stored independently, so to set limits on more
+    than one tier, run the command once per tier. 0 clears the limit for
+    that tier (unlimited); omitting -limit leaves it untouched.
 
     Same OWNER_USER_IDS gating as /setsub, not chat admin status.
     """
@@ -682,20 +680,16 @@ async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     limit_kwargs = {}
     generic_limit_target = {"free": "limit_free", "pro": "limit_pro", "admin": "limit_admin"}[level_raw]
-    for flag_name, kwarg_name in (
-        ("-limit", generic_limit_target),
-        ("-limitfree", "limit_free"), ("-limitpro", "limit_pro"), ("-limitadmin", "limit_admin"),
-    ):
-        if flag_name in args:
-            idx = args.index(flag_name)
-            if idx + 1 >= len(args) or not args[idx + 1].lstrip("-").isdigit():
-                await update.message.reply_text(
-                    f"❌ `{escape_markdown(flag_name)}` must be followed by a number \\(0 clears that tier's limit\\)\\.",
-                    parse_mode="MarkdownV2",
-                )
-                return
-            n = int(args[idx + 1])
-            limit_kwargs[kwarg_name] = None if n == 0 else n
+    if "-limit" in args:
+        idx = args.index("-limit")
+        if idx + 1 >= len(args) or not args[idx + 1].lstrip("-").isdigit():
+            await update.message.reply_text(
+                "❌ `\\-limit` must be followed by a number \\(0 clears the limit for this tier\\)\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+        n = int(args[idx + 1])
+        limit_kwargs[generic_limit_target] = None if n == 0 else n
 
     existing = get_feature_flags()
     if feature_key not in {row[0] for row in existing}:

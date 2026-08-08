@@ -18,7 +18,6 @@ from handlers import (
     shareevent,
     setalias, removealias, listalias,
     addmonitor, removemonitor, listmonitors,
-    track_everyone_message,
     button_handler,
     global_text_router,
 )
