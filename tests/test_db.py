@@ -524,11 +524,11 @@ class TestFeatureFlags:
     overwritten by a second init_db() call.
     """
 
-    def test_seeds_fourteen_flags_on_fresh_db(self, tmp_path):
+    def test_seeds_thirteen_flags_on_fresh_db(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         rows = get_feature_flags(db_path=path)
-        assert len(rows) == 14
+        assert len(rows) == 13
 
     def test_free_pro_admin_tiers_all_present(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -548,11 +548,17 @@ class TestFeatureFlags:
         assert by_key["monitoring"] == "PRO"
         assert by_key["custom_sheet"] == "PRO"
         assert by_key["setsub"] == "ADMIN"
-        assert by_key["allgroups"] == "ADMIN"
-        assert by_key["allchannels"] == "ADMIN"
+        assert by_key["owner_overview"] == "ADMIN"
         assert by_key["refreshusersall"] == "PRO"
         assert by_key["verification"] == "FREE"
         assert by_key["add_extra_member"] == "FREE"
+        assert by_key["dm_access"] == "PRO"
+
+    def test_shareevent_has_a_default_limit(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        by_key = {r[0]: (r[2], r[3]) for r in get_feature_flags(db_path=path)}
+        assert by_key["shareevent"] == ("FREE", 3)
 
     def test_reseeding_does_not_overwrite_a_manually_changed_flag(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -609,10 +615,10 @@ class TestFeatureFlags:
     def test_update_feature_flag_changes_only_the_target_row(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        update_feature_flag("shareevent_basic", "PRO", db_path=path)
+        update_feature_flag("shareevent", "PRO", db_path=path)
 
         by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
-        assert by_key["shareevent_basic"] == "PRO"
+        assert by_key["shareevent"] == "PRO"
         assert by_key["newevent"] == "FREE"  # untouched
 
 

@@ -197,12 +197,34 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
     shown to the user, or a group-picker was shown and we're now waiting on
     their choice - which will re-invoke the command with override_chat_id
     set, skipping straight past this whole DM-resolution dance).
-    """
-    if override_chat_id is not None:
-        return str(override_chat_id)
 
+    dm_access gate: if this call originated from a DM (not a group), the
+    resolved hub must have the "dm_access" feature (see feature_flags) -
+    FREE hubs must run commands inside the actual group chat instead. This
+    does NOT apply to running commands directly in the group itself, only
+    to going through a private DM with the bot.
+    """
     chat = update.effective_chat
-    if chat.type != "private":
+    is_dm = chat.type == "private"
+
+    async def _gate(resolved_chat_id: str):
+        if not is_dm:
+            return resolved_chat_id
+        from subscription import has_feature  # lazy: subscription.py imports FROM this module at load time
+        if has_feature(resolved_chat_id, "dm_access"):
+            return resolved_chat_id
+        await update.message.reply_text(
+            "⚡ Running commands via DM is a PRO feature\\. "
+            "Please use /" + command_name + " directly inside the group instead, "
+            "or ask the bot owner about upgrading\\.",
+            parse_mode="MarkdownV2",
+        )
+        return None
+
+    if override_chat_id is not None:
+        return await _gate(str(override_chat_id))
+
+    if not is_dm:
         return str(chat.id)
 
     # Sticky selection: once a group has been picked (or auto-detected as
@@ -211,7 +233,7 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
     # /switchgroup is used.
     selected = context.user_data.get("selected_hub_chat_id")
     if selected is not None:
-        return str(selected)
+        return await _gate(str(selected))
 
     user_id = update.effective_user.id
     admin_of = await _get_known_candidate_chats(context, user_id)
@@ -226,7 +248,7 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if len(admin_of) == 1:
         context.user_data["selected_hub_chat_id"] = admin_of[0][0]
-        return admin_of[0][0]
+        return await _gate(admin_of[0][0])
 
     context.user_data["pending_hub_command"] = {
         "command": command_name,
