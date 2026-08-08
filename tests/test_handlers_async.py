@@ -1124,8 +1124,8 @@ class TestHelpTierAwareKeyboard:
         monitor_btn = next(b for b in flat if "Monitoring" in b.text)
         assert config.ICON_PREMIUM in alias_btn.text
         assert config.ICON_PREMIUM in monitor_btn.text
-        assert alias_btn.callback_data == "upgrade_info"
-        assert monitor_btn.callback_data == "upgrade_info"
+        assert alias_btn.callback_data == "upgrade_info_aliases"
+        assert monitor_btn.callback_data == "upgrade_info_monitoring"
 
     async def test_premium_hub_shows_active_alias_and_monitoring_buttons(self, db_path):
         insert_premium(db_path, chat_id="-100123")
@@ -1747,15 +1747,15 @@ class TestStatusCommand:
 
 
 class TestUpgradeInfoCallback:
-    """Tapping the locked Aliases/Monitoring button opens an upgrade-info
-    message instead of the old dead-end alert."""
+    """Tapping a locked /help section button opens an upgrade-info message
+    (built from feature_flags.description) instead of the old dead-end alert."""
 
-    async def test_shows_feature_list_status_and_contact_button(self, db_path):
+    async def test_shows_feature_description_status_and_contact_button(self, db_path):
         bot = make_bot()
         chat = make_chat(chat_id=-100123)
 
         query = MagicMock()
-        query.data = "upgrade_info"
+        query.data = "upgrade_info_aliases"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
         upd = MagicMock()
@@ -1768,8 +1768,9 @@ class TestUpgradeInfoCallback:
 
         query.edit_message_text.assert_awaited_once()
         text = query.edit_message_text.call_args.args[0]
-        assert "PRO" in text
-        assert "FREE" in text
+        assert "Aliases" in text
+        assert "Currently: FREE" in text
+        assert "child groups/channels" in text  # from feature_flags.description
 
         keyboard = query.edit_message_text.call_args.kwargs["reply_markup"]
         buttons = [b for row in keyboard.inline_keyboard for b in row]
@@ -2803,7 +2804,7 @@ class TestHelpPremiumIconsInDM:
 
         buttons = [b for row in msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
         alias_btn = next(b for b in buttons if "Aliases" in b.text)
-        assert alias_btn.callback_data == "upgrade_info"
+        assert alias_btn.callback_data == "upgrade_info_aliases"
 
 
 class TestAllgroupsAllchannels:
