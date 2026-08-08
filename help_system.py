@@ -97,6 +97,27 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _build_main_help_text(pro: bool) -> str:
+    """
+    The one and only source of the main /help text - both help_command
+    (direct /help) and help_back_handler (the "Back" button from a detail
+    section) call this, so the two can never drift apart again the way
+    they already have twice (missing -d/-date, then missing -gi/-ni).
+    """
+    text = (
+        "📖 *Main Commands*\n\n"
+        "/newevent \\[name\\] \\[\\-d\\|\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
+        "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
+        "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
+        "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
+        "/editevent \\[name\\] \\[\\-d\\|\\-date \\.\\.\\.\\] \\- Edit the active event\n"
+    )
+    if pro:
+        text += "/setsheet \\[spreadsheet\\_id\\_or\\_url\\] \\- \\(PRO\\) Bind this group to its own Google Sheet\n"
+    text += "\n📚 *More Info*"
+    return text
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_owner_request = bool(context.args) and context.args[0].strip().lower() in ("-a", "--admin", "--owner")
     if is_owner_request and update.effective_user.id in OWNER_USER_IDS:
@@ -115,17 +136,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id_for_help = await _help_target_chat_id(update, context)
     pro = is_premium(chat_id_for_help)
-
-    main_help = (
-        "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-d\\|\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
-        "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
-        "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "/editevent \\[name\\] \\[\\-d\\|\\-date \\.\\.\\.\\] \\- Edit the active event\n"
-    )
-    if pro:
-        main_help += "/setsheet \\[spreadsheet\\_id\\_or\\_url\\] \\- \\(PRO\\) Bind this group to its own Google Sheet\n"
-    main_help += "\n📚 *More Info*"
+    main_help = _build_main_help_text(pro)
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
@@ -210,15 +221,7 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id_for_help = await _help_target_chat_id(update, context)
     pro = is_premium(chat_id_for_help)
-
-    main_help = (
-        "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-d\\|\\-date dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Create a new event\n"
-        "/editevent \\[name\\] \\[\\-d\\|\\-date \\.\\.\\.\\] \\- Edit the active event\n"
-    )
-    if pro:
-        main_help += "/setsheet \\[spreadsheet\\_id\\_or\\_url\\] \\- \\(PRO\\) Bind this group to its own Google Sheet\n"
-    main_help += "\n📚 *More Info*"
+    main_help = _build_main_help_text(pro)
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
