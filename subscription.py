@@ -15,7 +15,7 @@ from telegram.ext import ContextTypes
 
 from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
 from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import get_connection, get_feature_flags, update_feature_flag
+from db import get_connection, get_feature_flags, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels,
@@ -592,36 +592,55 @@ async def _push_control_sheet_botconfig() -> bool:
     return await sync_control_sheet_botconfig(rows)
 
 
-_LIMIT_NO_CHANGE = object()
-
-
-async def set_feature_flag(feature_key: str, min_tier: str, limit_count=_LIMIT_NO_CHANGE) -> bool:
+async def set_feature_flag(feature_key: str, min_tier: str,
+                            limit_free=_LIMIT_NO_CHANGE, limit_pro=_LIMIT_NO_CHANGE, limit_admin=_LIMIT_NO_CHANGE) -> bool:
     """
-    THE way to change what tier a feature requires (and optionally its
-    usage limit) - writes to feature_flags (db.update_feature_flag) and
-    then immediately re-syncs the Control Sheet's BOTCONFIG tab, so it can
-    never drift out of date with the table. Powers /updatefeaturelevel.
+    THE way to change what tier a feature requires (and optionally any of
+    its per-tier limits) - writes to feature_flags (db.update_feature_flag)
+    and then immediately re-syncs the Control Sheet's BOTCONFIG tab, so it
+    can never drift out of date with the table. Powers /updatefeaturelevel.
 
-    min_tier must be one of "FREE", "PRO", "ADMIN". limit_count: omit to
-    leave the current limit untouched, pass None to explicitly clear it
-    (unlimited), or an int to set/change it.
+    min_tier must be one of "FREE", "PRO", "ADMIN". Each limit_* is
+    independent: omit to leave that tier's current limit untouched, pass
+    None to clear it (unlimited), or an int to set/change it.
     """
-    if limit_count is _LIMIT_NO_CHANGE:
-        update_feature_flag(feature_key, min_tier)
-    else:
-        update_feature_flag(feature_key, min_tier, limit_count=limit_count)
+    update_feature_flag(feature_key, min_tier, limit_free=limit_free, limit_pro=limit_pro, limit_admin=limit_admin)
     return await _push_control_sheet_botconfig()
+
+
+def _tier_limit_is_sane(lower_tier_limit, higher_tier_limit) -> bool:
+    """
+    True if the lower tier's limit is at least as restrictive as the
+    higher tier's (the normal, expected relationship - a higher tier
+    should never be MORE restricted than a lower one). None means
+    unlimited (the least restrictive possible value).
+
+    Soft-check only - never blocks the command, just flags a heads-up in
+    the reply. The owner might genuinely want an unusual setup on
+    purpose (e.g. a temporary promo), so this never overrides that.
+    """
+    if lower_tier_limit is None and higher_tier_limit is not None:
+        return False  # lower tier unlimited, higher tier capped - inverted
+    if lower_tier_limit is not None and higher_tier_limit is not None:
+        return lower_tier_limit <= higher_tier_limit
+    return True  # both unlimited, or lower capped + higher unlimited - both fine
 
 
 async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Owner-only. Changes which tier a feature requires, and optionally its
-    usage limit - the live command powering set_feature_flag().
+    Owner-only. Changes which tier a feature requires, and optionally any
+    of its per-tier usage limits - the live command powering
+    set_feature_flag().
 
-    Usage: /updatefeaturelevel <feature_key> <free|pro|admin> [-limit N]
-      /updatefeaturelevel shareevent pro -limit 10   - PRO-only, capped at 10
-      /updatefeaturelevel shareevent free -limit 0   - FREE again, no limit (0 clears it)
-      /updatefeaturelevel aliases admin              - ADMIN-only, limit left untouched
+    Usage: /updatefeaturelevel <feature_key> <free|pro|admin>
+               [-limitfree N] [-limitpro N] [-limitadmin N]
+      /updatefeaturelevel shareevent free -limitfree 5   - FREE capped at 5, PRO/ADMIN untouched
+      /updatefeaturelevel shareevent free -limitpro 0    - clear PRO's limit (unlimited)
+      /updatefeaturelevel aliases admin                  - ADMIN-only, no limits touched
+
+    Each tier's limit is fully independent - e.g. FREE can be capped at 3
+    while PRO stays unlimited, or vice versa. 0 clears that specific
+    tier's limit; omitting a flag leaves that tier's limit untouched.
 
     Same OWNER_USER_IDS gating as /setsub, not chat admin status.
     """
@@ -641,8 +660,9 @@ async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
-            "❌ *Syntax:* `/updatefeaturelevel <feature_key> <free|pro|admin> [\\-limit N]`\n"
-            "`\\-limit 0` clears an existing limit \\(unlimited\\)\\.",
+            "❌ *Syntax:* `/updatefeaturelevel <feature_key> <free|pro|admin> "
+            "[\\-limitfree N] [\\-limitpro N] [\\-limitadmin N]`\n"
+            "Each tier's limit is independent\\. `0` clears that tier's limit \\(unlimited\\)\\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -657,16 +677,18 @@ async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     min_tier = level_map[level_raw]
 
-    limit_count = _LIMIT_NO_CHANGE
-    if "-limit" in args:
-        idx = args.index("-limit")
-        if idx + 1 >= len(args) or not args[idx + 1].lstrip("-").isdigit():
-            await update.message.reply_text(
-                "❌ `\\-limit` must be followed by a number \\(0 clears the limit\\)\\.", parse_mode="MarkdownV2"
-            )
-            return
-        n = int(args[idx + 1])
-        limit_count = None if n == 0 else n
+    limit_kwargs = {}
+    for flag_name, kwarg_name in (("-limitfree", "limit_free"), ("-limitpro", "limit_pro"), ("-limitadmin", "limit_admin")):
+        if flag_name in args:
+            idx = args.index(flag_name)
+            if idx + 1 >= len(args) or not args[idx + 1].lstrip("-").isdigit():
+                await update.message.reply_text(
+                    f"❌ `{escape_markdown(flag_name)}` must be followed by a number \\(0 clears that tier's limit\\)\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+            n = int(args[idx + 1])
+            limit_kwargs[kwarg_name] = None if n == 0 else n
 
     existing = get_feature_flags()
     if feature_key not in {row[0] for row in existing}:
@@ -677,14 +699,34 @@ async def updatefeaturelevel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    ok = await set_feature_flag(feature_key, min_tier, limit_count=limit_count)
+    current_row = next(r for r in existing if r[0] == feature_key)
+    final_limit_free  = limit_kwargs.get("limit_free", current_row[3])
+    final_limit_pro   = limit_kwargs.get("limit_pro", current_row[4])
+    final_limit_admin = limit_kwargs.get("limit_admin", current_row[5])
 
-    limit_note = ""
-    if limit_count is not _LIMIT_NO_CHANGE:
-        limit_note = f", limit={'none' if limit_count is None else limit_count}"
+    inversions = []
+    if not _tier_limit_is_sane(final_limit_free, final_limit_pro):
+        inversions.append("FREE ends up less restricted than PRO")
+    if not _tier_limit_is_sane(final_limit_pro, final_limit_admin):
+        inversions.append("PRO ends up less restricted than ADMIN")
+
+    ok = await set_feature_flag(feature_key, min_tier, **limit_kwargs)
+
+    limit_notes = []
+    for kwarg_name, label in (("limit_free", "free"), ("limit_pro", "pro"), ("limit_admin", "admin")):
+        if kwarg_name in limit_kwargs:
+            val = limit_kwargs[kwarg_name]
+            limit_notes.append(f"{label}={'none' if val is None else val}")
+    limit_note = f", limits: {', '.join(limit_notes)}" if limit_notes else ""
     status_icon = "✅" if ok else f"{ICON_WARNING}"
     sync_note = "" if ok else " \\(BOTCONFIG sync failed \\- check CONTROL\\_SHEET\\_ID/permissions\\)"
+    inversion_note = ""
+    if inversions:
+        inversion_note = (
+            f"\n\n{ICON_WARNING} Heads up: {escape_markdown(', '.join(inversions))}\\. "
+            f"A higher tier is usually meant to be the same or better, not worse \\- double\\-check this is intentional\\."
+        )
     await update.message.reply_text(
-        f"{status_icon} `{escape_markdown(feature_key)}` set to *{min_tier}*{escape_markdown(limit_note)}{sync_note}\\.",
+        f"{status_icon} `{escape_markdown(feature_key)}` set to *{min_tier}*{escape_markdown(limit_note)}{sync_note}\\.{inversion_note}",
         parse_mode="MarkdownV2",
     )

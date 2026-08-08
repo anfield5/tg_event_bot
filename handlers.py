@@ -24,7 +24,7 @@ from config import (
     ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import track_user, get_connection, get_feature_limit
+from db import track_user, get_connection, get_feature_limit_for_chat
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet,
@@ -984,7 +984,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             )
             return
 
-        share_limit = get_feature_limit("shareevent")
+        share_limit = get_feature_limit_for_chat(main_hub_chat_id, "shareevent")
         if share_limit is not None:
             cursor.execute(
                 """

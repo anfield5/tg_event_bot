@@ -355,11 +355,13 @@ async def sync_control_sheet_botconfig(feature_rows: list):
     truth for what's available at each tier, not just reference data.
 
     feature_rows: list of (feature_key, feature_label, min_tier,
-    limit_count, description) tuples. For each row, FREE/PRO/ADMIN columns
-    are computed from the tier hierarchy (ADMIN >= PRO >= FREE): a feature
-    with min_tier='PRO' shows "yes" under PRO and ADMIN, "no" under FREE.
-    A "yes" that also has a limit_count set shows as "yes(limit N)" instead
-    of a plain "yes".
+    limit_free, limit_pro, limit_admin, description) tuples. For each row,
+    FREE/PRO/ADMIN columns are computed from the tier hierarchy (ADMIN >=
+    PRO >= FREE): a feature with min_tier='PRO' shows "yes" under PRO and
+    ADMIN, "no" under FREE. Each tier that has access AND has its own
+    limit_* set shows "yes(limit N)" instead of a plain "yes" - limits are
+    independent per tier, e.g. FREE could show "yes(limit 3)" while PRO
+    shows a plain "yes" for the very same feature.
 
     Returns True on success, False on failure (logged either way).
     """
@@ -371,13 +373,15 @@ async def sync_control_sheet_botconfig(feature_rows: list):
         ws = await ss.worksheet("BOTCONFIG")
         header = ["FEATURE_KEY", "FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
         body = []
-        for feature_key, feature_label, min_tier, limit_count, description in feature_rows:
+        for feature_key, feature_label, min_tier, limit_free, limit_pro, limit_admin, description in feature_rows:
             required = _TIER_ORDER.get(min_tier, 0)
+            tier_limits = {"FREE": limit_free, "PRO": limit_pro, "ADMIN": limit_admin}
 
             def _cell(tier_name):
                 if _TIER_ORDER[tier_name] < required:
                     return "no"
-                return f"yes(limit {limit_count})" if limit_count is not None else "yes"
+                limit = tier_limits[tier_name]
+                return f"yes(limit {limit})" if limit is not None else "yes"
 
             body.append([
                 feature_key,
