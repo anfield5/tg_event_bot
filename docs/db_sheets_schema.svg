@@ -1,0 +1,269 @@
+<svg width="1330" height="1356" viewBox="0 0 1330 1356" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>SQLite database and Google Sheets schema in even grid columns, jointly optimized to minimize crossing lines</title>
+<desc>Three separate zones, each a clean aligned grid. Table positions were chosen by a joint hill-climbing search across all three zones at once (swaps kept within each zone) directly minimizing the number of line crossings plus total line length.</desc>
+<rect x="0" y="0" width="1330" height="1356" fill="#ffffff"/>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+<style> text { font-family: "Helvetica Neue", Arial, sans-serif; } </style>
+<rect x="34" y="34" width="736" height="1020" rx="18" fill="none" stroke="#5F5E5A" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="54" y="70" font-size="19" font-weight="600" fill="#5F5E5A">SQLite database — single source of truth</text>
+<rect x="812" y="50" width="500" height="730" rx="18" fill="none" stroke="#0F6E56" stroke-width="2"/>
+<rect x="804" y="42" width="500" height="730" rx="18" fill="none" stroke="#0F6E56" stroke-width="2"/>
+<rect x="796" y="34" width="500" height="730" rx="18" fill="none" stroke="#0F6E56" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="816" y="70" font-size="19" font-weight="600" fill="#0F6E56">Per-hub Sheet — 1 instance PER HUB</text>
+<rect x="796" y="810" width="500" height="512" rx="18" fill="none" stroke="#185FA5" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="816" y="846" font-size="19" font-weight="600" fill="#185FA5">Control Sheet — 1 instance, shared</text>
+<path d="M497.0,588.0 Q516.8,576.8 528.0,557.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M292.0,683.0 Q284.0,680.8 276.0,683.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M512.0,683.0 Q520.0,685.2 528.0,683.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M528.0,557.0 Q362.6,685.6 234.0,851.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M638.0,334.0 Q644.4,311.0 638.0,288.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M1164.0,297.0 Q1156.3,324.5 1164.0,352.0" fill="none" stroke="#1D9E75" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M1054.0,202.0 Q1046.0,199.8 1038.0,202.0" fill="none" stroke="#1D9E75" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M928.0,524.0 Q920.3,551.5 928.0,579.0" fill="none" stroke="#1D9E75" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M499.4,778.0 Q642.2,953.6 821.4,1092.0" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M436.3,261.0 Q640.5,604.7 887.5,919.0" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M512.0,523.7 Q768.1,733.8 1054.0,901.3" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M748.0,395.8 Q912.0,348.1 1054.0,253.2" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M748.0,441.4 Q902.3,459.5 1054.0,425.6" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M748.0,207.6 Q783.3,216.3 818.0,205.4" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M722.9,606.0 Q782.5,576.2 818.0,519.8" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<path d="M748.0,665.9 Q784.5,670.3 818.0,655.1" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
+<rect x="292.0" y="588.0" width="220" height="190" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="292.0" y="588.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="292.0" y="612.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="302.0" y="604.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_groups</text>
+<text x="302.0" y="634.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<rect x="293.0" y="643.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="652.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_name</text>
+<text x="302.0" y="670.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">type</text>
+<rect x="293.0" y="679.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="688.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">sheet_id UK</text>
+<text x="302.0" y="706.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">sheet_name</text>
+<rect x="293.0" y="715.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="724.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">subs_date_start</text>
+<text x="302.0" y="742.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">subs_date_end</text>
+<rect x="293.0" y="751.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="760.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">visibility</text>
+<rect x="528.0" y="334.0" width="220" height="226" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="528.0" y="334.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="528.0" y="358.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="538.0" y="350.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">events</text>
+<text x="538.0" y="380.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">event_id PK</text>
+<rect x="529.0" y="389.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="398.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="538.0" y="416.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">message_id</text>
+<rect x="529.0" y="425.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="434.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">name</text>
+<text x="538.0" y="452.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_status</text>
+<rect x="529.0" y="461.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="470.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">going_data</text>
+<text x="538.0" y="488.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_data</text>
+<rect x="529.0" y="497.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="506.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">counters_data</text>
+<text x="538.0" y="524.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">kicked_data</text>
+<rect x="529.0" y="533.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="542.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_snapshot</text>
+<rect x="56.0" y="851.0" width="220" height="136" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="56.0" y="851.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="56.0" y="875.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="66.0" y="867.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">event_shares</text>
+<text x="66.0" y="897.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">share_id PK</text>
+<rect x="57.0" y="906.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="915.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_id</text>
+<text x="66.0" y="933.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<rect x="57.0" y="942.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="951.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">share_mode</text>
+<text x="66.0" y="969.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_type</text>
+<rect x="528.0" y="134.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="528.0" y="134.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="528.0" y="158.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="538.0" y="150.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">event_users</text>
+<text x="538.0" y="180.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">event_id PK</text>
+<rect x="529.0" y="189.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="198.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<text x="538.0" y="216.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">user_id PK</text>
+<rect x="529.0" y="225.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="234.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">username</text>
+<text x="538.0" y="252.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">status</text>
+<rect x="529.0" y="261.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="270.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">guests</text>
+<rect x="56.0" y="606.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="56.0" y="606.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="56.0" y="630.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="66.0" y="622.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">sub_chats</text>
+<text x="66.0" y="652.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
+<rect x="57.0" y="661.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="670.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="66.0" y="688.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">owner_chat_id</text>
+<rect x="57.0" y="697.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="706.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">alias</text>
+<text x="66.0" y="724.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">is_monitored</text>
+<rect x="57.0" y="733.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="742.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_type</text>
+<rect x="528.0" y="606.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="528.0" y="606.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="528.0" y="630.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="538.0" y="622.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">main_group_users</text>
+<text x="538.0" y="652.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<rect x="529.0" y="661.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="670.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">username PK</text>
+<text x="538.0" y="688.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">user_id</text>
+<rect x="529.0" y="697.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="706.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">status</text>
+<text x="538.0" y="724.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">first_name</text>
+<rect x="529.0" y="733.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="538.0" y="742.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">last_name</text>
+<rect x="292.0" y="161.0" width="220" height="100" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="292.0" y="161.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="292.0" y="185.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="302.0" y="177.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_channels</text>
+<text x="302.0" y="207.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<rect x="293.0" y="216.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="225.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_name</text>
+<text x="302.0" y="243.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">visibility</text>
+<rect x="292.0" y="352.0" width="220" height="190" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="292.0" y="352.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="292.0" y="376.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="302.0" y="368.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">feature_flags</text>
+<text x="302.0" y="398.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">feature_key PK</text>
+<rect x="293.0" y="407.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="416.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_label</text>
+<text x="302.0" y="434.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">min_tier</text>
+<rect x="293.0" y="443.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="452.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">limit_free</text>
+<text x="302.0" y="470.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">limit_pro</text>
+<rect x="293.0" y="479.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="488.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">limit_admin</text>
+<text x="302.0" y="506.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">sort_order</text>
+<rect x="293.0" y="515.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="302.0" y="524.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">description</text>
+<rect x="56.0" y="370.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="56.0" y="370.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="56.0" y="394.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="66.0" y="386.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">command_log</text>
+<text x="66.0" y="416.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
+<rect x="57.0" y="425.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="434.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="66.0" y="452.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">user_id</text>
+<rect x="57.0" y="461.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="470.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">command</text>
+<text x="66.0" y="488.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">command_text</text>
+<rect x="57.0" y="497.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="506.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">timestamp</text>
+<rect x="56.0" y="152.0" width="220" height="118" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="56.0" y="152.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="56.0" y="176.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="66.0" y="168.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_chats_bot_log</text>
+<text x="66.0" y="198.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
+<rect x="57.0" y="207.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="216.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="66.0" y="234.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_add</text>
+<rect x="57.0" y="243.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="66.0" y="252.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_removed</text>
+<rect x="818.0" y="1092.0" width="220" height="208" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
+<rect x="818.0" y="1092.0" width="220" height="32" rx="8" fill="#185FA5"/>
+<rect x="818.0" y="1116.0" width="220" height="8" fill="#185FA5"/>
+<text x="828.0" y="1108.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">GROUPS</text>
+<text x="828.0" y="1138.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_ID</text>
+<rect x="819.0" y="1147.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="828.0" y="1156.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_NAME</text>
+<text x="828.0" y="1174.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">TYPE</text>
+<rect x="819.0" y="1183.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="828.0" y="1192.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SHEET_ID</text>
+<text x="828.0" y="1210.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SHEET_NAME</text>
+<rect x="819.0" y="1219.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="828.0" y="1228.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SUBS_DATE_START</text>
+<text x="828.0" y="1246.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SUBS_DATE_END</text>
+<rect x="819.0" y="1255.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="828.0" y="1264.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">VISIBILITY</text>
+<text x="828.0" y="1282.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DATE_BOT_ADD</text>
+<rect x="818.0" y="919.0" width="220" height="118" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
+<rect x="818.0" y="919.0" width="220" height="32" rx="8" fill="#185FA5"/>
+<rect x="818.0" y="943.0" width="220" height="8" fill="#185FA5"/>
+<text x="828.0" y="935.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">CHANNELS</text>
+<text x="828.0" y="965.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_ID</text>
+<rect x="819.0" y="974.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="828.0" y="983.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_NAME</text>
+<text x="828.0" y="1001.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">VISIBILITY</text>
+<rect x="819.0" y="1010.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="828.0" y="1019.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DATE_BOT_ADD</text>
+<rect x="1054.0" y="901.0" width="220" height="154" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
+<rect x="1054.0" y="901.0" width="220" height="32" rx="8" fill="#185FA5"/>
+<rect x="1054.0" y="925.0" width="220" height="8" fill="#185FA5"/>
+<text x="1064.0" y="917.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">BOTCONFIG</text>
+<text x="1064.0" y="947.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FEATURE_KEY</text>
+<rect x="1055.0" y="956.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1064.0" y="965.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FEATURE</text>
+<text x="1064.0" y="983.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FREE</text>
+<rect x="1055.0" y="992.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1064.0" y="1001.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">PRO</text>
+<text x="1064.0" y="1019.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">ADMIN</text>
+<rect x="1055.0" y="1028.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1064.0" y="1037.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DESCRIPTION</text>
+<rect x="1054.0" y="107.0" width="220" height="190" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="1054.0" y="107.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="1054.0" y="131.0" width="220" height="8" fill="#0F6E56"/>
+<text x="1064.0" y="123.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Events</text>
+<text x="1064.0" y="153.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
+<rect x="1055.0" y="162.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1064.0" y="171.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_NAME</text>
+<text x="1064.0" y="189.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CREATED_DATE</text>
+<rect x="1055.0" y="198.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1064.0" y="207.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CREATED_BY</text>
+<text x="1064.0" y="225.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_DATE</text>
+<rect x="1055.0" y="234.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1064.0" y="243.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CLOSED_AT</text>
+<text x="1064.0" y="261.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">STATUS</text>
+<rect x="1055.0" y="270.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1064.0" y="279.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">GOING_COUNT</text>
+<rect x="1054.0" y="352.0" width="220" height="136" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="1054.0" y="352.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="1054.0" y="376.0" width="220" height="8" fill="#0F6E56"/>
+<text x="1064.0" y="368.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Actions</text>
+<text x="1064.0" y="398.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
+<rect x="1055.0" y="407.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1064.0" y="416.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">ACTION</text>
+<text x="1064.0" y="434.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_NAME</text>
+<rect x="1055.0" y="443.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1064.0" y="452.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<text x="1064.0" y="470.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE</text>
+<rect x="818.0" y="161.0" width="220" height="82" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="818.0" y="161.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="818.0" y="185.0" width="220" height="8" fill="#0F6E56"/>
+<text x="828.0" y="177.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">EventUsers</text>
+<text x="828.0" y="207.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
+<rect x="819.0" y="216.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="828.0" y="225.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<rect x="818.0" y="316.0" width="220" height="208" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="818.0" y="316.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="818.0" y="340.0" width="220" height="8" fill="#0F6E56"/>
+<text x="828.0" y="332.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Users</text>
+<text x="828.0" y="362.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<rect x="819.0" y="371.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="828.0" y="380.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_NAME</text>
+<text x="828.0" y="398.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">PLACE_ID</text>
+<rect x="819.0" y="407.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="828.0" y="416.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">STATUS</text>
+<text x="828.0" y="434.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_start</text>
+<rect x="819.0" y="443.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="828.0" y="452.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_end</text>
+<text x="828.0" y="470.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">ARCHIVED_USER_NAME</text>
+<rect x="819.0" y="479.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="828.0" y="488.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">FIRST_NAME</text>
+<text x="828.0" y="506.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">LAST_NAME</text>
+<rect x="818.0" y="579.0" width="220" height="118" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="818.0" y="579.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="818.0" y="603.0" width="220" height="8" fill="#0F6E56"/>
+<text x="828.0" y="595.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">UserPresenceLog</text>
+<text x="828.0" y="625.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<rect x="819.0" y="634.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="828.0" y="643.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">PLACE_ID</text>
+<text x="828.0" y="661.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_start</text>
+<rect x="819.0" y="670.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="828.0" y="679.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_end</text>
+<text x="22" y="1338" font-size="13" fill="#5F5E5A">Gray = SQLite table &#183; Blue = Control Sheet (one, shared) &#183; Green = Per-hub Sheet (one per hub) &#183; Bold field = primary/unique key</text>
+</svg>

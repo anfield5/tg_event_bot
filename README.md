@@ -38,53 +38,19 @@ services:
 
 See `tests/README.md` for running the test suite.
 
-## Database schema (SQLite)
+## Database and Google Sheets schema
 
-```
-all_groups            all_channels           feature_flags
-─────────────          ─────────────           ──────────────
-chat_id (PK)            chat_id (PK)            feature_key (PK)
-chat_name               chat_name               feature_label
-type (FREE/PRO)         visibility              min_tier (FREE/PRO/ADMIN)
-sheet_id (unique)       date_bot_add            limit_free / limit_pro / limit_admin
-sheet_name                                      sort_order
-subs_date_start/end                             description
-visibility
-date_bot_add
+SQLite tables and Google Sheets tabs shown together, grouped into three
+non-overlapping zones, with relationship lines showing *which DB table's
+data ends up in which Sheet tab*. Every table/tab shows its full column
+list; bold fields are primary/unique keys. Table positions within each
+zone are chosen to minimize crossing lines.
 
-events                              event_shares
-──────────────                       ──────────────
-event_id (PK)                        share_id (PK)
-chat_id, message_id                  event_id, chat_id, message_id  (UNIQUE per event+chat)
-name, going_icon, notgoing_icon      share_mode ('-visible' / '-hidden' / '-onlycount')
-event_status (0 open/1 verify/       chat_type ('group' / 'channel')
-              2 closed/-1 canceled)
-going_data / notgoing_data / counters_data   (JSON)
-kicked_data (JSON)
-event_date
-feature_snapshot (JSON) - which tier-gated behaviors
-  (verification, add_extra_member) applied to THIS event,
-  frozen at creation time so a later tier change never
-  retroactively changes an event already in progress
+![Database and Google Sheets schema](docs/db_sheets_schema.svg)
 
-main_group_users                   event_users                    sub_chats
-──────────────────                  ─────────────                  ──────────────
-chat_id + username (PK)             event_id + chat_id +            id (PK)
-user_id, status                       user_id (PK)                  chat_id, owner_chat_id
-first_name, last_name               username, status, guests        alias, is_monitored
-                                     - final roster of an event      chat_type, chat_name
-                                       at Save & Close, across        - child groups/channels
-                                       the main chat and every         linked to a hub, for
-                                       chat it was shared to            /shareevent aliases
-                                                                        and /addmonitor
-
-command_log                        all_chats_bot_log
-──────────────                      ──────────────────
-id (PK), chat_id, user_id           id (PK), chat_id
-command, command_text               date_bot_add, date_bot_removed
-timestamp                           - archive of add/remove events
-- every command run, incl. DMs
-```
+- **Gray** = SQLite table (single database, source of truth)
+- **Blue** = Control Sheet - **one** spreadsheet, shared across the whole bot
+- **Green** = Per-hub Sheet - **one separate spreadsheet per hub**, bound via `/setsheet` (shown as a stacked block to indicate multiple instances)
 
 Key relationships:
 - `all_groups.sheet_id` is the only link from a hub to its bound Google
@@ -99,11 +65,11 @@ Key relationships:
 - `feature_flags` is read live on every gated action (`has_feature()`,
   `get_feature_limit_for_chat()`) - there's no cache, so
   `/updatefeaturelevel` takes effect immediately.
+- `command_log` (every command run, incl. DMs) and `all_chats_bot_log`
+  (add/remove history) are DB-only - neither has a Sheets counterpart, so
+  they're omitted from the diagram above.
 
-## Google Sheets schema
-
-Two kinds of spreadsheet, both accessed the same way (`open_spreadsheet`,
-cached per spreadsheet ID):
+**Full column reference:**
 
 **Control Sheet** (`CONTROL_SHEET_ID` in `.env`, one per bot deployment,
 owner-only, always kept in sync regardless of tier):
