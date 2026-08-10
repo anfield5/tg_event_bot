@@ -153,10 +153,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
             "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
             "/allchannels \\- List every channel the bot is in, 10 at a time\n"
-            "/updatefeaturelevel \\[feature\\_key\\] \\[free\\|pro\\|admin\\] \\[\\-limit N\\] "
-            "\\- Change a feature's tier and/or its usage limit\n"
-            "\\-limit N \\- always applies to whichever tier you're setting \\(e\\.g\\. \\.\\.\\.pro \\-limit 10 sets PRO's own limit\\)\\. "
-            "0 clears it \\(unlimited\\)\\. To set limits on more than one tier, run the command once per tier\\.\n\n"
+            "/updatefeature \\[feature\\_key\\] \\[\\-minlevel free\\|pro\\|admin\\] \\[\\-limit N\\] "
+            "\\- Change a feature's tier and/or its usage limit\\. At least one of the two flags is required\\.\n"
+            "\\-limit N \\- the cap that applies only while a group is exactly at that feature's tier "
+            "\\(any tier above is always unlimited\\)\\. `0` clears it \\(unlimited\\)\\.\n"
+            "If \\-limit is omitted: the existing limit is kept if the tier didn't change, or reset to "
+            "unlimited if it did\\.\n\n"
             "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
             "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
             "can't be verified and will be rejected\\."
@@ -285,8 +287,8 @@ async def upgrade_info_callback_handler(update: Update, context: ContextTypes.DE
     lines = []
     for fk in feature_keys:
         row = all_flags.get(fk)
-        if row and row[6]:  # row[6] = description
-            lines.append(f"• {row[6]}")
+        if row and row[4]:  # row[4] = description
+            lines.append(f"• {row[4]}")
     features_text = "\n".join(lines) if lines else "Unlocks additional capabilities for this section."
 
     chat_id = await _help_target_chat_id(update, context)

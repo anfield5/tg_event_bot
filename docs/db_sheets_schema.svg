@@ -1,269 +1,264 @@
-<svg width="1330" height="1356" viewBox="0 0 1330 1356" xmlns="http://www.w3.org/2000/svg" role="img">
-<title>SQLite database and Google Sheets schema in even grid columns, jointly optimized to minimize crossing lines</title>
-<desc>Three separate zones, each a clean aligned grid. Table positions were chosen by a joint hill-climbing search across all three zones at once (swaps kept within each zone) directly minimizing the number of line crossings plus total line length.</desc>
-<rect x="0" y="0" width="1330" height="1356" fill="#ffffff"/>
+<svg width="1392" height="1220" viewBox="0 0 1392 1220" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>SQLite database and Google Sheets schema, hand-arranged grid with orthogonal routed connectors</title>
+<desc>Every SQLite table and every Google Sheets tab in a single hand-placed grid, grouped into three highlighted zones. Relationship lines are routed around cards (never through them) as rounded orthogonal paths, spread apart from each other.</desc>
+<rect x="0" y="0" width="1392" height="1220" fill="#ffffff"/>
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
     <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
   </marker>
 </defs>
 <style> text { font-family: "Helvetica Neue", Arial, sans-serif; } </style>
-<rect x="34" y="34" width="736" height="1020" rx="18" fill="none" stroke="#5F5E5A" stroke-width="2" stroke-dasharray="8 6"/>
-<text x="54" y="70" font-size="19" font-weight="600" fill="#5F5E5A">SQLite database — single source of truth</text>
-<rect x="812" y="50" width="500" height="730" rx="18" fill="none" stroke="#0F6E56" stroke-width="2"/>
-<rect x="804" y="42" width="500" height="730" rx="18" fill="none" stroke="#0F6E56" stroke-width="2"/>
-<rect x="796" y="34" width="500" height="730" rx="18" fill="none" stroke="#0F6E56" stroke-width="2" stroke-dasharray="8 6"/>
-<text x="816" y="70" font-size="19" font-weight="600" fill="#0F6E56">Per-hub Sheet — 1 instance PER HUB</text>
-<rect x="796" y="810" width="500" height="512" rx="18" fill="none" stroke="#185FA5" stroke-width="2" stroke-dasharray="8 6"/>
-<text x="816" y="846" font-size="19" font-weight="600" fill="#185FA5">Control Sheet — 1 instance, shared</text>
-<path d="M497.0,588.0 Q516.8,576.8 528.0,557.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M292.0,683.0 Q284.0,680.8 276.0,683.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M512.0,683.0 Q520.0,685.2 528.0,683.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M528.0,557.0 Q362.6,685.6 234.0,851.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M638.0,334.0 Q644.4,311.0 638.0,288.0" fill="none" stroke="#888780" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M1164.0,297.0 Q1156.3,324.5 1164.0,352.0" fill="none" stroke="#1D9E75" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M1054.0,202.0 Q1046.0,199.8 1038.0,202.0" fill="none" stroke="#1D9E75" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M928.0,524.0 Q920.3,551.5 928.0,579.0" fill="none" stroke="#1D9E75" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M499.4,778.0 Q642.2,953.6 821.4,1092.0" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M436.3,261.0 Q640.5,604.7 887.5,919.0" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M512.0,523.7 Q768.1,733.8 1054.0,901.3" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M748.0,395.8 Q912.0,348.1 1054.0,253.2" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M748.0,441.4 Q902.3,459.5 1054.0,425.6" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M748.0,207.6 Q783.3,216.3 818.0,205.4" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M722.9,606.0 Q782.5,576.2 818.0,519.8" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<path d="M748.0,665.9 Q784.5,670.3 818.0,655.1" fill="none" stroke="#378ADD" stroke-width="1.5" opacity="0.7" marker-end="url(#arrow)"/>
-<rect x="292.0" y="588.0" width="220" height="190" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="292.0" y="588.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="292.0" y="612.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="302.0" y="604.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_groups</text>
-<text x="302.0" y="634.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
-<rect x="293.0" y="643.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="652.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_name</text>
-<text x="302.0" y="670.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">type</text>
-<rect x="293.0" y="679.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="688.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">sheet_id UK</text>
-<text x="302.0" y="706.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">sheet_name</text>
-<rect x="293.0" y="715.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="724.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">subs_date_start</text>
-<text x="302.0" y="742.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">subs_date_end</text>
-<rect x="293.0" y="751.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="760.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">visibility</text>
-<rect x="528.0" y="334.0" width="220" height="226" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="528.0" y="334.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="528.0" y="358.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="538.0" y="350.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">events</text>
-<text x="538.0" y="380.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">event_id PK</text>
-<rect x="529.0" y="389.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="398.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
-<text x="538.0" y="416.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">message_id</text>
-<rect x="529.0" y="425.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="434.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">name</text>
-<text x="538.0" y="452.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_status</text>
-<rect x="529.0" y="461.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="470.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">going_data</text>
-<text x="538.0" y="488.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_data</text>
-<rect x="529.0" y="497.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="506.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">counters_data</text>
-<text x="538.0" y="524.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">kicked_data</text>
-<rect x="529.0" y="533.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="542.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_snapshot</text>
-<rect x="56.0" y="851.0" width="220" height="136" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="56.0" y="851.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="56.0" y="875.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="66.0" y="867.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">event_shares</text>
-<text x="66.0" y="897.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">share_id PK</text>
-<rect x="57.0" y="906.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="915.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_id</text>
-<text x="66.0" y="933.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
-<rect x="57.0" y="942.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="951.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">share_mode</text>
-<text x="66.0" y="969.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_type</text>
-<rect x="528.0" y="134.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="528.0" y="134.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="528.0" y="158.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="538.0" y="150.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">event_users</text>
-<text x="538.0" y="180.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">event_id PK</text>
-<rect x="529.0" y="189.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="198.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
-<text x="538.0" y="216.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">user_id PK</text>
-<rect x="529.0" y="225.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="234.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">username</text>
-<text x="538.0" y="252.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">status</text>
-<rect x="529.0" y="261.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="270.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">guests</text>
-<rect x="56.0" y="606.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="56.0" y="606.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="56.0" y="630.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="66.0" y="622.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">sub_chats</text>
-<text x="66.0" y="652.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
-<rect x="57.0" y="661.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="670.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
-<text x="66.0" y="688.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">owner_chat_id</text>
-<rect x="57.0" y="697.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="706.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">alias</text>
-<text x="66.0" y="724.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">is_monitored</text>
-<rect x="57.0" y="733.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="742.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_type</text>
-<rect x="528.0" y="606.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="528.0" y="606.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="528.0" y="630.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="538.0" y="622.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">main_group_users</text>
-<text x="538.0" y="652.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
-<rect x="529.0" y="661.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="670.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">username PK</text>
-<text x="538.0" y="688.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">user_id</text>
-<rect x="529.0" y="697.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="706.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">status</text>
-<text x="538.0" y="724.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">first_name</text>
-<rect x="529.0" y="733.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="538.0" y="742.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">last_name</text>
-<rect x="292.0" y="161.0" width="220" height="100" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="292.0" y="161.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="292.0" y="185.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="302.0" y="177.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_channels</text>
-<text x="302.0" y="207.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
-<rect x="293.0" y="216.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="225.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_name</text>
-<text x="302.0" y="243.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">visibility</text>
-<rect x="292.0" y="352.0" width="220" height="190" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="292.0" y="352.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="292.0" y="376.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="302.0" y="368.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">feature_flags</text>
-<text x="302.0" y="398.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">feature_key PK</text>
-<rect x="293.0" y="407.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="416.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_label</text>
-<text x="302.0" y="434.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">min_tier</text>
-<rect x="293.0" y="443.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="452.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">limit_free</text>
-<text x="302.0" y="470.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">limit_pro</text>
-<rect x="293.0" y="479.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="488.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">limit_admin</text>
-<text x="302.0" y="506.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">sort_order</text>
-<rect x="293.0" y="515.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="302.0" y="524.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">description</text>
-<rect x="56.0" y="370.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="56.0" y="370.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="56.0" y="394.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="66.0" y="386.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">command_log</text>
-<text x="66.0" y="416.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
-<rect x="57.0" y="425.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="434.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
-<text x="66.0" y="452.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">user_id</text>
-<rect x="57.0" y="461.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="470.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">command</text>
-<text x="66.0" y="488.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">command_text</text>
-<rect x="57.0" y="497.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="506.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">timestamp</text>
-<rect x="56.0" y="152.0" width="220" height="118" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="56.0" y="152.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="56.0" y="176.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="66.0" y="168.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_chats_bot_log</text>
-<text x="66.0" y="198.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
-<rect x="57.0" y="207.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="216.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
-<text x="66.0" y="234.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_add</text>
-<rect x="57.0" y="243.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="66.0" y="252.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_removed</text>
-<rect x="818.0" y="1092.0" width="220" height="208" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
-<rect x="818.0" y="1092.0" width="220" height="32" rx="8" fill="#185FA5"/>
-<rect x="818.0" y="1116.0" width="220" height="8" fill="#185FA5"/>
-<text x="828.0" y="1108.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">GROUPS</text>
-<text x="828.0" y="1138.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_ID</text>
-<rect x="819.0" y="1147.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="828.0" y="1156.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_NAME</text>
-<text x="828.0" y="1174.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">TYPE</text>
-<rect x="819.0" y="1183.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="828.0" y="1192.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SHEET_ID</text>
-<text x="828.0" y="1210.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SHEET_NAME</text>
-<rect x="819.0" y="1219.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="828.0" y="1228.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SUBS_DATE_START</text>
-<text x="828.0" y="1246.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SUBS_DATE_END</text>
-<rect x="819.0" y="1255.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="828.0" y="1264.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">VISIBILITY</text>
-<text x="828.0" y="1282.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DATE_BOT_ADD</text>
-<rect x="818.0" y="919.0" width="220" height="118" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
-<rect x="818.0" y="919.0" width="220" height="32" rx="8" fill="#185FA5"/>
-<rect x="818.0" y="943.0" width="220" height="8" fill="#185FA5"/>
-<text x="828.0" y="935.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">CHANNELS</text>
-<text x="828.0" y="965.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_ID</text>
-<rect x="819.0" y="974.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="828.0" y="983.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_NAME</text>
-<text x="828.0" y="1001.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">VISIBILITY</text>
-<rect x="819.0" y="1010.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="828.0" y="1019.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DATE_BOT_ADD</text>
-<rect x="1054.0" y="901.0" width="220" height="154" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
-<rect x="1054.0" y="901.0" width="220" height="32" rx="8" fill="#185FA5"/>
-<rect x="1054.0" y="925.0" width="220" height="8" fill="#185FA5"/>
-<text x="1064.0" y="917.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">BOTCONFIG</text>
-<text x="1064.0" y="947.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FEATURE_KEY</text>
-<rect x="1055.0" y="956.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="1064.0" y="965.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FEATURE</text>
-<text x="1064.0" y="983.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FREE</text>
-<rect x="1055.0" y="992.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="1064.0" y="1001.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">PRO</text>
-<text x="1064.0" y="1019.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">ADMIN</text>
-<rect x="1055.0" y="1028.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
-<text x="1064.0" y="1037.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DESCRIPTION</text>
-<rect x="1054.0" y="107.0" width="220" height="190" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
-<rect x="1054.0" y="107.0" width="220" height="32" rx="8" fill="#0F6E56"/>
-<rect x="1054.0" y="131.0" width="220" height="8" fill="#0F6E56"/>
-<text x="1064.0" y="123.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Events</text>
-<text x="1064.0" y="153.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
-<rect x="1055.0" y="162.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="1064.0" y="171.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_NAME</text>
-<text x="1064.0" y="189.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CREATED_DATE</text>
-<rect x="1055.0" y="198.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="1064.0" y="207.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CREATED_BY</text>
-<text x="1064.0" y="225.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_DATE</text>
-<rect x="1055.0" y="234.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="1064.0" y="243.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CLOSED_AT</text>
-<text x="1064.0" y="261.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">STATUS</text>
-<rect x="1055.0" y="270.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="1064.0" y="279.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">GOING_COUNT</text>
-<rect x="1054.0" y="352.0" width="220" height="136" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
-<rect x="1054.0" y="352.0" width="220" height="32" rx="8" fill="#0F6E56"/>
-<rect x="1054.0" y="376.0" width="220" height="8" fill="#0F6E56"/>
-<text x="1064.0" y="368.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Actions</text>
-<text x="1064.0" y="398.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
-<rect x="1055.0" y="407.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="1064.0" y="416.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">ACTION</text>
-<text x="1064.0" y="434.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_NAME</text>
-<rect x="1055.0" y="443.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="1064.0" y="452.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
-<text x="1064.0" y="470.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE</text>
-<rect x="818.0" y="161.0" width="220" height="82" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
-<rect x="818.0" y="161.0" width="220" height="32" rx="8" fill="#0F6E56"/>
-<rect x="818.0" y="185.0" width="220" height="8" fill="#0F6E56"/>
-<text x="828.0" y="177.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">EventUsers</text>
-<text x="828.0" y="207.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
-<rect x="819.0" y="216.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="828.0" y="225.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
-<rect x="818.0" y="316.0" width="220" height="208" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
-<rect x="818.0" y="316.0" width="220" height="32" rx="8" fill="#0F6E56"/>
-<rect x="818.0" y="340.0" width="220" height="8" fill="#0F6E56"/>
-<text x="828.0" y="332.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Users</text>
-<text x="828.0" y="362.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
-<rect x="819.0" y="371.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="828.0" y="380.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_NAME</text>
-<text x="828.0" y="398.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">PLACE_ID</text>
-<rect x="819.0" y="407.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="828.0" y="416.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">STATUS</text>
-<text x="828.0" y="434.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_start</text>
-<rect x="819.0" y="443.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="828.0" y="452.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_end</text>
-<text x="828.0" y="470.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">ARCHIVED_USER_NAME</text>
-<rect x="819.0" y="479.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="828.0" y="488.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">FIRST_NAME</text>
-<text x="828.0" y="506.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">LAST_NAME</text>
-<rect x="818.0" y="579.0" width="220" height="118" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
-<rect x="818.0" y="579.0" width="220" height="32" rx="8" fill="#0F6E56"/>
-<rect x="818.0" y="603.0" width="220" height="8" fill="#0F6E56"/>
-<text x="828.0" y="595.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">UserPresenceLog</text>
-<text x="828.0" y="625.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
-<rect x="819.0" y="634.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="828.0" y="643.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">PLACE_ID</text>
-<text x="828.0" y="661.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_start</text>
-<rect x="819.0" y="670.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
-<text x="828.0" y="679.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_end</text>
-<text x="22" y="1338" font-size="13" fill="#5F5E5A">Gray = SQLite table &#183; Blue = Control Sheet (one, shared) &#183; Green = Per-hub Sheet (one per hub) &#183; Bold field = primary/unique key</text>
+<rect x="34.0" y="8.0" width="792.0" height="933.0" rx="16" fill="none" stroke="#5F5E5A" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="50.0" y="28.0" font-size="16" font-weight="600" fill="#5F5E5A">SQLite database</text>
+<rect x="832.0" y="44.0" width="526.0" height="623.0" rx="16" fill="none" stroke="#0F6E56" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="848.0" y="64.0" font-size="16" font-weight="600" fill="#0F6E56">Per-hub Sheet — 1 per hub</text>
+<rect x="832.0" y="694.0" width="526.0" height="462.0" rx="16" fill="none" stroke="#185FA5" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="848.0" y="714.0" font-size="16" font-weight="600" fill="#185FA5">Control Sheet — 1, shared</text>
+<path d="M696.0,236.0 L697.5,230.5 Q699.0,225.0 697.5,219.5 L696.0,214.0" fill="none" stroke="#888780" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M962.0,456.0 L962.6,465.0 Q963.0,471.0 963.0,477.0 L963.0,477.0 Q963.0,483.0 963.0,489.0 L963.0,490.0 Q963.0,495.0 962.5,500.0 L962.0,505.0" fill="none" stroke="#1D9E75" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M962.0,254.0 L962.5,248.5 Q963.0,243.0 963.0,237.5 L963.0,237.0 Q963.0,231.0 963.0,225.0 L963.0,225.0 Q963.0,219.0 963.0,213.0 L963.0,213.0 Q963.0,207.0 963.0,201.0 L963.0,201.0 Q963.0,195.0 963.0,189.0 L963.0,185.5 Q963.0,183.0 962.5,180.5 L962.0,178.0" fill="none" stroke="#1D9E75" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M1228.0,465.0 L1227.5,471.0 Q1227.0,477.0 1227.0,483.0 L1227.0,483.0 Q1227.0,489.0 1227.0,495.0 L1227.0,495.0 Q1227.0,501.0 1227.5,507.0 L1228.0,514.0" fill="none" stroke="#1D9E75" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M546.0,355.0 L555.1,356.2 Q561.0,357.0 567.0,357.0 L569.4,357.0 Q573.0,357.0 576.5,356.0 L580.0,355.0" fill="none" stroke="#888780" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M314.0,355.0 L308.5,356.0 Q303.0,357.0 297.4,357.0 L296.6,357.0 Q291.0,357.0 285.5,356.0 L280.0,355.0" fill="none" stroke="#888780" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M812.0,355.0 L819.1,356.1 Q825.0,357.0 831.0,357.0 L832.4,357.0 Q837.0,357.0 841.5,356.0 L846.0,355.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M812.0,131.0 L819.1,129.9 Q825.0,129.0 831.0,129.0 L832.4,129.0 Q837.0,129.0 841.5,130.0 L846.0,131.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M550.4,354.1 L555.3,363.7 Q558.0,369.0 558.0,375.0 L558.0,375.0 Q558.0,381.0 558.0,387.0 L558.0,387.0 Q558.0,393.0 558.0,399.0 L558.0,399.0 Q558.0,405.0 558.0,411.0 L558.0,411.0 Q558.0,417.0 558.0,423.0 L558.0,423.0 Q558.0,429.0 558.0,435.0 L558.0,435.0 Q558.0,441.0 558.0,447.0 L558.0,447.0 Q558.0,453.0 558.0,459.0 L558.0,459.0 Q558.0,465.0 558.0,471.0 L558.0,471.0 Q558.0,477.0 555.9,482.6 L555.6,483.4 Q553.5,489.0 553.5,495.0 L553.5,495.0 Q553.5,501.0 553.5,507.0 L553.5,507.0 Q553.5,513.0 551.4,518.6 L551.1,519.4 Q549.0,525.0 549.0,531.0 L549.0,531.0 Q549.0,537.0 549.0,543.0 L549.0,543.0 Q549.0,549.0 549.0,555.0 L549.0,555.0 Q549.0,561.0 549.0,567.0 L549.0,570.0 Q549.0,573.0 549.0,576.0 L549.0,576.0 Q549.0,579.0 552.0,579.0 L555.0,579.0 Q561.0,579.0 567.0,579.0 L569.5,579.0 Q573.0,579.0 576.5,579.0 L580.0,579.0" fill="none" stroke="#888780" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M812.0,355.0 L812.6,363.0 Q813.0,369.0 819.0,369.0 L819.0,369.0 Q825.0,369.0 831.0,369.0 L834.0,369.0 Q837.0,369.0 840.0,369.0 L840.0,369.0 Q843.0,369.0 843.0,372.0 L843.0,375.0 Q843.0,381.0 843.0,387.0 L843.0,387.0 Q843.0,393.0 843.0,399.0 L843.0,399.0 Q843.0,405.0 843.0,411.0 L843.0,411.0 Q843.0,417.0 843.0,423.0 L843.0,423.0 Q843.0,429.0 843.0,435.0 L843.0,435.0 Q843.0,441.0 843.0,447.0 L843.0,447.0 Q843.0,453.0 843.0,459.0 L843.0,459.0 Q843.0,465.0 843.0,471.0 L843.0,471.0 Q843.0,477.0 843.0,483.0 L843.0,483.0 Q843.0,489.0 843.0,495.0 L843.0,495.0 Q843.0,501.0 843.0,507.0 L843.0,507.0 Q843.0,513.0 843.0,519.0 L843.0,519.0 Q843.0,525.0 843.0,531.0 L843.0,531.0 Q843.0,537.0 843.0,543.0 L843.0,543.0 Q843.0,549.0 843.0,555.0 L843.0,555.0 Q843.0,561.0 843.0,567.0 L843.0,570.0 Q843.0,573.0 843.0,576.0 L843.0,577.5 Q843.0,579.0 844.5,579.0 L846.0,579.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M807.5,578.6 L811.1,568.2 Q813.0,562.5 819.0,562.5 L819.0,562.5 Q825.0,562.5 831.0,562.5 L834.6,562.5 Q837.0,562.5 837.8,564.8 L837.8,564.8 Q838.5,567.0 838.5,564.6 L838.5,561.0 Q838.5,555.0 838.5,549.0 L838.5,549.0 Q838.5,543.0 838.5,537.0 L838.5,537.0 Q838.5,531.0 838.5,525.0 L838.5,525.0 Q838.5,519.0 838.5,513.0 L838.5,510.8 Q838.5,507.0 840.8,504.0 L840.8,504.0 Q843.0,501.0 846.8,501.0 L849.0,501.0 Q855.0,501.0 861.0,501.0 L861.0,501.0 Q867.0,501.0 873.0,501.0 L873.0,501.0 Q879.0,501.0 885.0,501.0 L885.0,501.0 Q891.0,501.0 897.0,501.0 L897.0,501.0 Q903.0,501.0 909.0,501.0 L909.0,501.0 Q915.0,501.0 921.0,501.0 L921.0,501.0 Q927.0,501.0 933.0,501.0 L933.0,501.0 Q939.0,501.0 945.0,501.0 L945.0,501.0 Q951.0,501.0 957.0,501.0 L957.0,501.0 Q963.0,501.0 969.0,501.0 L969.0,501.0 Q975.0,501.0 981.0,501.0 L981.0,501.0 Q987.0,501.0 993.0,501.0 L993.0,501.0 Q999.0,501.0 1005.0,501.0 L1005.0,501.0 Q1011.0,501.0 1017.0,501.0 L1017.0,501.0 Q1023.0,501.0 1029.0,501.0 L1029.0,501.0 Q1035.0,501.0 1041.0,501.0 L1041.0,501.0 Q1047.0,501.0 1053.0,501.0 L1053.0,501.0 Q1059.0,501.0 1065.0,501.0 L1065.0,501.0 Q1071.0,501.0 1077.0,501.0 L1077.0,501.0 Q1083.0,501.0 1089.0,501.0 L1089.0,501.0 Q1095.0,501.0 1101.0,501.0 L1101.0,501.0 Q1107.0,501.0 1107.0,507.0 L1107.0,507.0 Q1107.0,513.0 1107.0,519.0 L1107.0,519.0 Q1107.0,525.0 1107.0,531.0 L1107.0,531.0 Q1107.0,537.0 1107.0,543.0 L1107.0,543.0 Q1107.0,549.0 1107.0,555.0 L1107.0,555.0 Q1107.0,561.0 1107.0,567.0 L1107.0,570.0 Q1107.0,573.0 1107.0,576.0 L1107.0,576.5 Q1107.0,579.0 1109.5,579.0 L1112.0,579.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M580.0,355.0 L572.9,356.1 Q567.0,357.0 561.0,357.0 L558.0,357.0 Q555.0,357.0 552.0,357.0 L552.0,357.0 Q549.0,357.0 549.0,360.0 L549.0,363.0 Q549.0,369.0 549.0,375.0 L549.0,375.0 Q549.0,381.0 549.0,387.0 L549.0,387.0 Q549.0,393.0 549.0,399.0 L549.0,399.0 Q549.0,405.0 549.0,411.0 L549.0,411.0 Q549.0,417.0 549.0,423.0 L549.0,423.0 Q549.0,429.0 549.0,435.0 L549.0,435.0 Q549.0,441.0 549.0,447.0 L549.0,447.0 Q549.0,453.0 549.0,459.0 L549.0,459.0 Q549.0,465.0 549.0,471.0 L549.0,471.0 Q549.0,477.0 546.9,482.6 L546.6,483.4 Q544.5,489.0 544.5,495.0 L544.5,495.0 Q544.5,501.0 544.5,507.0 L544.5,509.2 Q544.5,513.0 546.8,516.0 L546.8,516.0 Q549.0,519.0 545.2,519.0 L543.0,519.0 Q537.0,519.0 531.0,519.0 L531.0,519.0 Q525.0,519.0 519.0,519.0 L519.0,519.0 Q513.0,519.0 507.0,519.0 L507.0,519.0 Q501.0,519.0 495.0,519.0 L495.0,519.0 Q489.0,519.0 483.0,519.0 L483.0,519.0 Q477.0,519.0 471.0,519.0 L471.0,519.0 Q465.0,519.0 459.0,519.0 L459.0,519.0 Q453.0,519.0 447.0,519.0 L447.0,519.0 Q441.0,519.0 435.0,519.0 L435.0,519.0 Q429.0,519.0 423.0,519.0 L423.0,519.0 Q417.0,519.0 411.0,519.0 L411.0,519.0 Q405.0,519.0 399.0,519.0 L399.0,519.0 Q393.0,519.0 387.0,519.0 L387.0,519.0 Q381.0,519.0 375.0,519.0 L375.0,519.0 Q369.0,519.0 363.0,519.0 L363.0,519.0 Q357.0,519.0 351.0,519.0 L351.0,519.0 Q345.0,519.0 339.0,519.0 L339.0,519.0 Q333.0,519.0 327.0,519.0 L327.0,519.0 Q321.0,519.0 315.0,519.0 L315.0,519.0 Q309.0,519.0 303.0,519.0 L303.0,519.0 Q297.0,519.0 291.0,519.0 L291.0,519.0 Q285.0,519.0 285.0,525.0 L285.0,525.0 Q285.0,531.0 285.0,537.0 L285.0,537.0 Q285.0,543.0 285.0,549.0 L285.0,549.0 Q285.0,555.0 285.0,561.0 L285.0,561.0 Q285.0,567.0 285.0,573.0 L285.0,576.5 Q285.0,579.0 282.5,579.0 L280.0,579.0" fill="none" stroke="#888780" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M816.5,579.4 L814.7,575.4 Q813.0,571.5 817.3,571.5 L819.0,571.5 Q825.0,571.5 831.0,571.5 L831.3,571.5 Q837.0,571.5 842.2,569.2 L842.2,569.2 Q847.5,567.0 847.5,561.3 L847.5,561.0 Q847.5,555.0 847.5,549.0 L847.5,549.0 Q847.5,543.0 847.5,537.0 L847.5,537.0 Q847.5,531.0 847.5,525.0 L847.5,525.0 Q847.5,519.0 847.5,513.0 L847.5,513.0 Q847.5,507.0 845.4,501.4 L845.1,500.6 Q843.0,495.0 843.0,489.0 L843.0,489.0 Q843.0,483.0 843.0,477.0 L843.0,477.0 Q843.0,471.0 843.0,465.0 L843.0,465.0 Q843.0,459.0 849.0,459.0 L849.0,459.0 Q855.0,459.0 861.0,459.0 L861.0,459.0 Q867.0,459.0 873.0,459.0 L873.0,459.0 Q879.0,459.0 885.0,459.0 L885.0,459.0 Q891.0,459.0 897.0,459.0 L897.0,459.0 Q903.0,459.0 909.0,459.0 L909.0,459.0 Q915.0,459.0 921.0,459.0 L921.0,459.0 Q927.0,459.0 933.0,459.0 L933.0,459.0 Q939.0,459.0 945.0,459.0 L945.0,459.0 Q951.0,459.0 957.0,459.0 L957.0,459.0 Q963.0,459.0 969.0,459.0 L969.0,459.0 Q975.0,459.0 981.0,459.0 L981.0,459.0 Q987.0,459.0 993.0,459.0 L993.0,459.0 Q999.0,459.0 1005.0,459.0 L1005.0,459.0 Q1011.0,459.0 1017.0,459.0 L1017.0,459.0 Q1023.0,459.0 1029.0,459.0 L1029.0,459.0 Q1035.0,459.0 1041.0,459.0 L1041.0,459.0 Q1047.0,459.0 1053.0,459.0 L1053.0,459.0 Q1059.0,459.0 1065.0,459.0 L1065.0,459.0 Q1071.0,459.0 1077.0,459.0 L1077.0,459.0 Q1083.0,459.0 1089.0,459.0 L1089.0,459.0 Q1095.0,459.0 1101.0,459.0 L1101.0,459.0 Q1107.0,459.0 1107.0,453.0 L1107.0,453.0 Q1107.0,447.0 1107.0,441.0 L1107.0,441.0 Q1107.0,435.0 1107.0,429.0 L1107.0,429.0 Q1107.0,423.0 1107.0,417.0 L1107.0,417.0 Q1107.0,411.0 1107.0,405.0 L1107.0,405.0 Q1107.0,399.0 1107.0,393.0 L1107.0,393.0 Q1107.0,387.0 1107.0,381.0 L1107.0,381.0 Q1107.0,375.0 1107.0,369.0 L1107.0,366.0 Q1107.0,363.0 1107.0,360.0 L1107.0,359.7 Q1107.0,357.0 1109.5,356.0 L1112.0,355.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M546.0,579.0 L547.5,585.2 Q549.0,591.0 549.0,597.0 L549.0,597.0 Q549.0,603.0 549.0,609.0 L549.0,609.0 Q549.0,615.0 549.0,621.0 L549.0,621.0 Q549.0,627.0 549.0,633.0 L549.0,633.0 Q549.0,639.0 549.0,645.0 L549.0,645.0 Q549.0,651.0 549.0,657.0 L549.0,657.0 Q549.0,663.0 549.0,669.0 L549.0,669.0 Q549.0,675.0 549.0,681.0 L549.0,681.0 Q549.0,687.0 549.0,693.0 L549.0,693.0 Q549.0,699.0 549.0,705.0 L549.0,705.0 Q549.0,711.0 549.0,717.0 L549.0,717.0 Q549.0,723.0 549.0,729.0 L549.0,729.0 Q549.0,735.0 549.0,741.0 L549.0,741.0 Q549.0,747.0 549.0,753.0 L549.0,753.0 Q549.0,759.0 549.0,765.0 L549.0,765.0 Q549.0,771.0 549.0,777.0 L549.0,777.0 Q549.0,783.0 549.0,789.0 L549.0,789.0 Q549.0,795.0 549.0,801.0 L549.0,801.0 Q549.0,807.0 549.0,813.0 L549.0,813.0 Q549.0,819.0 549.0,825.0 L549.0,825.0 Q549.0,831.0 555.0,831.0 L555.0,831.0 Q561.0,831.0 567.0,831.0 L567.0,831.0 Q573.0,831.0 579.0,831.0 L579.0,831.0 Q585.0,831.0 591.0,831.0 L591.0,831.0 Q597.0,831.0 603.0,831.0 L603.0,831.0 Q609.0,831.0 615.0,831.0 L615.0,831.0 Q621.0,831.0 627.0,831.0 L627.0,831.0 Q633.0,831.0 639.0,831.0 L639.0,831.0 Q645.0,831.0 651.0,831.0 L651.0,831.0 Q657.0,831.0 663.0,831.0 L663.0,831.0 Q669.0,831.0 675.0,831.0 L675.0,831.0 Q681.0,831.0 687.0,831.0 L687.0,831.0 Q693.0,831.0 699.0,831.0 L699.0,831.0 Q705.0,831.0 711.0,831.0 L711.0,831.0 Q717.0,831.0 723.0,831.0 L723.0,831.0 Q729.0,831.0 735.0,831.0 L735.0,831.0 Q741.0,831.0 747.0,831.0 L747.0,831.0 Q753.0,831.0 759.0,831.0 L759.0,831.0 Q765.0,831.0 771.0,831.0 L771.0,831.0 Q777.0,831.0 783.0,831.0 L783.0,831.0 Q789.0,831.0 795.0,831.0 L795.0,831.0 Q801.0,831.0 807.0,831.0 L807.0,831.0 Q813.0,831.0 819.0,831.0 L819.0,831.0 Q825.0,831.0 831.0,831.0 L831.0,831.0 Q837.0,831.0 843.0,831.0 L843.0,831.0 Q849.0,831.0 847.7,836.8 L846.0,844.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M546.0,844.0 L547.5,849.5 Q549.0,855.0 549.0,860.7 L549.0,861.0 Q549.0,867.0 549.0,873.0 L549.0,873.0 Q549.0,879.0 549.0,885.0 L549.0,885.0 Q549.0,891.0 549.0,897.0 L549.0,897.0 Q549.0,903.0 549.0,909.0 L549.0,909.0 Q549.0,915.0 549.0,921.0 L549.0,921.0 Q549.0,927.0 549.0,933.0 L549.0,933.0 Q549.0,939.0 549.0,945.0 L549.0,945.0 Q549.0,951.0 549.0,957.0 L549.0,957.0 Q549.0,963.0 549.0,969.0 L549.0,969.0 Q549.0,975.0 549.0,981.0 L549.0,981.0 Q549.0,987.0 549.0,993.0 L549.0,993.0 Q549.0,999.0 549.0,1005.0 L549.0,1005.0 Q549.0,1011.0 549.0,1017.0 L549.0,1017.0 Q549.0,1023.0 549.0,1029.0 L549.0,1029.0 Q549.0,1035.0 549.0,1041.0 L549.0,1041.0 Q549.0,1047.0 549.0,1053.0 L549.0,1053.0 Q549.0,1059.0 555.0,1059.0 L555.0,1059.0 Q561.0,1059.0 567.0,1059.0 L567.0,1059.0 Q573.0,1059.0 579.0,1059.0 L579.0,1059.0 Q585.0,1059.0 591.0,1059.0 L591.0,1059.0 Q597.0,1059.0 603.0,1059.0 L603.0,1059.0 Q609.0,1059.0 615.0,1059.0 L615.0,1059.0 Q621.0,1059.0 627.0,1059.0 L627.0,1059.0 Q633.0,1059.0 639.0,1059.0 L639.0,1059.0 Q645.0,1059.0 651.0,1059.0 L651.0,1059.0 Q657.0,1059.0 663.0,1059.0 L663.0,1059.0 Q669.0,1059.0 675.0,1059.0 L675.0,1059.0 Q681.0,1059.0 687.0,1059.0 L687.0,1059.0 Q693.0,1059.0 699.0,1059.0 L699.0,1059.0 Q705.0,1059.0 711.0,1059.0 L711.0,1059.0 Q717.0,1059.0 723.0,1059.0 L723.0,1059.0 Q729.0,1059.0 735.0,1059.0 L735.0,1059.0 Q741.0,1059.0 747.0,1059.0 L747.0,1059.0 Q753.0,1059.0 759.0,1059.0 L759.0,1059.0 Q765.0,1059.0 771.0,1059.0 L771.0,1059.0 Q777.0,1059.0 783.0,1059.0 L783.0,1059.0 Q789.0,1059.0 795.0,1059.0 L795.0,1059.0 Q801.0,1059.0 807.0,1059.0 L807.0,1059.0 Q813.0,1059.0 819.0,1059.0 L819.0,1059.0 Q825.0,1059.0 831.0,1059.0 L831.0,1059.0 Q837.0,1059.0 843.0,1059.0 L843.0,1059.0 Q849.0,1059.0 855.0,1059.0 L855.0,1059.0 Q861.0,1059.0 867.0,1059.0 L867.0,1059.0 Q873.0,1059.0 879.0,1059.0 L879.0,1059.0 Q885.0,1059.0 891.0,1059.0 L891.0,1059.0 Q897.0,1059.0 903.0,1059.0 L903.0,1059.0 Q909.0,1059.0 915.0,1059.0 L915.0,1059.0 Q921.0,1059.0 927.0,1059.0 L927.0,1059.0 Q933.0,1059.0 939.0,1059.0 L939.0,1059.0 Q945.0,1059.0 951.0,1059.0 L951.0,1059.0 Q957.0,1059.0 963.0,1059.0 L963.0,1059.0 Q969.0,1059.0 975.0,1059.0 L975.0,1059.0 Q981.0,1059.0 987.0,1059.0 L987.0,1059.0 Q993.0,1059.0 999.0,1059.0 L999.0,1059.0 Q1005.0,1059.0 1011.0,1059.0 L1011.0,1059.0 Q1017.0,1059.0 1023.0,1059.0 L1023.0,1059.0 Q1029.0,1059.0 1035.0,1059.0 L1035.0,1059.0 Q1041.0,1059.0 1047.0,1059.0 L1047.0,1059.0 Q1053.0,1059.0 1059.0,1059.0 L1059.0,1059.0 Q1065.0,1059.0 1071.0,1059.0 L1071.0,1059.0 Q1077.0,1059.0 1083.0,1059.0 L1083.0,1059.0 Q1089.0,1059.0 1095.0,1059.0 L1095.5,1059.0 Q1101.0,1059.0 1106.5,1059.0 L1112.0,1059.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M541.6,355.9 L540.7,363.0 Q540.0,369.0 540.0,375.0 L540.0,375.0 Q540.0,381.0 540.0,387.0 L540.0,387.0 Q540.0,393.0 540.0,399.0 L540.0,399.0 Q540.0,405.0 540.0,411.0 L540.0,411.0 Q540.0,417.0 540.0,423.0 L540.0,423.0 Q540.0,429.0 540.0,435.0 L540.0,435.0 Q540.0,441.0 540.0,447.0 L540.0,447.0 Q540.0,453.0 540.0,459.0 L540.0,459.0 Q540.0,465.0 540.0,471.0 L540.0,471.0 Q540.0,477.0 540.0,483.0 L540.0,483.6 Q540.0,489.0 544.5,492.0 L544.5,492.0 Q549.0,495.0 554.4,495.0 L555.0,495.0 Q561.0,495.0 567.0,495.0 L567.0,495.0 Q573.0,495.0 579.0,495.0 L579.0,495.0 Q585.0,495.0 591.0,495.0 L591.0,495.0 Q597.0,495.0 603.0,495.0 L603.0,495.0 Q609.0,495.0 615.0,495.0 L615.0,495.0 Q621.0,495.0 627.0,495.0 L627.0,495.0 Q633.0,495.0 639.0,495.0 L639.0,495.0 Q645.0,495.0 651.0,495.0 L651.0,495.0 Q657.0,495.0 663.0,495.0 L663.0,495.0 Q669.0,495.0 675.0,495.0 L675.0,495.0 Q681.0,495.0 687.0,495.0 L687.0,495.0 Q693.0,495.0 699.0,495.0 L699.0,495.0 Q705.0,495.0 711.0,495.0 L711.0,495.0 Q717.0,495.0 723.0,495.0 L723.0,495.0 Q729.0,495.0 735.0,495.0 L735.0,495.0 Q741.0,495.0 747.0,495.0 L747.0,495.0 Q753.0,495.0 759.0,495.0 L759.0,495.0 Q765.0,495.0 771.0,495.0 L771.0,495.0 Q777.0,495.0 783.0,495.0 L783.0,495.0 Q789.0,495.0 795.0,495.0 L795.0,495.0 Q801.0,495.0 807.0,495.0 L807.0,495.0 Q813.0,495.0 819.0,495.0 L819.0,495.0 Q825.0,495.0 831.0,495.0 L831.0,495.0 Q837.0,495.0 843.0,495.0 L843.0,495.0 Q849.0,495.0 855.0,495.0 L855.0,495.0 Q861.0,495.0 867.0,495.0 L867.0,495.0 Q873.0,495.0 879.0,495.0 L879.0,495.0 Q885.0,495.0 891.0,495.0 L891.0,495.0 Q897.0,495.0 903.0,495.0 L903.0,495.0 Q909.0,495.0 915.0,495.0 L915.0,495.0 Q921.0,495.0 927.0,495.0 L927.0,495.0 Q933.0,495.0 939.0,495.0 L939.0,495.0 Q945.0,495.0 951.0,495.0 L951.0,495.0 Q957.0,495.0 963.0,495.0 L963.0,495.0 Q969.0,495.0 975.0,495.0 L975.0,495.0 Q981.0,495.0 987.0,495.0 L987.0,495.0 Q993.0,495.0 999.0,495.0 L999.0,495.0 Q1005.0,495.0 1011.0,495.0 L1011.0,495.0 Q1017.0,495.0 1023.0,495.0 L1023.0,495.0 Q1029.0,495.0 1035.0,495.0 L1035.0,495.0 Q1041.0,495.0 1047.0,495.0 L1047.0,495.0 Q1053.0,495.0 1059.0,495.0 L1059.0,495.0 Q1065.0,495.0 1071.0,495.0 L1071.0,495.0 Q1077.0,495.0 1083.0,495.0 L1083.0,495.0 Q1089.0,495.0 1095.0,495.0 L1098.0,495.0 Q1101.0,495.0 1104.0,495.0 L1104.0,495.0 Q1107.0,495.0 1107.0,498.0 L1107.0,501.0 Q1107.0,507.0 1107.0,513.0 L1107.0,513.0 Q1107.0,519.0 1107.0,525.0 L1107.0,525.0 Q1107.0,531.0 1107.0,537.0 L1107.0,537.0 Q1107.0,543.0 1107.0,549.0 L1107.0,549.0 Q1107.0,555.0 1107.0,561.0 L1107.0,561.0 Q1107.0,567.0 1107.0,573.0 L1107.0,573.0 Q1107.0,579.0 1107.0,585.0 L1107.0,585.0 Q1107.0,591.0 1107.0,597.0 L1107.0,597.0 Q1107.0,603.0 1107.0,609.0 L1107.0,609.0 Q1107.0,615.0 1107.0,621.0 L1107.0,621.0 Q1107.0,627.0 1107.0,633.0 L1107.0,633.0 Q1107.0,639.0 1107.0,645.0 L1107.0,645.0 Q1107.0,651.0 1107.0,657.0 L1107.0,657.0 Q1107.0,663.0 1107.0,669.0 L1107.0,669.0 Q1107.0,675.0 1107.0,681.0 L1107.0,681.0 Q1107.0,687.0 1107.0,693.0 L1107.0,693.0 Q1107.0,699.0 1107.0,705.0 L1107.0,705.0 Q1107.0,711.0 1107.0,717.0 L1107.0,717.0 Q1107.0,723.0 1107.0,729.0 L1107.0,729.0 Q1107.0,735.0 1107.0,741.0 L1107.0,741.0 Q1107.0,747.0 1107.0,753.0 L1107.0,753.0 Q1107.0,759.0 1107.0,765.0 L1107.0,765.0 Q1107.0,771.0 1107.0,777.0 L1107.0,777.0 Q1107.0,783.0 1107.0,789.0 L1107.0,789.0 Q1107.0,795.0 1107.0,801.0 L1107.0,801.0 Q1107.0,807.0 1107.0,813.0 L1107.0,813.0 Q1107.0,819.0 1107.0,825.0 L1107.0,825.0 Q1107.0,831.0 1107.0,837.0 L1107.0,840.5 Q1107.0,843.0 1109.5,843.5 L1112.0,844.0" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<rect x="320.0" y="260.0" width="220" height="190" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="320.0" y="260.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="320.0" y="284.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="330.0" y="276.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_groups</text>
+<text x="330.0" y="306.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<rect x="321.0" y="315.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="324.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_name</text>
+<text x="330.0" y="342.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">type</text>
+<rect x="321.0" y="351.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="360.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">sheet_id UK</text>
+<text x="330.0" y="378.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">sheet_name</text>
+<rect x="321.0" y="387.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="396.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">subs_date_start</text>
+<text x="330.0" y="414.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">subs_date_end</text>
+<rect x="321.0" y="423.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="432.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">visibility</text>
+<rect x="586.0" y="242.0" width="220" height="226" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="586.0" y="242.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="586.0" y="266.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="596.0" y="258.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">events</text>
+<text x="596.0" y="288.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">event_id PK</text>
+<rect x="587.0" y="297.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="306.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="596.0" y="324.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">message_id</text>
+<rect x="587.0" y="333.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="342.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">name</text>
+<text x="596.0" y="360.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_status</text>
+<rect x="587.0" y="369.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="378.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">going_data</text>
+<text x="596.0" y="396.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_data</text>
+<rect x="587.0" y="405.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="414.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">counters_data</text>
+<text x="596.0" y="432.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">kicked_data</text>
+<rect x="587.0" y="441.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="450.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_snapshot</text>
+<rect x="54.0" y="511.0" width="220" height="136" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="54.0" y="511.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="54.0" y="535.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="64.0" y="527.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">event_shares</text>
+<text x="64.0" y="557.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">share_id PK</text>
+<rect x="55.0" y="566.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="64.0" y="575.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_id</text>
+<text x="64.0" y="593.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<rect x="55.0" y="602.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="64.0" y="611.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">share_mode</text>
+<text x="64.0" y="629.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_type</text>
+<rect x="586.0" y="54.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="586.0" y="54.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="586.0" y="78.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="596.0" y="70.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">event_users</text>
+<text x="596.0" y="100.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">event_id PK</text>
+<rect x="587.0" y="109.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="118.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<text x="596.0" y="136.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">user_id PK</text>
+<rect x="587.0" y="145.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="154.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">username</text>
+<text x="596.0" y="172.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">status</text>
+<rect x="587.0" y="181.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="190.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">guests</text>
+<rect x="54.0" y="278.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="54.0" y="278.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="54.0" y="302.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="64.0" y="294.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">sub_chats</text>
+<text x="64.0" y="324.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
+<rect x="55.0" y="333.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="64.0" y="342.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="64.0" y="360.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">owner_chat_id</text>
+<rect x="55.0" y="369.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="64.0" y="378.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">alias</text>
+<text x="64.0" y="396.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">is_monitored</text>
+<rect x="55.0" y="405.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="64.0" y="414.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_type</text>
+<rect x="586.0" y="502.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="586.0" y="502.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="586.0" y="526.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="596.0" y="518.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">main_group_users</text>
+<text x="596.0" y="548.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<rect x="587.0" y="557.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="566.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">username PK</text>
+<text x="596.0" y="584.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">user_id</text>
+<rect x="587.0" y="593.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="602.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">status</text>
+<text x="596.0" y="620.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">first_name</text>
+<rect x="587.0" y="629.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="596.0" y="638.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">last_name</text>
+<rect x="320.0" y="529.0" width="220" height="100" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="320.0" y="529.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="320.0" y="553.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="330.0" y="545.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_channels</text>
+<text x="330.0" y="575.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
+<rect x="321.0" y="584.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="593.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_name</text>
+<text x="330.0" y="611.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">visibility</text>
+<rect x="320.0" y="767.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="320.0" y="767.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="320.0" y="791.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="330.0" y="783.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">feature_flags</text>
+<text x="330.0" y="813.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">feature_key PK</text>
+<rect x="321.0" y="822.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="831.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_label</text>
+<text x="330.0" y="849.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">min_tier</text>
+<rect x="321.0" y="858.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="867.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">limit_count</text>
+<text x="330.0" y="885.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">sort_order</text>
+<rect x="321.0" y="894.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="903.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">description</text>
+<rect x="320.0" y="54.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="320.0" y="54.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="320.0" y="78.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="330.0" y="70.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">command_log</text>
+<text x="330.0" y="100.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
+<rect x="321.0" y="109.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="118.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="330.0" y="136.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">user_id</text>
+<rect x="321.0" y="145.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="154.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">command</text>
+<text x="330.0" y="172.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">command_text</text>
+<rect x="321.0" y="181.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="330.0" y="190.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">timestamp</text>
+<rect x="54.0" y="72.0" width="220" height="118" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="54.0" y="72.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
+<rect x="54.0" y="96.0" width="220" height="8" fill="#5F5E5A"/>
+<text x="64.0" y="88.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">all_chats_bot_log</text>
+<text x="64.0" y="118.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
+<rect x="55.0" y="127.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="64.0" y="136.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_id</text>
+<text x="64.0" y="154.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_add</text>
+<rect x="55.0" y="163.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="64.0" y="172.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_removed</text>
+<rect x="1118.0" y="740.0" width="220" height="208" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
+<rect x="1118.0" y="740.0" width="220" height="32" rx="8" fill="#185FA5"/>
+<rect x="1118.0" y="764.0" width="220" height="8" fill="#185FA5"/>
+<text x="1128.0" y="756.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">GROUPS</text>
+<text x="1128.0" y="786.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_ID</text>
+<rect x="1119.0" y="795.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1128.0" y="804.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_NAME</text>
+<text x="1128.0" y="822.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">TYPE</text>
+<rect x="1119.0" y="831.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1128.0" y="840.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SHEET_ID</text>
+<text x="1128.0" y="858.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SHEET_NAME</text>
+<rect x="1119.0" y="867.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1128.0" y="876.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SUBS_DATE_START</text>
+<text x="1128.0" y="894.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">SUBS_DATE_END</text>
+<rect x="1119.0" y="903.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1128.0" y="912.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">VISIBILITY</text>
+<text x="1128.0" y="930.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DATE_BOT_ADD</text>
+<rect x="852.0" y="785.0" width="220" height="118" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
+<rect x="852.0" y="785.0" width="220" height="32" rx="8" fill="#185FA5"/>
+<rect x="852.0" y="809.0" width="220" height="8" fill="#185FA5"/>
+<text x="862.0" y="801.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">CHANNELS</text>
+<text x="862.0" y="831.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_ID</text>
+<rect x="853.0" y="840.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="862.0" y="849.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">CHAT_NAME</text>
+<text x="862.0" y="867.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">VISIBILITY</text>
+<rect x="853.0" y="876.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="862.0" y="885.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DATE_BOT_ADD</text>
+<rect x="1118.0" y="982.0" width="220" height="154" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/>
+<rect x="1118.0" y="982.0" width="220" height="32" rx="8" fill="#185FA5"/>
+<rect x="1118.0" y="1006.0" width="220" height="8" fill="#185FA5"/>
+<text x="1128.0" y="998.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">BOTCONFIG</text>
+<text x="1128.0" y="1028.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FEATURE_KEY</text>
+<rect x="1119.0" y="1037.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1128.0" y="1046.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FEATURE</text>
+<text x="1128.0" y="1064.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">FREE</text>
+<rect x="1119.0" y="1073.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1128.0" y="1082.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">PRO</text>
+<text x="1128.0" y="1100.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">ADMIN</text>
+<rect x="1119.0" y="1109.0" width="218" height="18" fill="#B5D4F4" opacity="0.35"/>
+<text x="1128.0" y="1118.0" font-size="9.5" font-weight="400" fill="#042C53" dominant-baseline="central">DESCRIPTION</text>
+<rect x="852.0" y="260.0" width="220" height="190" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="852.0" y="260.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="852.0" y="284.0" width="220" height="8" fill="#0F6E56"/>
+<text x="862.0" y="276.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Events</text>
+<text x="862.0" y="306.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
+<rect x="853.0" y="315.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="862.0" y="324.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_NAME</text>
+<text x="862.0" y="342.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CREATED_DATE</text>
+<rect x="853.0" y="351.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="862.0" y="360.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CREATED_BY</text>
+<text x="862.0" y="378.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_DATE</text>
+<rect x="853.0" y="387.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="862.0" y="396.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">CLOSED_AT</text>
+<text x="862.0" y="414.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">STATUS</text>
+<rect x="853.0" y="423.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="862.0" y="432.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">GOING_COUNT</text>
+<rect x="852.0" y="511.0" width="220" height="136" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="852.0" y="511.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="852.0" y="535.0" width="220" height="8" fill="#0F6E56"/>
+<text x="862.0" y="527.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Actions</text>
+<text x="862.0" y="557.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
+<rect x="853.0" y="566.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="862.0" y="575.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">ACTION</text>
+<text x="862.0" y="593.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_NAME</text>
+<rect x="853.0" y="602.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="862.0" y="611.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<text x="862.0" y="629.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE</text>
+<rect x="852.0" y="90.0" width="220" height="82" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="852.0" y="90.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="852.0" y="114.0" width="220" height="8" fill="#0F6E56"/>
+<text x="862.0" y="106.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">EventUsers</text>
+<text x="862.0" y="136.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">EVENT_ID</text>
+<rect x="853.0" y="145.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="862.0" y="154.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<rect x="1118.0" y="251.0" width="220" height="208" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="1118.0" y="251.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="1118.0" y="275.0" width="220" height="8" fill="#0F6E56"/>
+<text x="1128.0" y="267.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">Users</text>
+<text x="1128.0" y="297.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<rect x="1119.0" y="306.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1128.0" y="315.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_NAME</text>
+<text x="1128.0" y="333.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">PLACE_ID</text>
+<rect x="1119.0" y="342.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1128.0" y="351.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">STATUS</text>
+<text x="1128.0" y="369.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_start</text>
+<rect x="1119.0" y="378.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1128.0" y="387.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_end</text>
+<text x="1128.0" y="405.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">ARCHIVED_USER_NAME</text>
+<rect x="1119.0" y="414.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1128.0" y="423.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">FIRST_NAME</text>
+<text x="1128.0" y="441.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">LAST_NAME</text>
+<rect x="1118.0" y="520.0" width="220" height="118" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="1118.0" y="520.0" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="1118.0" y="544.0" width="220" height="8" fill="#0F6E56"/>
+<text x="1128.0" y="536.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">UserPresenceLog</text>
+<text x="1128.0" y="566.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<rect x="1119.0" y="575.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1128.0" y="584.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">PLACE_ID</text>
+<text x="1128.0" y="602.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_start</text>
+<rect x="1119.0" y="611.0" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1128.0" y="620.0" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">DATE_end</text>
+<text x="54" y="1204" font-size="13" fill="#5F5E5A">Gray = SQLite table &#183; Blue = Control Sheet (one, shared) &#183; Green = Per-hub Sheet (one per hub) &#183; Bold field = primary/unique key</text>
 </svg>

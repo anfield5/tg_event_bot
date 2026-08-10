@@ -4,7 +4,7 @@ A Telegram bot that manages RSVP-style events inside groups: create an
 event with a Going/Not Going keyboard, track who's coming, share it to
 other groups/channels, and export attendance to Google Sheets. Includes a
 FREE/PRO subscription model with a per-feature tier and usage-limit system
-that an owner can adjust live via `/updatefeaturelevel`, without a
+that an owner can adjust live via `/updatefeature`, without a
 redeploy.
 
 Run `/help` inside the bot for the full command reference - this README
@@ -64,7 +64,11 @@ Key relationships:
   chat it was shared to.
 - `feature_flags` is read live on every gated action (`has_feature()`,
   `get_feature_limit_for_chat()`) - there's no cache, so
-  `/updatefeaturelevel` takes effect immediately.
+  `/updatefeature` takes effect immediately. `limit_count` is a single
+  value that only ever caps usage while a chat's tier is exactly AT the
+  feature's `min_tier` - any tier above is unlimited by construction,
+  so there's no way to misconfigure a higher tier as more restricted
+  than a lower one.
 - `command_log` (every command run, incl. DMs) and `all_chats_bot_log`
   (add/remove history) are DB-only - neither has a Sheets counterpart, so
   they're omitted from the diagram above.
@@ -78,7 +82,7 @@ owner-only, always kept in sync regardless of tier):
 |---|---|---|
 | `GROUPS` | CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD | mirrors `all_groups`, on every `/setsub` |
 | `CHANNELS` | CHAT_ID, CHAT_NAME, VISIBILITY, DATE_BOT_ADD | mirrors `all_channels` |
-| `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION | mirrors `feature_flags`, on every `/updatefeaturelevel` |
+| `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION | mirrors `feature_flags`, on every `/updatefeature` |
 
 **Per-hub Sheet** (bound via `/setsheet`, PRO-only - a FREE hub writes
 nothing to Sheets at all):

@@ -734,9 +734,10 @@ class TestShareevent:
 
     async def test_blocks_after_reaching_the_default_limit_of_3(self, db_path):
         """
-        /shareevent's FREE-tier limit (feature_flags.shareevent.limit_free,
-        default 3) - the 4th DISTINCT event shared to the same target chat
-        from a FREE hub must be rejected with the exact requested message.
+        /shareevent's FREE-tier limit (feature_flags.shareevent.limit_count,
+        default 3, since shareevent's min_tier is FREE) - the 4th DISTINCT
+        event shared to the same target chat from a FREE hub must be
+        rejected with the exact requested message.
         """
         for i in range(3):
             insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
@@ -774,9 +775,8 @@ class TestShareevent:
         )
 
     async def test_pro_hub_is_not_limited_by_default(self, db_path):
-        """PRO's limit_pro defaults to None (unlimited) - a PRO hub must
-        NOT hit the FREE-tier cap, restoring the originally intended
-        'PRO gets more' behavior via the per-tier limit model."""
+        """A PRO hub is ABOVE shareevent's min_tier (FREE), so it's
+        unlimited by construction - must NOT hit the FREE-tier cap."""
         insert_premium(db_path, chat_id=MAIN_CHAT)
         for i in range(3):
             insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
@@ -805,10 +805,10 @@ class TestShareevent:
         conn.close()
         assert count == 4, "PRO hubs must not be limited by the FREE-tier default"
 
-    async def test_clearing_the_free_limit_via_updatefeaturelevel_removes_it(self, db_path):
-        """limit_free only applies while set - clearing it (via
-        /updatefeaturelevel ... -limitfree 0) lifts the cap for FREE hubs too."""
-        subscription.update_feature_flag("shareevent", "FREE", limit_free=None, db_path=db_path)
+    async def test_clearing_the_limit_via_updatefeature_removes_it(self, db_path):
+        """limit_count only applies while set - clearing it (via
+        /updatefeature ... -limit 0) lifts the cap for FREE hubs too."""
+        subscription.update_feature_flag("shareevent", "FREE", limit_count=None, db_path=db_path)
         for i in range(3):
             insert_event(db_path, event_id=f"ev{i}", chat_id=MAIN_CHAT)
             conn = sqlite3.connect(db_path)
@@ -3188,11 +3188,14 @@ class TestFeatureSnapshotGrandfathering:
         assert status == 1  # transitioned into verification, as it always did
 
 
-class TestUpdateFeatureLevelInversionWarning:
-    """/updatefeaturelevel warns (but never blocks) when the final per-tier
-    limits would leave a higher tier more restricted than a lower one."""
+class TestUpdateFeature:
+    """/updatefeature - replaces /updatefeaturelevel. limit_count is a
+    single value that only ever applies while a chat is exactly AT the
+    feature's min_tier; any tier above is unlimited by construction, so
+    there's no way to configure an "inversion" anymore (the old
+    per-tier-limits warning this used to test doesn't apply)."""
 
-    async def test_no_warning_on_a_sane_change(self, db_path):
+    async def test_no_flags_at_all_warns_and_changes_nothing(self, db_path):
         with patch("subscription.OWNER_USER_IDS", {555}), \
              patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock):
@@ -3201,57 +3204,98 @@ class TestUpdateFeatureLevelInversionWarning:
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
-            ctx = make_context(bot=bot, args=["shareevent", "pro", "-limit", "10"])
+            ctx = make_context(bot=bot, args=["shareevent"])
 
-            await subscription.updatefeaturelevel(upd, ctx)
+            await subscription.updatefeature(upd, ctx)
 
             reply = msg.reply_text.call_args.args[0]
-            assert "Heads up" not in reply
+            assert "No changes given" in reply
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            assert row == ("FREE", 3), "nothing should have changed from the seed default"
 
-    async def test_warns_when_free_ends_up_less_restricted_than_pro(self, db_path):
+    async def test_limit_only_tier_unchanged_keeps_existing_limit(self, db_path):
         with patch("subscription.OWNER_USER_IDS", {555}), \
              patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock):
             bot = make_bot()
             chat = make_chat(chat_id=-999)
             user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=["shareevent", "-minlevel", "free"])
 
-            msg1 = make_message(chat=chat)
-            upd1 = make_update(chat=chat, user=user, message=msg1)
-            ctx1 = make_context(bot=bot, args=["shareevent", "pro", "-limit", "5"])
-            await subscription.updatefeaturelevel(upd1, ctx1)
-
-            msg2 = make_message(chat=chat)
-            upd2 = make_update(chat=chat, user=user, message=msg2)
-            ctx2 = make_context(bot=bot, args=["shareevent", "free", "-limit", "10"])
-            await subscription.updatefeaturelevel(upd2, ctx2)
-
-            reply = msg2.reply_text.call_args.args[0]
-            assert "Heads up" in reply
-            assert "FREE ends up less restricted than PRO" in reply
-
-    async def test_command_still_succeeds_despite_the_warning(self, db_path):
-        """The warning is informational only - the change is never blocked."""
-        with patch("subscription.OWNER_USER_IDS", {555}), \
-             patch("sheets.CONTROL_SHEET_ID", "fake"), \
-             patch("sheets.open_spreadsheet", new_callable=AsyncMock):
-            bot = make_bot()
-            chat = make_chat(chat_id=-999)
-            user = make_user(user_id=555)
-
-            msg1 = make_message(chat=chat)
-            upd1 = make_update(chat=chat, user=user, message=msg1)
-            ctx1 = make_context(bot=bot, args=["shareevent", "pro", "-limit", "5"])
-            await subscription.updatefeaturelevel(upd1, ctx1)
-
-            msg2 = make_message(chat=chat)
-            upd2 = make_update(chat=chat, user=user, message=msg2)
-            ctx2 = make_context(bot=bot, args=["shareevent", "free", "-limit", "10"])
-            await subscription.updatefeaturelevel(upd2, ctx2)
+            await subscription.updatefeature(upd, ctx)
 
             conn = sqlite3.connect(db_path)
-            row = conn.execute("SELECT limit_free FROM feature_flags WHERE feature_key='shareevent'").fetchone()
-            assert row == (10,), "the inverted value must still have been written"
+            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            assert row == ("FREE", 3), "limit must be untouched when the tier didn't actually change"
+
+    async def test_tier_change_without_limit_resets_it_to_unlimited(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}), \
+             patch("sheets.CONTROL_SHEET_ID", "fake"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=["shareevent", "-minlevel", "pro"])
+
+            await subscription.updatefeature(upd, ctx)
+
+            reply = msg.reply_text.call_args.args[0]
+            assert "reset to unlimited" in reply
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            assert row == ("PRO", None)
+
+    async def test_limit_0_clears_an_existing_limit(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}), \
+             patch("sheets.CONTROL_SHEET_ID", "fake"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=["shareevent", "-limit", "0"])
+
+            await subscription.updatefeature(upd, ctx)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            assert row == ("FREE", None)
+
+    async def test_both_flags_together_in_one_call(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}), \
+             patch("sheets.CONTROL_SHEET_ID", "fake"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=["shareevent", "-minlevel", "admin", "-limit", "7"])
+
+            await subscription.updatefeature(upd, ctx)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            assert row == ("ADMIN", 7)
+
+    async def test_unknown_feature_key(self, db_path):
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999)
+            user = make_user(user_id=555)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=["notarealfeature", "-limit", "5"])
+
+            await subscription.updatefeature(upd, ctx)
+
+            assert "Unknown feature" in msg.reply_text.call_args.args[0]
 
 
 class TestUseridChatid:

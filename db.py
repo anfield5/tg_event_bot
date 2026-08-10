@@ -61,60 +61,56 @@ def _seed_feature_flags(cursor):
     by hand or by a future admin command.
     """
     seed_rows = [
-        ("newevent", "/newevent (create a new event)", "FREE", None, None, None,
+        ("newevent", "/newevent (create a new event)", "FREE", None,
          "Creates a new event with optional custom Going/Not Going icons and a date."),
-        ("editevent", "/editevent (edit the active event)", "FREE", None, None, None,
+        ("editevent", "/editevent (edit the active event)", "FREE", None,
          "Edits the name/date/icons of the currently active event."),
-        ("user_management", "User Management (/adduser, /listusers, /updateuser, /notify, /refreshusers)", "FREE", None, None, None,
+        ("user_management", "User Management (/adduser, /listusers, /updateuser, /notify, /refreshusers)", "FREE", None,
          "Tracking, notifying, and syncing the roster of users for THIS group - available to every group regardless of tier."),
-        ("shareevent", "/shareevent (per target group/channel)", "FREE", 3, None, None,
-         "Sharing an event to a child group/channel. limit_free/limit_pro/limit_admin cap how many distinct "
-         "events can be shared to the same target, independently per tier - FREE defaults to 3, "
-         "PRO/ADMIN are unlimited by default. Change any of them via /updatefeaturelevel."),
-        ("verification", "Verification step before closing an event", "FREE", None, None, None,
+        ("shareevent", "/shareevent (per target group/channel)", "FREE", 3,
+         "Sharing an event to a child group/channel. limit_count caps how many distinct events can be "
+         "shared to the same target - only applies while min_tier is FREE (a PRO/ADMIN-gated hub is always "
+         "unlimited). Change either via /updatefeature."),
+        ("verification", "Verification step before closing an event", "FREE", None,
          "The review step (kick/return, +/- guest, Add Extra Member) between OPEN and CLOSED. "
          "If disabled, the OPEN-state button closes the event directly instead of entering review. "
          "Locked in per-event at creation time - changing this later never affects an event already running."),
-        ("add_extra_member", "Add Extra Member button (during verification)", "FREE", None, None, None,
+        ("add_extra_member", "Add Extra Member button (during verification)", "FREE", None,
          "Lets an admin add someone by username during the verification step, without them having clicked Going themselves. "
          "Locked in per-event at creation time, same as verification."),
-        ("dm_access", "Run commands via DM with the bot", "PRO", None, None, None,
+        ("dm_access", "Run commands via DM with the bot", "PRO", None,
          "Whether commands can be run in a private DM with the bot at all (sticky group selection, "
          "/switchgroup, etc.) - FREE hubs must run commands inside the actual group chat instead. "
          "/start, /help, and /switchgroup itself are never gated by this - only the actual work commands are."),
-        ("setsub", "/setsub (manage subscriptions)", "ADMIN", None, None, None,
+        ("setsub", "/setsub (manage subscriptions)", "ADMIN", None,
          "Activate, extend, or deactivate PRO for any group. Gated on OWNER_USER_IDS, not chat admin status."),
-        ("custom_sheet", "Custom Google Sheet (/setsheet)", "PRO", None, None, None,
+        ("custom_sheet", "Custom Google Sheet (/setsheet)", "PRO", None,
          "Binds the hub to its own Google Sheet (Users/Events/Actions/EventUsers/UserPresenceLog tabs)."),
-        ("monitoring", "Monitoring (/addmonitor, /removemonitor, /listmonitors)", "PRO", None, None, None,
+        ("monitoring", "Monitoring (/addmonitor, /removemonitor, /listmonitors)", "PRO", None,
          "Marks a child group/channel as included in /refreshusersall."),
-        ("refreshusersall", "/refreshusersall (sync every monitored group/channel)", "PRO", None, None, None,
+        ("refreshusersall", "/refreshusersall (sync every monitored group/channel)", "PRO", None,
          "Requires monitored chats, which can only ever be configured via /addmonitor (itself PRO-only) - so this is functionally inert on FREE regardless."),
-        ("aliases", "Aliases (/setalias, /removealias, /listalias)", "PRO", None, None, None,
+        ("aliases", "Aliases (/setalias, /removealias, /listalias)", "PRO", None,
          "Custom short names for child groups/channels, used with /shareevent."),
-        ("owner_overview", "/allgroups, /allchannels (view everything the bot is in)", "ADMIN", None, None, None,
+        ("owner_overview", "/allgroups, /allchannels (view everything the bot is in)", "ADMIN", None,
          "Lists every group/channel the bot is in, paginated, with an optional -pro filter on /allgroups."),
     ]
-    seed_rows = [row[:6] + (i,) + row[6:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
+    seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(
         "INSERT OR IGNORE INTO feature_flags "
-        "(feature_key, feature_label, min_tier, limit_free, limit_pro, limit_admin, sort_order, description) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(feature_key, feature_label, min_tier, limit_count, sort_order, description) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         seed_rows,
     )
     # feature_label/description are developer-owned reference text, not
-    # user-configurable (unlike min_tier/limit_free/limit_pro/limit_admin,
-    # which set_feature_flag()
+    # user-configurable (unlike min_tier/limit_count, which set_feature_flag()
     # may have since changed and must never be overwritten here) - always
     # refresh them so a pre-existing database seeded before a wording/scope
     # change (e.g. refreshusersall moving out of event_lifecycle's bundle)
     # picks up the correction too, not just brand-new databases.
-    # them so a pre-existing database seeded before a wording/scope change
-    # (e.g. refreshusersall moving out of event_lifecycle's bundle) picks
-    # up the correction too, not just brand-new databases.
     cursor.executemany(
         "UPDATE feature_flags SET feature_label = ?, sort_order = ?, description = ? WHERE feature_key = ?",
-        [(label, sort_order, desc, key) for key, label, _tier, _lf, _lp, _la, sort_order, desc in seed_rows],
+        [(label, sort_order, desc, key) for key, label, _tier, _limit, sort_order, desc in seed_rows],
     )
     # Retire feature_keys that no longer exist in the current seed list
     # (e.g. event_lifecycle + updateuser were decomposed into
@@ -241,37 +237,52 @@ def init_db(db_path: str = DB_PATH):
     # everything PRO can, PRO can do everything FREE can). Mirrored to the
     # Control Sheet's "BOTCONFIG" tab (see sheets.sync_control_sheet_botconfig)
     # every time this table changes - see db.set_feature_flag().
+    #
+    # limit_count applies ONLY to the feature's own min_tier - any tier
+    # ABOVE min_tier is automatically unlimited. E.g. min_tier=FREE,
+    # limit_count=3 means FREE is capped at 3, PRO/ADMIN are unlimited by
+    # construction (they're above FREE). There is no way to configure an
+    # "inversion" (a higher tier ending up more restricted than a lower
+    # one) - the model doesn't allow it, so no separate limit exists per
+    # tier and no runtime warning is needed for that case anymore.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS feature_flags (
             feature_key TEXT PRIMARY KEY,
             feature_label TEXT NOT NULL,
             min_tier TEXT NOT NULL DEFAULT 'FREE',
-            limit_free INTEGER DEFAULT NULL,
-            limit_pro INTEGER DEFAULT NULL,
-            limit_admin INTEGER DEFAULT NULL,
+            limit_count INTEGER DEFAULT NULL,
             sort_order INTEGER DEFAULT 999,
             description TEXT DEFAULT NULL
         )
     """)
     cursor.execute("PRAGMA table_info(feature_flags)")
     feature_flags_cols = [col[1] for col in cursor.fetchall()]
-    had_old_limit_count = "limit_count" in feature_flags_cols
-    for new_col in ("limit_free", "limit_pro", "limit_admin"):
-        if new_col not in feature_flags_cols:
-            cursor.execute(f"ALTER TABLE feature_flags ADD COLUMN {new_col} INTEGER DEFAULT NULL")
+    had_per_tier_limits = "limit_free" in feature_flags_cols
+    if "limit_count" not in feature_flags_cols:
+        cursor.execute("ALTER TABLE feature_flags ADD COLUMN limit_count INTEGER DEFAULT NULL")
     if "sort_order" not in feature_flags_cols:
         cursor.execute("ALTER TABLE feature_flags ADD COLUMN sort_order INTEGER DEFAULT 999")
-    if had_old_limit_count:
-        # One-time correction: the previous model had a single limit_count
-        # applying uniformly to every tier (a real bug - PRO/ADMIN were
-        # meant to get MORE than FREE, not the same cap). Carry any
-        # existing value over to limit_free only, restoring "higher tiers
-        # get more by default" - the owner can still set limit_pro/
-        # limit_admin explicitly via /updatefeaturelevel afterward.
-        cursor.execute(
-            "UPDATE feature_flags SET limit_free = limit_count "
-            "WHERE limit_count IS NOT NULL AND limit_free IS NULL"
-        )
+    if had_per_tier_limits:
+        # One-time migration from the old per-tier model (limit_free/
+        # limit_pro/limit_admin, one owner-settable cap per tier) to the
+        # new single limit_count (applies only at min_tier). Only the
+        # column matching a row's CURRENT min_tier was ever the
+        # functionally active one under the old model too, so carry that
+        # specific value over; the other two tiers' old limits are
+        # discarded (they were only ever reachable by first changing
+        # min_tier to match them, at which point they'd have applied).
+        for tier, col in (("FREE", "limit_free"), ("PRO", "limit_pro"), ("ADMIN", "limit_admin")):
+            cursor.execute(
+                f"UPDATE feature_flags SET limit_count = {col} "
+                f"WHERE min_tier = ? AND limit_count IS NULL",
+                (tier,),
+            )
+        try:
+            cursor.execute("ALTER TABLE feature_flags DROP COLUMN limit_free")
+            cursor.execute("ALTER TABLE feature_flags DROP COLUMN limit_pro")
+            cursor.execute("ALTER TABLE feature_flags DROP COLUMN limit_admin")
+        except sqlite3.OperationalError:
+            pass  # older SQLite without DROP COLUMN support - harmless leftover columns
     _seed_feature_flags(cursor)
 
     # Storage for active voting events within the system.
@@ -751,22 +762,22 @@ def log_command_usage(chat_id: str, user_id, command: str, command_text: str, ti
 def get_feature_flags(db_path: str = None):
     """
     Returns every row of feature_flags as (feature_key, feature_label,
-    min_tier, limit_free, limit_pro, limit_admin, description) tuples,
-    ordered by sort_order (an explicit, developer-defined display order -
-    deliberately not tier-then-alphabetical, since the intended order
-    mixes tiers, e.g. setsub/ADMIN listed before custom_sheet/PRO) - this
-    is what sync_control_sheet_botconfig() mirrors to the Control Sheet's
-    "BOTCONFIG" tab. Each limit_* is None for unlimited at that tier, or
-    an integer cap on how many times the feature can be used at that tier
-    specifically (see /updatefeaturelevel) - tiers are independent, e.g.
-    limit_free=3 with limit_pro=None means FREE is capped but PRO isn't.
+    min_tier, limit_count, description) tuples, ordered by sort_order (an
+    explicit, developer-defined display order - deliberately not
+    tier-then-alphabetical, since the intended order mixes tiers, e.g.
+    setsub/ADMIN listed before custom_sheet/PRO) - this is what
+    sync_control_sheet_botconfig() mirrors to the Control Sheet's
+    "BOTCONFIG" tab. limit_count is None for unlimited, or an integer cap -
+    it only ever applies while a chat is AT min_tier exactly; any tier
+    above min_tier is unlimited by construction (see
+    get_feature_limit_for_chat()).
     """
     if db_path is None:
         db_path = DB_PATH
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT feature_key, feature_label, min_tier, limit_free, limit_pro, limit_admin, description "
+        "SELECT feature_key, feature_label, min_tier, limit_count, description "
         "FROM feature_flags "
         "ORDER BY sort_order, feature_key"
     )
@@ -775,23 +786,25 @@ def get_feature_flags(db_path: str = None):
     return rows
 
 
-_NO_CHANGE = object()  # sentinel distinct from None, since None is a legitimate "clear this tier's limit" value
+_NO_CHANGE = object()  # sentinel distinct from None, since None is the legitimate "clear the limit" value
 
 
-def update_feature_flag(feature_key: str, min_tier: str,
-                         limit_free=_NO_CHANGE, limit_pro=_NO_CHANGE, limit_admin=_NO_CHANGE,
-                         db_path: str = None):
+def update_feature_flag(feature_key: str, min_tier: str, limit_count=_NO_CHANGE, db_path: str = None):
     """
-    Changes which tier a feature requires, and optionally any of its
-    per-tier limits (limit_free/limit_pro/limit_admin - each independent:
-    pass None to clear that tier's limit, an int to set/change it, or omit
-    it entirely to leave that tier's current limit untouched). Plain,
-    synchronous DB write - see subscription.set_feature_flag() for the
-    async wrapper that also re-syncs the Control Sheet's BOTCONFIG tab
-    immediately after, which is the actual guarantee that BOTCONFIG never
-    drifts out of date with this table. Call THROUGH that wrapper, not this
-    function directly, unless you're deliberately skipping the sync (e.g.
-    inside a bulk migration that syncs once at the end).
+    Changes which tier a feature requires and/or its limit_count (the cap
+    that applies only while a chat is AT min_tier exactly - see
+    get_feature_limit_for_chat()). Plain, synchronous DB write - see
+    subscription.set_feature_flag() for the async wrapper that also
+    re-syncs the Control Sheet's BOTCONFIG tab immediately after, which is
+    the actual guarantee that BOTCONFIG never drifts out of date with this
+    table. Call THROUGH that wrapper, not this function directly, unless
+    you're deliberately skipping the sync (e.g. inside a bulk migration
+    that syncs once at the end).
+
+    limit_count: pass an int to set it, None to clear it (unlimited), or
+    omit it entirely (the default) to leave the current value untouched -
+    the caller (subscription.updatefeature) decides whether a tier change
+    should reset it, not this function.
     """
     if db_path is None:
         db_path = DB_PATH
@@ -800,10 +813,9 @@ def update_feature_flag(feature_key: str, min_tier: str,
 
     sets = ["min_tier = ?"]
     params = [min_tier]
-    for col_name, value in (("limit_free", limit_free), ("limit_pro", limit_pro), ("limit_admin", limit_admin)):
-        if value is not _NO_CHANGE:
-            sets.append(f"{col_name} = ?")
-            params.append(value)
+    if limit_count is not _NO_CHANGE:
+        sets.append("limit_count = ?")
+        params.append(limit_count)
     params.append(feature_key)
 
     cursor.execute(f"UPDATE feature_flags SET {', '.join(sets)} WHERE feature_key = ?", params)
@@ -813,12 +825,13 @@ def update_feature_flag(feature_key: str, min_tier: str,
 
 def get_feature_limit_for_chat(chat_id: str, feature_key: str, db_path: str = None):
     """
-    Returns the limit that applies to THIS specific chat's own tier for one
-    feature (None = unlimited at that tier, or missing entirely) - e.g. a
-    feature with limit_free=3, limit_pro=None means a FREE chat gets 3,
-    a PRO chat gets None (unlimited). Used by enforcement code that needs a
-    live limit check (e.g. /shareevent's per-target cap) separately from
-    the tier-ACCESS check that has_feature() already covers.
+    Returns the limit that applies to THIS specific chat, given its own
+    current tier (None = unlimited, whether because limit_count is unset
+    or because the chat's tier is ABOVE the feature's min_tier - a limit
+    only ever applies while a chat is exactly AT min_tier). Used by
+    enforcement code that needs a live limit check (e.g. /shareevent's
+    per-target cap) separately from the tier-ACCESS check that
+    has_feature() already covers.
 
     Inlines the same PRO-detection logic as subscription.is_premium()
     rather than importing it, to avoid a circular import (subscription.py
@@ -838,8 +851,14 @@ def get_feature_limit_for_chat(chat_id: str, feature_key: str, db_path: str = No
         except ValueError:
             is_pro = False
 
-    limit_col = "limit_pro" if is_pro else "limit_free"
-    cursor.execute(f"SELECT {limit_col} FROM feature_flags WHERE feature_key = ?", (feature_key,))
+    group_tier = "PRO" if is_pro else "FREE"
+    cursor.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key = ?", (feature_key,))
     row = cursor.fetchone()
     conn.close()
-    return row[0] if row else None
+    if not row:
+        return None
+    min_tier, limit_count = row
+    # Limit only applies at the feature's own min_tier - anything above is
+    # unlimited by construction, and anything below wouldn't have access
+    # at all (that's has_feature()'s job, not this function's).
+    return limit_count if group_tier == min_tier else None
