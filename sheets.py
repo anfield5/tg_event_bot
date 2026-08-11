@@ -99,19 +99,6 @@ async def get_sheet_for_chat(chat_id):
     return sheet_id or None
 
 
-async def log_action_to_google(chat_id, event_id, action_name, username, user_id):
-    sheet_target = await get_sheet_for_chat(chat_id)
-    ss = await open_spreadsheet(sheet_target)
-    if not ss:
-        return  # free tier / no sheet configured / subscription expired - nothing to write
-    try:
-        ws = await ss.worksheet("Actions")
-        # Layout: EVENT_ID, ACTION, USER_NAME, USER_ID, DATE
-        await ws.append_row([event_id, action_name, username, str(user_id), now2ddmmyy()])
-    except Exception as e:
-        logger.error(f"Google Sheets Actions log failed: {repr(e)}")
-
-
 async def sync_users_sheet(chat_id, current_members: list):
     """
     Syncs the "Users" worksheet for a given chat/place with its current

@@ -943,6 +943,13 @@ def add_to_waitlist(event_id: str, chat_id: str, chat_name: str, username: str, 
 
     Does nothing (silently) if this exact user is already waiting in this
     exact chat, so a double-click can't queue someone twice.
+
+    NOT called by event_engine.button_handler, which inlines this exact
+    logic instead using its own already-open cursor - this function opens
+    its own standalone connection, so calling it from WITHIN
+    button_handler's transaction would risk a nested-connection deadlock.
+    Safe to use standalone (e.g. a future admin command) outside any
+    already-open transaction.
     """
     if db_path is None:
         db_path = DB_PATH
@@ -979,9 +986,15 @@ def promote_next_from_waitlist(event_id: str, chat_id: str, db_path: str = None)
     Removes and returns the OLDEST waitlist entry for THIS SPECIFIC chat_id
     (FIFO - whoever's been waiting longest in that chat goes first), or
     None if that chat's waitlist is empty. Only removes the entry from
-    waitlist_data - the caller (event_engine.button_handler) is responsible
-    for actually adding the promoted person into going_data/event_users,
-    since that differs between the main hub and a child chat.
+    waitlist_data - the caller is responsible for actually adding the
+    promoted person into going_data/event_users, since that differs
+    between the main hub and a child chat.
+
+    NOT called by event_engine.button_handler, which inlines this exact
+    logic instead using its own already-open cursor - see add_to_waitlist's
+    docstring above for why (nested-connection deadlock risk). Safe to use
+    standalone (e.g. a future admin command) outside any already-open
+    transaction.
     """
     if db_path is None:
         db_path = DB_PATH

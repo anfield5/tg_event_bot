@@ -13,6 +13,7 @@ import pytest
 from db import (
     init_db, track_user, get_feature_flags, update_feature_flag, log_command_usage,
     get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
+    register_chat_added, register_chat_removed, get_feature_limit_for_chat, get_display_name,
 )
 
 
@@ -794,3 +795,140 @@ class TestPromoteNextFromWaitlist:
         init_db(db_path=path)
         _insert_event_for_waitlist(path)
         assert promote_next_from_waitlist("ev1", "-100", db_path=path) is None
+
+
+# ---------------------------------------------------------------------------
+# register_chat_added / register_chat_removed - bot presence lifecycle,
+# called from main.py's MY_CHAT_MEMBER handler. Previously had zero direct
+# test coverage despite being real, meaningful business logic (upsert
+# behavior on re-add, historical log trail on removal).
+# ---------------------------------------------------------------------------
+
+class TestRegisterChatAdded:
+    def test_group_added_defaults_to_free(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        register_chat_added("-1", "My Group", "supergroup", "public", "2026-01-01 00:00:00", db_path=path)
+        conn = sqlite3.connect(path)
+        row = conn.execute("SELECT chat_id, chat_name, type, visibility FROM all_groups WHERE chat_id='-1'").fetchone()
+        assert row == ("-1", "My Group", "FREE", "public")
+
+    def test_channel_added_goes_to_all_channels_not_all_groups(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        register_chat_added("-2", "My Channel", "channel", "private", "2026-01-01 00:00:00", db_path=path)
+        conn = sqlite3.connect(path)
+        row = conn.execute("SELECT chat_id, chat_name, visibility FROM all_channels WHERE chat_id='-2'").fetchone()
+        assert row == ("-2", "My Channel", "private")
+        assert conn.execute("SELECT COUNT(*) FROM all_groups WHERE chat_id='-2'").fetchone()[0] == 0
+
+    def test_re_adding_an_existing_group_upserts_not_duplicates(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        register_chat_added("-1", "My Group", "supergroup", "public", "2026-01-01 00:00:00", db_path=path)
+        register_chat_added("-1", "Renamed Group", "supergroup", "private", "2026-01-02 00:00:00", db_path=path)
+        conn = sqlite3.connect(path)
+        count = conn.execute("SELECT COUNT(*) FROM all_groups WHERE chat_id='-1'").fetchone()[0]
+        row = conn.execute("SELECT chat_name, visibility FROM all_groups WHERE chat_id='-1'").fetchone()
+        assert count == 1
+        assert row == ("Renamed Group", "private")
+
+
+class TestRegisterChatRemoved:
+    def test_removed_group_moves_to_log_and_leaves_all_groups(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        register_chat_added("-1", "My Group", "supergroup", "public", "2026-01-01 00:00:00", db_path=path)
+        register_chat_removed("-1", "2026-01-03 00:00:00", db_path=path)
+        conn = sqlite3.connect(path)
+        assert conn.execute("SELECT COUNT(*) FROM all_groups WHERE chat_id='-1'").fetchone()[0] == 0
+        log_row = conn.execute(
+            "SELECT chat_id, date_bot_add, date_bot_removed FROM all_chats_bot_log WHERE chat_id='-1'"
+        ).fetchone()
+        assert log_row == ("-1", "2026-01-01 00:00:00", "2026-01-03 00:00:00")
+
+    def test_removing_a_chat_that_was_never_added_is_a_safe_no_op(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        register_chat_removed("-999", "2026-01-01 00:00:00", db_path=path)  # must not raise
+        conn = sqlite3.connect(path)
+        assert conn.execute("SELECT COUNT(*) FROM all_chats_bot_log WHERE chat_id='-999'").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_feature_limit_for_chat - core per-tier usage-limit lookup, used by
+# /shareevent's own limit check. Previously had zero direct test coverage.
+# ---------------------------------------------------------------------------
+
+class TestGetFeatureLimitForChat:
+    def test_limit_applies_exactly_at_min_tier(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = sqlite3.connect(path)
+        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-1','FREE')")
+        conn.commit()
+        # shareevent's seeded defaults: min_tier=FREE, limit_count=3
+        assert get_feature_limit_for_chat("-1", "shareevent", db_path=path) == 3
+
+    def test_unlimited_above_min_tier(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        from datetime import datetime, timedelta
+        end = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = sqlite3.connect(path)
+        conn.execute("INSERT INTO all_groups (chat_id, type, subs_date_end) VALUES ('-2','PRO',?)", (end,))
+        conn.commit()
+        # PRO is above shareevent's FREE min_tier -> unlimited
+        assert get_feature_limit_for_chat("-2", "shareevent", db_path=path) is None
+
+    def test_unknown_feature_key_returns_none(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = sqlite3.connect(path)
+        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-1','FREE')")
+        conn.commit()
+        assert get_feature_limit_for_chat("-1", "notarealfeature", db_path=path) is None
+
+
+# ---------------------------------------------------------------------------
+# get_display_name - resolves "First Last" for mention links (_mention_link
+# in event_engine.py calls this for every rendered post). Previously had
+# zero direct test coverage despite affecting every post's display.
+# ---------------------------------------------------------------------------
+
+class TestGetDisplayName:
+    def _insert_user(self, path, user_id, first_name, last_name):
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, user_id, username, first_name, last_name) VALUES ('-1', ?, 'u', ?, ?)",
+            (user_id, first_name, last_name),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_full_name_when_both_first_and_last_on_file(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        self._insert_user(path, "100", "Alice", "Smith")
+        assert get_display_name("-1", "100", "fallback", db_path=path) == "Alice Smith"
+
+    def test_first_name_only_when_no_last_name(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        self._insert_user(path, "200", "Bob", None)
+        assert get_display_name("-1", "200", "fallback", db_path=path) == "Bob"
+
+    def test_falls_back_when_user_unknown(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert get_display_name("-1", "999", "fallback_name", db_path=path) == "fallback_name"
+
+    def test_falls_back_when_user_id_is_none(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert get_display_name("-1", None, "fallback_name", db_path=path) == "fallback_name"
+
+    def test_falls_back_when_user_id_is_empty_string(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert get_display_name("-1", "", "fallback_name", db_path=path) == "fallback_name"

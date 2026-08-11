@@ -4229,3 +4229,28 @@ class TestWaitlistVisibilityRendering:
         main_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == int("-100123"))
         text = main_call.kwargs.get("text", "")
         assert "*Waitlist* \\(0\\):" in text
+
+
+class TestGlobalTextRouter:
+    """global_text_router's dispatch logic - previously untested despite
+    being the entry point every raw text message flows through."""
+
+    async def test_routes_to_extra_player_input_when_awaiting(self, db_path):
+        upd = MagicMock()
+        ctx = MagicMock()
+        ctx.user_data = {"awaiting_extra_player_for": "ev1"}
+        with patch("handlers.handle_extra_player_input", new_callable=AsyncMock) as mock_extra, \
+             patch("handlers.track_everyone_message", new_callable=AsyncMock) as mock_track:
+            await handlers.global_text_router(upd, ctx)
+            assert mock_extra.called
+            assert not mock_track.called
+
+    async def test_routes_to_track_everyone_when_not_awaiting(self, db_path):
+        upd = MagicMock()
+        ctx = MagicMock()
+        ctx.user_data = {}
+        with patch("handlers.handle_extra_player_input", new_callable=AsyncMock) as mock_extra, \
+             patch("handlers.track_everyone_message", new_callable=AsyncMock) as mock_track:
+            await handlers.global_text_router(upd, ctx)
+            assert not mock_extra.called
+            assert mock_track.called
