@@ -727,15 +727,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     current_guests = u_row[1] if u_row else 0
 
                     if action == "going":
+                        already_waiting = any(
+                            str(e.get("user_id")) == str(user_id) and str(e.get("chat_id")) == str(click_chat_id)
+                            for e in waitlist
+                        )
                         if current_status != "going" and _is_at_capacity():
-                            waitlist.append({
-                                "chat_id": str(click_chat_id),
-                                "chat_name": None,  # resolved lazily by /waitlist and rendering, not stored stale here
-                                "username": username_raw,
-                                "user_id": str(user_id),
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            })
-                            data_changed = True
+                            if not already_waiting:
+                                waitlist.append({
+                                    "chat_id": str(click_chat_id),
+                                    "chat_name": None,  # resolved lazily by /waitlist and rendering, not stored stale here
+                                    "username": username_raw,
+                                    "user_id": str(user_id),
+                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                })
+                                data_changed = True
                             try:
                                 await query.answer(text=f"{ICON_STANDBY} Event is full - you've been added to the Waitlist", show_alert=True)
                             except Exception:
@@ -803,6 +808,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             return
 
+                    # Persist waitlist_data here too - this branch commits
+                    # and returns early, entirely bypassing the shared final
+                    # UPDATE further down (which only the master/open-event
+                    # path reaches). Without this, every in-memory
+                    # waitlist.append()/promotion above in this child branch
+                    # would silently vanish on commit.
+                    cursor.execute(
+                        "UPDATE events SET waitlist_data = ? WHERE event_id = ?",
+                        (json.dumps(waitlist), event_id),
+                    )
                     conn.commit()
 
                     if data_changed:
@@ -818,6 +833,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except Exception as e:
                             logger.error(f"Sheets child action log failed: {e}")
                         context.application.create_task(schedule_view_refresh(context, event_id))
+
+                    if waitlist_promotion:
+                        promo_chat_id, promo_username, promo_user_id = waitlist_promotion
+                        try:
+                            mention = _mention_link(promo_chat_id, promo_username, promo_user_id)
+                            await context.bot.send_message(
+                                chat_id=int(promo_chat_id),
+                                text=f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!",
+                                parse_mode="MarkdownV2",
+                            )
+                        except Exception as e:
+                            logger.error(f"Waitlist promotion announcement failed for chat {promo_chat_id}: {e}")
+
                     return
 
                 # ── Admin-only actions guard ──────────────────────────────────
@@ -831,13 +859,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         went_to_waitlist = False
                         if username_raw not in going_usernames:
                             if _is_at_capacity():
-                                waitlist.append({
-                                    "chat_id": str(click_chat_id),
-                                    "chat_name": None,
-                                    "username": username_raw,
-                                    "user_id": str(user_id),
-                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                })
+                                already_waiting = any(
+                                    str(e.get("user_id")) == str(user_id) and str(e.get("chat_id")) == str(click_chat_id)
+                                    for e in waitlist
+                                )
+                                if not already_waiting:
+                                    waitlist.append({
+                                        "chat_id": str(click_chat_id),
+                                        "chat_name": None,
+                                        "username": username_raw,
+                                        "user_id": str(user_id),
+                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    })
                                 went_to_waitlist = True
                                 try:
                                     await query.answer(text=f"{ICON_STANDBY} Event is full - you've been added to the Waitlist", show_alert=True)

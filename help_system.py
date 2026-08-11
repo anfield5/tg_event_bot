@@ -135,7 +135,10 @@ def _build_main_help_text(pro: bool) -> str:
         "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
         "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "\\-limit N \\[visible\\|hidden\\|onlycount\\] \\- caps going\\+guests across the whole event \\(main group \\+ every share\\); once full, new Going clicks join the Waitlist instead\\. Third word \\(default hidden\\) controls Waitlist visibility in the post \\- visible: the hub's own post shows everyone across every chat, a child chat's post shows only its own local entries; hidden: nothing shown, admin\\-only via /waitlist; onlycount: shows just the total count, no names, everywhere\\. Requires a higher tier\\.\n"
+        "\\-limit N \\[visible\\|hidden\\|onlycount\\] \\- caps going\\+guests across the whole event; once full, new Going clicks join the Waitlist instead\\. Requires a higher tier\\.\n"
+        "    visible \\- hub's post shows everyone across every chat; a child chat's post shows only its own\n"
+        "    hidden \\(default\\) \\- nothing shown in the post, admin\\-only via /waitlist\n"
+        "    onlycount \\- shows just the total count, no names\n"
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Edit the active event \\(same flags as /newevent\\)\n"
     )
     if pro:

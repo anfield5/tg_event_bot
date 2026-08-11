@@ -21,7 +21,7 @@ from event_engine import (
 from config import (
     DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, logger,
     ICON_SHARED, ICON_STATS, ICON_WARNING,
-    ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
+    ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_STANDBY,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
 from db import track_user, get_connection, get_feature_limit_for_chat
@@ -46,6 +46,31 @@ MODE_MAP = {
 # ---------------------------------------------------------------------------
 # Argument parsers
 # ---------------------------------------------------------------------------
+
+async def _validate_limit_flag(message, chat_id: str, limit_raw: str):
+    """
+    Validates -limit's gate (event_limit feature) and value (must be a
+    positive whole number). Shared by newevent and editevent, which had
+    identical validation logic duplicated inline before this extraction.
+
+    Returns the validated int on success. Returns None if a reply was
+    already sent to the user (the caller should `return` immediately in
+    that case, without proceeding any further).
+    """
+    if not has_feature(chat_id, "event_limit"):
+        await message.reply_text(
+            f"{ICON_WARNING} `\\-limit` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+            parse_mode="MarkdownV2",
+        )
+        return None
+    if not limit_raw.isdigit() or int(limit_raw) <= 0:
+        await message.reply_text(
+            "❌ *Invalid `\\-limit` value\\.* Must be a whole number greater than 0\\.",
+            parse_mode="MarkdownV2",
+        )
+        return None
+    return int(limit_raw)
+
 
 def parse_event_args(args: list):
     """
@@ -209,25 +234,15 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
             )
             return
 
-    # -limit is a gated feature (event_limit) - check BEFORE validating its
-    # value, so an ungated chat gets a clear "needs a higher tier" message
-    # instead of silently having the flag ignored.
+    # -limit is a gated feature (event_limit) - validated BEFORE anything
+    # else, so an ungated/invalid flag gets a clear message instead of
+    # silently being ignored.
     total_limit_value = None
     waitlist_visibility_value = "hidden"
     if limit_raw is not None:
-        if not has_feature(chat_id, "event_limit"):
-            await message.reply_text(
-                f"{ICON_WARNING} `\\-limit` requires a higher tier\\. Contact the bot owner to upgrade\\.",
-                parse_mode="MarkdownV2",
-            )
+        total_limit_value = await _validate_limit_flag(message, chat_id, limit_raw)
+        if total_limit_value is None:
             return
-        if not limit_raw.isdigit() or int(limit_raw) <= 0:
-            await message.reply_text(
-                "❌ *Invalid `\\-limit` value\\.* Must be a whole number greater than 0\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-        total_limit_value = int(limit_raw)
         if reserve_raw is not None:
             waitlist_visibility_value = reserve_raw
 
@@ -358,27 +373,75 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             updated_date = parsed
 
         # -limit is gated behind event_limit, same as newevent. Only if
-        # -limit was explicitly supplied. Note: lowering the limit below
-        # current headcount does NOT retroactively move anyone into the
-        # Waitlist - only future Going clicks respect the new cap.
+        # -limit was explicitly supplied.
         updated_limit = current_limit
         updated_waitlist_visibility = current_waitlist_visibility
+        promotions_to_announce = []  # [(chat_id, username, user_id), ...] - sent after commit
         if limit_raw is not None:
-            if not has_feature(chat_id, "event_limit"):
+            validated = await _validate_limit_flag(update.message, chat_id, limit_raw)
+            if validated is None:
+                return
+
+            # Reject lowering the limit below the event's current combined
+            # headcount (main group + every share) - the old limit is kept
+            # unchanged rather than silently accepting an inconsistent state.
+            cursor.execute("SELECT going_data, counters_data FROM events WHERE event_id = ?", (event_id,))
+            going_data_raw, counters_data_raw = cursor.fetchone()
+            main_headcount = len(json.loads(going_data_raw)) + sum(json.loads(counters_data_raw).values())
+            cursor.execute(
+                "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
+                (event_id,),
+            )
+            child_headcount = cursor.fetchone()[0]
+            current_headcount = main_headcount + child_headcount
+
+            if validated < current_headcount:
                 await update.message.reply_text(
-                    f"{ICON_WARNING} `\\-limit` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+                    f"{ICON_WARNING} `\\-limit {validated}` is below the current headcount \\({current_headcount}\\) "
+                    f"across the main group and every share combined \\- the limit was left unchanged at {current_limit}\\.",
                     parse_mode="MarkdownV2",
                 )
                 return
-            if not limit_raw.isdigit() or int(limit_raw) <= 0:
-                await update.message.reply_text(
-                    "❌ *Invalid `\\-limit` value\\.* Must be a whole number greater than 0\\.",
-                    parse_mode="MarkdownV2",
-                )
-                return
-            updated_limit = int(limit_raw)
+
+            updated_limit = validated
             if reserve_raw is not None:
                 updated_waitlist_visibility = reserve_raw
+
+            # Limit was raised: promote FIFO (oldest first, globally across
+            # every chat's waitlist entries) until either the waitlist is
+            # empty or headcount reaches the new limit.
+            free_slots = updated_limit - current_headcount
+            if free_slots > 0:
+                cursor.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id = ?", (event_id,))
+                going_raw, counters_raw, waitlist_raw = cursor.fetchone()
+                going = json.loads(going_raw)
+                counters = json.loads(counters_raw)
+                waitlist = json.loads(waitlist_raw or "[]")
+                waitlist.sort(key=lambda e: e.get("timestamp", ""))
+
+                to_promote = waitlist[:free_slots]
+                remaining_waitlist = waitlist[free_slots:]
+
+                for entry in to_promote:
+                    p_chat_id = entry["chat_id"]
+                    p_username = entry["username"]
+                    p_user_id = entry["user_id"]
+                    if str(p_chat_id) == str(chat_id):
+                        # Promote into the main hub's own going list
+                        going.append(f"{p_username} ({p_user_id})")
+                    else:
+                        # Promote into a child chat's event_users
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
+                            (event_id, p_chat_id, p_user_id, p_username),
+                        )
+                    promotions_to_announce.append((p_chat_id, p_username, p_user_id))
+
+                if to_promote:
+                    cursor.execute(
+                        "UPDATE events SET going_data = ?, waitlist_data = ? WHERE event_id = ?",
+                        (json.dumps(going), json.dumps(remaining_waitlist), event_id),
+                    )
 
         cursor.execute(
             """
@@ -389,6 +452,17 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             (updated_name, updated_gi, updated_ni, updated_date, updated_limit, updated_waitlist_visibility, event_id),
         )
         conn.commit()
+
+    for p_chat_id, p_username, p_user_id in promotions_to_announce:
+        try:
+            mention = _mention_link(p_chat_id, p_username, p_user_id)
+            await context.bot.send_message(
+                chat_id=int(p_chat_id),
+                text=f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!",
+                parse_mode="MarkdownV2",
+            )
+        except Exception as e:
+            logger.error(f"editevent limit-raise promotion announcement failed for chat {p_chat_id}: {e}")
 
     await update.message.reply_text(
         "⚙️ *Event updated\\. Refreshing views\\.*", parse_mode="MarkdownV2"
@@ -513,15 +587,7 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
 
     # The last argument is the flag, everything before it is usernames
     flag = args[-1].lower().strip()
-    users_raw = " ".join(args[:-1])
-
-    # Split by comma first, then by space
-    usernames = []
-    for part in users_raw.split(','):
-        for u in part.split():
-            clean_u = u.lstrip('@').strip()
-            if clean_u:
-                usernames.append(clean_u)
+    usernames = parse_user_args(args[:-1])
 
     active_flags  = {"-a", "-active"}
     passive_flags = {"-p", "-passive"}
