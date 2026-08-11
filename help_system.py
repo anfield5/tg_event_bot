@@ -57,7 +57,7 @@ async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYP
 # are never tier-gated (see the earlier decision to keep them out of
 # feature_flags entirely, matching /userid/chatid/help/start).
 _BUTTON_FEATURE_MAP = {
-    "lifecycle":     ["newevent", "editevent", "verification", "add_extra_member"],
+    "lifecycle":     ["newevent", "editevent", "verification", "add_extra_member", "event_limit"],
     "distribution":  ["shareevent"],
     "users":         ["user_management"],
     "utility":       [],
@@ -131,11 +131,12 @@ def _build_main_help_text(pro: bool) -> str:
     """
     text = (
         "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\] \\- Create a new event\n"
+        "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Create a new event\n"
         "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
         "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\] \\- Edit the active event \\(same \\-d\\|\\-date as /newevent\\)\n"
+        "\\-limit N \\[visible\\|hidden\\|onlycount\\] \\- caps going\\+guests across the whole event \\(main group \\+ every share\\); once full, new Going clicks join the Waitlist instead\\. Third word \\(default hidden\\) controls Waitlist visibility in the post \\- visible: the hub's own post shows everyone across every chat, a child chat's post shows only its own local entries; hidden: nothing shown, admin\\-only via /waitlist; onlycount: shows just the total count, no names, everywhere\\. Requires a higher tier\\.\n"
+        "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Edit the active event \\(same flags as /newevent\\)\n"
     )
     if pro:
         text += "/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet\n"
@@ -215,7 +216,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ),
         "help_distribution": (
             "📢 *Distribution Control*\n\n"
-            "/shareevent \\[target\\_alias/chatid\\] \\[\\-v\\|\\-h\\|\\-oc\\] \\- Share active event\n\n"
+            "/shareevent \\[target\\_alias/chatid\\] \\[\\-v\\|\\-h\\|\\-oc\\] \\- Share active event\n"
+            "/waitlist \\- Show the Waitlist for the latest event \\(hub sees everyone with `from <chat>`, a child chat sees only its own\\)\n\n"
             "Modes:\n"
             "  • \\-v \\| \\-visible: Show full event in child chat\n"
             "  • \\-h \\| \\-hidden: Hide event, only show going/notgoing counts\n"

@@ -15,7 +15,7 @@ from help_system import (
     upgrade_info_callback_handler,
 )
 from event_engine import (
-    get_event_lock, schedule_view_refresh, update_all_shared_views, button_handler,
+    get_event_lock, schedule_view_refresh, update_all_shared_views, button_handler, _mention_link,
 )
 
 from config import (
@@ -59,17 +59,41 @@ def parse_event_args(args: list):
         Examples:
             -date 14.07.2026
             -date 14.07.2026 19:00
+    -limit <N> [visible|hidden|onlycount] – caps going+guests across the
+        whole event (main group + every share); once full, new Going
+        clicks join the Waitlist instead. Third word is optional (default
+        hidden) and controls Waitlist visibility in the POST itself:
+          visible   – shown under Not Going. In the main hub's own post,
+                      shows EVERY waiting person across every chat the
+                      event was shared to (labeled "from <chat>" for
+                      cross-chat entries); in a child chat's own post,
+                      shows only that chat's own local entries.
+          hidden    – nothing shown in any post; people still queue
+                      normally, viewable only via /waitlist.
+          onlycount – shows just the total count across every chat
+                      combined, no names, in every post.
+        /waitlist always returns everyone regardless of this setting -
+        it's admin-only, not gated by the post's own visibility.
+        Gated behind the event_limit feature (PRO by default).
+        Examples:
+            -limit 20 visible
+            -limit 25 onlycount
+            -limit 30 hidden
+            -limit 40             (hidden by default)
 
-    Returns: (event_name, going_icon, notgoing_icon, event_date_raw)
-    event_date_raw is the raw token(s) joined; validation happens in the caller.
+    Returns: (event_name, going_icon, notgoing_icon, event_date_raw, total_limit_raw, reserve_raw)
+    event_date_raw/total_limit_raw/reserve_raw are the raw token(s); validation happens in the caller.
     """
     going_icon    = None
     notgoing_icon = None
     event_date    = None
+    total_limit   = None
+    reserve_mode  = None
 
     gi_flags   = {"-gi", "-goingicon"}
     ni_flags   = {"-ni", "-notgoingicon"}
     date_flags = {"-d", "-date"}
+    limit_flags = {"-limit"}
 
     tokens       = args[:]
     clean_tokens = []
@@ -96,12 +120,23 @@ def parse_event_args(args: list):
                 i += 2
             event_date = date_val
 
+        elif token in limit_flags and i + 1 < len(tokens):
+            total_limit = tokens[i + 1]  # validated by the caller
+            i += 2
+            # Optional visible|hidden right after the amount - exact match
+            # only, so an event whose name happens to start with that word
+            # isn't accidentally swallowed (same lookahead technique as
+            # -date's optional HH:MM suffix above).
+            if i < len(tokens) and tokens[i].strip().lower() in ("visible", "hidden", "onlycount"):
+                reserve_mode = tokens[i].strip().lower()
+                i += 1
+
         else:
             clean_tokens.append(token)
             i += 1
 
     event_name = " ".join(clean_tokens) if clean_tokens else None
-    return event_name, going_icon, notgoing_icon, event_date
+    return event_name, going_icon, notgoing_icon, event_date, total_limit, reserve_mode
 
 
 def parse_user_args(args: list) -> list:
@@ -139,6 +174,7 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         -gi / -goingicon <emoji>
         -ni / -notgoingicon <emoji>
         -date / -d <dd.mm.yyyy> [HH:MM]
+        -limit <N> [visible|hidden]   (gated behind event_limit, PRO by default)
     """
     chat_id = await resolve_hub_chat_id(update, context, "newevent", override_chat_id)
     if chat_id is None:
@@ -158,7 +194,7 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         )
         return
 
-    event_name_raw, g_icon, n_icon, date_raw = parse_event_args(args)
+    event_name_raw, g_icon, n_icon, date_raw, limit_raw, reserve_raw = parse_event_args(args)
     going_icon    = g_icon if g_icon else DEFAULT_GOING_ICON
     notgoing_icon = n_icon if n_icon else DEFAULT_NOTGOING_ICON
 
@@ -172,6 +208,28 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 parse_mode="MarkdownV2",
             )
             return
+
+    # -limit is a gated feature (event_limit) - check BEFORE validating its
+    # value, so an ungated chat gets a clear "needs a higher tier" message
+    # instead of silently having the flag ignored.
+    total_limit_value = None
+    waitlist_visibility_value = "hidden"
+    if limit_raw is not None:
+        if not has_feature(chat_id, "event_limit"):
+            await message.reply_text(
+                f"{ICON_WARNING} `\\-limit` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+        if not limit_raw.isdigit() or int(limit_raw) <= 0:
+            await message.reply_text(
+                "❌ *Invalid `\\-limit` value\\.* Must be a whole number greater than 0\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+        total_limit_value = int(limit_raw)
+        if reserve_raw is not None:
+            waitlist_visibility_value = reserve_raw
 
     event_id = str(uuid4())[:8]
 
@@ -189,11 +247,11 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 """
                 INSERT INTO events
                     (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot)
-                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?)
+                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility)
+                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?)
                 """,
                 (event_id, chat_id, str(message.message_id),
-                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot),
+                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value),
             )
             conn.commit()
     except Exception as e:
@@ -266,7 +324,7 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT event_id, name, going_icon, notgoing_icon, event_date
+            SELECT event_id, name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility
             FROM events
             WHERE chat_id = ? AND event_status IN (0, 1)
             ORDER BY ROWID DESC LIMIT 1
@@ -280,8 +338,8 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             )
             return
 
-        event_id, current_name, current_gi, current_ni, current_date = row
-        new_name, new_gi, new_ni, date_raw = parse_event_args(args)
+        event_id, current_name, current_gi, current_ni, current_date, current_limit, current_waitlist_visibility = row
+        new_name, new_gi, new_ni, date_raw, limit_raw, reserve_raw = parse_event_args(args)
 
         updated_name = new_name   if new_name   else current_name
         updated_gi   = new_gi     if new_gi     else current_gi
@@ -299,13 +357,36 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
                 return
             updated_date = parsed
 
+        # -limit is gated behind event_limit, same as newevent. Only if
+        # -limit was explicitly supplied. Note: lowering the limit below
+        # current headcount does NOT retroactively move anyone into the
+        # Waitlist - only future Going clicks respect the new cap.
+        updated_limit = current_limit
+        updated_waitlist_visibility = current_waitlist_visibility
+        if limit_raw is not None:
+            if not has_feature(chat_id, "event_limit"):
+                await update.message.reply_text(
+                    f"{ICON_WARNING} `\\-limit` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+            if not limit_raw.isdigit() or int(limit_raw) <= 0:
+                await update.message.reply_text(
+                    "❌ *Invalid `\\-limit` value\\.* Must be a whole number greater than 0\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+            updated_limit = int(limit_raw)
+            if reserve_raw is not None:
+                updated_waitlist_visibility = reserve_raw
+
         cursor.execute(
             """
             UPDATE events
-            SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?
+            SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?, total_limit = ?, waitlist_visibility = ?
             WHERE event_id = ?
             """,
-            (updated_name, updated_gi, updated_ni, updated_date, event_id),
+            (updated_name, updated_gi, updated_ni, updated_date, updated_limit, updated_waitlist_visibility, event_id),
         )
         conn.commit()
 
@@ -951,7 +1032,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT event_id, name, event_status, going_icon, notgoing_icon
+            SELECT event_id, name, event_status, going_icon, notgoing_icon, total_limit
             FROM events
             WHERE chat_id = ? AND event_status IN (0, 1)
             ORDER BY ROWID DESC LIMIT 1
@@ -967,7 +1048,26 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             )
             return
 
-        event_id, name, event_status, going_icon, notgoing_icon = event_row
+        event_id, name, event_status, going_icon, notgoing_icon, total_limit = event_row
+
+        if total_limit is not None:
+            cursor.execute("SELECT going_data, counters_data FROM events WHERE event_id = ?", (event_id,))
+            going_data_raw, counters_data_raw = cursor.fetchone()
+            main_headcount = len(json.loads(going_data_raw)) + sum(json.loads(counters_data_raw).values())
+            cursor.execute(
+                "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
+                (event_id,),
+            )
+            child_headcount = cursor.fetchone()[0]
+            if main_headcount + child_headcount >= total_limit:
+                await context.bot.send_message(
+                    chat_id=main_hub_chat_id,
+                    text=f"{ICON_WARNING} This event is already at its `\\-limit` capacity \\({total_limit}\\) "
+                         f"across the main group and every share combined \\- sharing to a new "
+                         f"group/channel is blocked while it's full\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
 
         cursor.execute(
             "SELECT chat_id FROM sub_chats WHERE alias = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
@@ -1264,6 +1364,78 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
         logger.error(f"Sheets extra player log failed: {e}")
 
     context.application.create_task(schedule_view_refresh(context, event_id))
+
+
+# ---------------------------------------------------------------------------
+# Waitlist
+# ---------------------------------------------------------------------------
+
+async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shows the waitlist for the most recently created event in whichever
+    hub this command's own chat belongs to. Scoped by WHERE it's called
+    from, same rule as the Waitlist section rendered inside a post:
+      - Main hub: every entry, across every chat - each one labeled
+        "from <chat_name>" unless it was added in the hub itself.
+      - Child group/channel: only that chat's own local entries, never
+        another chat's waitlist (even though the underlying data is one
+        event-wide list, this command never leaks across chats).
+    Not owner-only or admin-only - matches /status's own visibility (any
+    member can check it), since seeing your position in line isn't a
+    privileged action the way changing tiers/subscriptions is.
+    """
+    calling_chat_id = str(update.effective_chat.id)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT owner_chat_id FROM sub_chats WHERE chat_id = ?",
+            (calling_chat_id,),
+        )
+        sub_row = cursor.fetchone()
+        is_child_caller = sub_row is not None and sub_row[0] is not None
+        hub_chat_id = sub_row[0] if is_child_caller else calling_chat_id
+
+        cursor.execute(
+            "SELECT waitlist_data FROM events WHERE chat_id = ? ORDER BY ROWID DESC LIMIT 1",
+            (hub_chat_id,),
+        )
+        event_row = cursor.fetchone()
+
+    if not event_row:
+        await update.message.reply_text("❌ No event found for this group\\.", parse_mode="MarkdownV2")
+        return
+
+    waitlist = json.loads(event_row[0] or "[]")
+    if is_child_caller:
+        waitlist = [e for e in waitlist if str(e.get("chat_id")) == calling_chat_id]
+
+    if not waitlist:
+        await update.message.reply_text("The waitlist is currently empty\\.", parse_mode="MarkdownV2")
+        return
+
+    chat_title_cache = {}
+
+    async def _title(cid):
+        if cid not in chat_title_cache:
+            try:
+                obj = await context.bot.get_chat(int(cid) if str(cid).replace("-", "").isdigit() else cid)
+                chat_title_cache[cid] = obj.title or "Group"
+            except Exception:
+                chat_title_cache[cid] = "Group"
+        return chat_title_cache[cid]
+
+    lines = []
+    for entry in waitlist:
+        mention = _mention_link(entry["chat_id"], entry["username"], entry["user_id"])
+        if not is_child_caller and str(entry["chat_id"]) != str(hub_chat_id):
+            chat_title = await _title(entry["chat_id"])
+            lines.append(f"{mention} from {escape_markdown(chat_title)}")
+        else:
+            lines.append(mention)
+
+    text = f"*Waitlist* \\({len(waitlist)}\\):\n" + "\n".join(lines)
+    await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 # ---------------------------------------------------------------------------

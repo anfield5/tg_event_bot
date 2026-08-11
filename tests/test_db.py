@@ -10,7 +10,10 @@ since those functions accept an optional path argument.
 
 import sqlite3
 import pytest
-from db import init_db, track_user, get_feature_flags, update_feature_flag, log_command_usage
+from db import (
+    init_db, track_user, get_feature_flags, update_feature_flag, log_command_usage,
+    get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -524,11 +527,11 @@ class TestFeatureFlags:
     overwritten by a second init_db() call.
     """
 
-    def test_seeds_thirteen_flags_on_fresh_db(self, tmp_path):
+    def test_seeds_fourteen_flags_on_fresh_db(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         rows = get_feature_flags(db_path=path)
-        assert len(rows) == 13
+        assert len(rows) == 14
 
     def test_free_pro_admin_tiers_all_present(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -659,3 +662,135 @@ class TestMigrationSubGroupsRename:
         init_db(db_path=path)  # must not raise or duplicate
         rows = fetch_all(path, "SELECT chat_id, alias FROM sub_chats")
         assert rows == [("-1", "test")]
+
+
+# ---------------------------------------------------------------------------
+# Waitlist helpers (v3.24.0): get_event_total_going_headcount, add_to_waitlist,
+# promote_next_from_waitlist. These are the pure DB-layer building blocks the
+# capacity check and Standby/promotion mechanics in event_engine.button_handler
+# are built on - see tests/test_handlers_async.py for the full click-through
+# behavior.
+# ---------------------------------------------------------------------------
+
+import json
+
+
+def _insert_event_for_waitlist(path, going=None, counters=None, total_limit=None, waitlist=None):
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+           event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+           VALUES ('ev1','-100','1','Test','👍','❌',0,?,'[]',?,'[]',?,?)""",
+        (
+            json.dumps(going or []),
+            json.dumps(counters or {}),
+            total_limit,
+            json.dumps(waitlist or []),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestGetEventTotalGoingHeadcount:
+    """Counts people, not rows - a person with guests fills multiple spots."""
+
+    def test_counts_main_group_going_plus_guests(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path, going=["alice (1)", "bob (2)"], counters={"alice": 2})
+        # alice + her 2 guests + bob = 4
+        assert get_event_total_going_headcount("ev1", db_path=path) == 4
+
+    def test_includes_child_chat_going_and_guests(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path, going=["alice (1)"])
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','2','carol','going',1)"
+        )
+        conn.commit()
+        conn.close()
+        # alice (main) + carol + her 1 guest = 3
+        assert get_event_total_going_headcount("ev1", db_path=path) == 3
+
+    def test_notgoing_child_rows_are_not_counted(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path, going=[])
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','2','carol','notgoing',3)"
+        )
+        conn.commit()
+        conn.close()
+        assert get_event_total_going_headcount("ev1", db_path=path) == 0
+
+    def test_unknown_event_returns_zero(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        assert get_event_total_going_headcount("no-such-event", db_path=path) == 0
+
+
+class TestAddToWaitlist:
+    def test_appends_an_entry(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path)
+        add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
+        conn = sqlite3.connect(path)
+        wl = json.loads(conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0])
+        assert len(wl) == 1
+        assert wl[0]["username"] == "dave"
+        assert wl[0]["chat_id"] == "-100"
+
+    def test_duplicate_add_same_user_same_chat_is_a_no_op(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path)
+        add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
+        add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
+        conn = sqlite3.connect(path)
+        wl = json.loads(conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0])
+        assert len(wl) == 1
+
+    def test_same_user_different_chats_are_independent_entries(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path)
+        add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
+        add_to_waitlist("ev1", "-200", "Child Group", "dave", "4", db_path=path)
+        conn = sqlite3.connect(path)
+        wl = json.loads(conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0])
+        assert len(wl) == 2
+
+
+class TestPromoteNextFromWaitlist:
+    def test_promotes_the_oldest_entry_for_that_chat(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path, waitlist=[
+            {"chat_id": "-100", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "2026-01-01 00:00:00"},
+            {"chat_id": "-100", "chat_name": None, "username": "erin", "user_id": "5", "timestamp": "2026-01-01 00:00:01"},
+        ])
+        promoted = promote_next_from_waitlist("ev1", "-100", db_path=path)
+        assert promoted["username"] == "dave"
+        conn = sqlite3.connect(path)
+        wl = json.loads(conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0])
+        assert [e["username"] for e in wl] == ["erin"]
+
+    def test_only_considers_entries_for_the_given_chat(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path, waitlist=[
+            {"chat_id": "-200", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "2026-01-01 00:00:00"},
+        ])
+        promoted = promote_next_from_waitlist("ev1", "-100", db_path=path)
+        assert promoted is None
+
+    def test_empty_waitlist_returns_none(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        _insert_event_for_waitlist(path)
+        assert promote_next_from_waitlist("ev1", "-100", db_path=path) is None

@@ -1167,8 +1167,8 @@ class TestHelpTierAwareKeyboard:
         assert any("Alias" in t for t in row3_texts)
         assert any("Monitoring" in t for t in row3_texts)
 
-    async def test_distribution_and_lifecycle_buttons_always_active(self, db_path):
-        """These two sections are free for everyone, regardless of tier."""
+    async def test_distribution_button_always_active(self, db_path):
+        """Distribution (shareevent) is free for everyone, regardless of tier."""
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
@@ -1179,9 +1179,24 @@ class TestHelpTierAwareKeyboard:
         keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
         flat = [btn for row in keyboard.inline_keyboard for btn in row]
         dist_btn = next(b for b in flat if "Distribution" in b.text)
-        life_btn = next(b for b in flat if "Lifecycle" in b.text)
         assert dist_btn.callback_data == "help_distribution"
-        assert life_btn.callback_data == "help_lifecycle"
+
+    async def test_lifecycle_button_locked_on_free_hub(self, db_path):
+        """Event Lifecycle bundles -limit/-reserve (event_limit, PRO by
+        default) alongside newevent/editevent themselves, so a FREE hub
+        sees it locked even though newevent/editevent are free on their own."""
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        flat = [btn for row in keyboard.inline_keyboard for btn in row]
+        life_btn = next(b for b in flat if "Lifecycle" in b.text)
+        assert life_btn.callback_data == "upgrade_info_lifecycle"
+        assert config.ICON_PREMIUM in life_btn.text
 
 
 # ── button_handler: username without id-suffix ────────────────────────────────
@@ -3646,3 +3661,571 @@ class TestAllchannelsPageCallback:
             await subscription.allchannels_page_callback_handler(upd, ctx)
 
             assert not query.edit_message_text.called
+
+
+# ---------------------------------------------------------------------------
+# Waitlist / Standby (v3.24.0): the standalone /limit command's capacity
+# check + Standby redirect + FIFO auto-promotion in button_handler,
+# /waitlist command, and the /shareevent capacity block.
+# ---------------------------------------------------------------------------
+
+def _make_fake_button_query(callback_data, chat_id, user_id, username):
+    query = MagicMock()
+    query.data = callback_data
+    query.message = MagicMock()
+    query.message.chat_id = chat_id
+    query.from_user = MagicMock()
+    query.from_user.id = user_id
+    query.from_user.username = username
+    query.from_user.first_name = username
+    query.from_user.last_name = None
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    return query
+
+
+class TestButtonHandlerCapacityAndPromotion:
+    """Capacity check + Standby redirect + FIFO auto-promotion on Going/Not
+    Going clicks, in the main hub, driven straight through button_handler."""
+
+    async def _click(self, db_path, action, chat_id, user_id, username):
+        query = _make_fake_button_query(f"{action}_ev1", chat_id, user_id, username)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard_task(coro):
+            # Same fix as make_context()'s own create_task - close the
+            # coroutine instead of leaving it dangling, or Python emits
+            # "coroutine was never awaited" (often misattributed to
+            # whichever unrelated test happens to be running when the
+            # garbage collector eventually gets to it).
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+        return query, ctx
+
+    async def test_going_click_over_capacity_joins_waitlist_not_going(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_open)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,'[]',1)""",
+            (json.dumps(["alice (1)", "bob (2)"]),),
+        )
+        conn.commit()
+        conn.close()
+
+        query, ctx = await self._click(db_path, "going", "-100", 4, "dave")
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert "dave" not in row[0]
+        waitlist = json.loads(row[1])
+        assert len(waitlist) == 1 and waitlist[0]["username"] == "dave"
+        assert "Waitlist" in query.answer.call_args.kwargs.get("text", "")
+
+    async def test_notgoing_click_promotes_oldest_waitlist_entry(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_open)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,?,1)""",
+            (
+                json.dumps(["alice (1)", "bob (2)"]),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "2026-01-01 00:00:00"}]),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        query, ctx = await self._click(db_path, "notgoing", "-100", 2, "bob")
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        going = json.loads(row[0])
+        assert any("dave" in g for g in going)
+        assert json.loads(row[1]) == []
+        ctx.bot.send_message.assert_awaited_once()
+        assert "moved from the Waitlist to Going" in ctx.bot.send_message.call_args.kwargs["text"]
+
+    async def test_notgoing_click_with_empty_waitlist_sends_no_announcement(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',5,'[]')""",
+            (json.dumps(["alice (1)"]),),
+        )
+        conn.commit()
+        conn.close()
+
+        query, ctx = await self._click(db_path, "notgoing", "-100", 1, "alice")
+        ctx.bot.send_message.assert_not_awaited()
+
+    async def test_going_click_under_capacity_is_unaffected(self, db_path):
+        """No total_limit set at all - going works exactly as before, no waitlist involved."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        conn.close()
+
+        query, ctx = await self._click(db_path, "going", "-100", 1, "alice")
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert "alice" in row[0]
+        assert json.loads(row[1]) == []
+
+
+class TestWaitlistCommand:
+    async def test_from_main_hub_shows_everyone_with_from_label(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps([
+                {"chat_id": "-100", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "t"},
+                {"chat_id": "-200", "chat_name": None, "username": "erin", "user_id": "5", "timestamp": "t"},
+            ]),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','childgroup')")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Child Group"))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot)
+
+        await handlers.waitlist_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "dave" in text and "erin" in text
+        assert "from" in text
+
+    async def test_from_child_chat_shows_only_local_entries(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps([
+                {"chat_id": "-100", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "t"},
+                {"chat_id": "-200", "chat_name": None, "username": "erin", "user_id": "5", "timestamp": "t"},
+            ]),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','childgroup')")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-200, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot)
+
+        await handlers.waitlist_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "erin" in text
+        assert "dave" not in text
+
+    async def test_empty_waitlist_says_so(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot)
+
+        await handlers.waitlist_command(upd, ctx)
+
+        assert "empty" in msg.reply_text.call_args.args[0].lower()
+
+    async def test_no_event_at_all(self, db_path):
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot)
+
+        await handlers.waitlist_command(upd, ctx)
+
+        assert "No event found" in msg.reply_text.call_args.args[0]
+
+
+class TestShareeventCapacityBlock:
+    async def test_blocked_when_event_is_at_total_limit(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2)""",
+            (json.dumps(["alice (1)", "bob (2)"]),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','childgroup')")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["childgroup"])
+
+        await handlers.shareevent(upd, ctx)
+
+        assert "already at its" in bot.send_message.call_args.kwargs.get("text", "")
+        conn = sqlite3.connect(db_path)
+        assert conn.execute("SELECT COUNT(*) FROM event_shares WHERE event_id='ev1'").fetchone()[0] == 0
+
+    async def test_not_blocked_when_under_capacity(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',10)""",
+            (json.dumps(["alice (1)"]),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','childgroup')")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["childgroup"])
+
+        with patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.shareevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        assert conn.execute("SELECT COUNT(*) FROM event_shares WHERE event_id='ev1'").fetchone()[0] == 1
+
+
+class TestCreateEventKeyboardStandby:
+    """create_event_keyboard's is_full parameter (Going -> Standby label)."""
+
+    def test_is_full_changes_going_to_standby(self):
+        kb = handlers.create_event_keyboard("ev1", 0, "👍", "❌", is_full=True)
+        flat = [b for row in kb.inline_keyboard for b in row]
+        going_btn = next(b for b in flat if b.callback_data == "going_ev1")
+        assert "Standby" in going_btn.text
+        assert "Going" not in going_btn.text
+
+    def test_not_full_keeps_going_label(self):
+        kb = handlers.create_event_keyboard("ev1", 0, "👍", "❌", is_full=False)
+        flat = [b for row in kb.inline_keyboard for b in row]
+        going_btn = next(b for b in flat if b.callback_data == "going_ev1")
+        assert "Going" in going_btn.text
+        assert "Standby" not in going_btn.text
+
+
+
+
+class TestNeweventEditeventLimitFlag:
+    """-limit N [visible|hidden] on newevent/editevent - combined single
+    flag (not a separate -reserve keyword), gated behind the event_limit
+    feature (PRO by default)."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_sheets(self):
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            yield
+
+    # ---- newevent ----
+
+    async def test_newevent_limit_visible_on_pro_hub(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-limit", "20", "visible"])
+
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT total_limit, waitlist_visibility FROM events WHERE name='Party'").fetchone()
+        assert row == (20, "visible")
+
+    async def test_newevent_limit_onlycount_on_pro_hub(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-limit", "22", "onlycount"])
+
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT total_limit, waitlist_visibility FROM events WHERE name='Party'").fetchone()
+        assert row == (22, "onlycount")
+
+    async def test_newevent_limit_hidden_on_pro_hub(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-limit", "30", "hidden"])
+
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT total_limit, waitlist_visibility FROM events WHERE name='Party'").fetchone()
+        assert row == (30, "hidden")
+
+    async def test_newevent_limit_without_visibility_defaults_hidden(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-limit", "40"])
+
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT total_limit, waitlist_visibility FROM events WHERE name='Party'").fetchone()
+        assert row == (40, "hidden")
+
+    async def test_newevent_limit_rejected_on_free_hub(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-limit", "10"])
+
+        await handlers.newevent(upd, ctx)
+
+        assert "higher tier" in msg.reply_text.call_args.args[0]
+        conn = sqlite3.connect(db_path)
+        assert conn.execute("SELECT COUNT(*) FROM events WHERE name='Party'").fetchone()[0] == 0
+
+    async def test_newevent_without_limit_flag_works_on_free_hub(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party"])
+
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT name, total_limit FROM events WHERE name='Party'").fetchone()
+        assert row == ("Party", None)
+
+    async def test_newevent_zero_limit_rejected(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-limit", "0"])
+
+        await handlers.newevent(upd, ctx)
+
+        assert "Invalid" in msg.reply_text.call_args.args[0]
+        conn = sqlite3.connect(db_path)
+        assert conn.execute("SELECT COUNT(*) FROM events WHERE name='Party'").fetchone()[0] == 0
+
+    async def test_newevent_visible_alone_without_limit_becomes_part_of_name(self, db_path):
+        """No -limit at all means 'visible' is just plain text, not a
+        flag value - the ambiguity-avoidance edge case."""
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["visible", "Party"])
+
+        await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT name FROM events").fetchone()
+        assert row == ("visible Party",)
+
+    # ---- editevent ----
+
+    async def test_editevent_limit_visible_on_pro_hub(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100123','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-limit", "25", "visible"])
+
+        await handlers.editevent(upd, ctx)
+
+        row = conn.execute("SELECT total_limit, waitlist_visibility FROM events WHERE event_id='ev1'").fetchone()
+        assert row == (25, "visible")
+
+    async def test_editevent_limit_rejected_on_free_hub(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100123','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-limit", "5"])
+
+        await handlers.editevent(upd, ctx)
+
+        assert "higher tier" in msg.reply_text.call_args.args[0]
+        row = conn.execute("SELECT total_limit FROM events WHERE event_id='ev1'").fetchone()
+        assert row == (None,)
+
+    async def test_editevent_invalid_limit_value_rejected(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100123','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-limit", "0"])
+
+        await handlers.editevent(upd, ctx)
+
+        assert "Invalid" in msg.reply_text.call_args.args[0]
+
+    async def test_editevent_without_limit_flag_unaffected_by_gate(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100123','1','Old','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["NewName"])
+
+        await handlers.editevent(upd, ctx)
+
+        row = conn.execute("SELECT name FROM events WHERE event_id='ev1'").fetchone()
+        assert row == ("NewName",)
+
+
+# ── Waitlist rendering: visible/hidden/onlycount (v3.24.0) ────────────────────
+
+class TestWaitlistVisibilityRendering:
+    """update_all_shared_views' Waitlist section across all 3 visibility
+    modes, in both the main hub's own post and a child chat's post."""
+
+    def _setup(self, db_path, visibility, waitlist_entries):
+        insert_event(db_path, event_id="ev1", chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE events SET total_limit = 5, waitlist_data = ?, waitlist_visibility = ? WHERE event_id = 'ev1'",
+            (json.dumps(waitlist_entries), visibility),
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','2','-visible','group')"
+        )
+        conn.commit()
+        conn.close()
+
+    def _entries(self):
+        return [
+            {"chat_id": "-100123", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "t"},
+            {"chat_id": "-200", "chat_name": None, "username": "erin", "user_id": "5", "timestamp": "t"},
+        ]
+
+    async def test_visible_main_post_shows_everyone_with_from_label(self, db_path):
+        self._setup(db_path, "visible", self._entries())
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Child Group"))
+        ctx = make_context(bot=bot)
+
+        await handlers.update_all_shared_views(ctx, "ev1")
+
+        main_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == int("-100123"))
+        text = main_call.kwargs.get("text", "")
+        assert "dave" in text and "erin" in text
+        assert "from Child Group" in text
+
+    async def test_visible_child_post_shows_only_local_entries(self, db_path):
+        self._setup(db_path, "visible", self._entries())
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Child Group"))
+        ctx = make_context(bot=bot)
+
+        await handlers.update_all_shared_views(ctx, "ev1")
+
+        child_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == int("-200"))
+        text = child_call.kwargs.get("text", "")
+        assert "erin" in text
+        assert "dave" not in text
+
+    async def test_onlycount_shows_total_no_names_everywhere(self, db_path):
+        self._setup(db_path, "onlycount", self._entries())
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+
+        await handlers.update_all_shared_views(ctx, "ev1")
+
+        for call in bot.edit_message_text.call_args_list:
+            text = call.kwargs.get("text", "")
+            wl_lines = [l for l in text.split("\n") if "Waitlist" in l]
+            assert wl_lines == ["*Waitlist:* 2"]
+            assert "dave" not in text and "erin" not in text
+
+    async def test_hidden_shows_nothing_anywhere(self, db_path):
+        self._setup(db_path, "hidden", self._entries())
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+
+        await handlers.update_all_shared_views(ctx, "ev1")
+
+        for call in bot.edit_message_text.call_args_list:
+            text = call.kwargs.get("text", "")
+            assert "Waitlist" not in text
+
+    async def test_visible_with_empty_waitlist_shows_zero(self, db_path):
+        self._setup(db_path, "visible", [])
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+
+        await handlers.update_all_shared_views(ctx, "ev1")
+
+        main_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == int("-100123"))
+        text = main_call.kwargs.get("text", "")
+        assert "*Waitlist* \\(0\\):" in text

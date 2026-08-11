@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "3.23.1"
+BOT_VERSION = "3.24.0"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -61,6 +61,7 @@ GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 # source instead of a bare emoji literal repeated at each call site.
 
 ICON_GUEST = "👤⊕"   # marks "N guests, from: <username>" lines
+ICON_STANDBY = "⏳"   # marks a person waiting in the Waitlist/Standby queue
 CLOSE_ICON = "🔴"
 ICON_VERIFICATION = "🔄"   # used on the "Verify&Close" button (open -> verification mode)
 

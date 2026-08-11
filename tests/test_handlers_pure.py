@@ -24,7 +24,7 @@ class TestParseEventArgs:
     # ── Basic name parsing ────────────────────────────────────────────────
 
     def test_plain_name_no_flags(self):
-        name, gi, ni, date = parse_event_args(["World", "Cup", "Final"])
+        name, gi, ni, date, *_ = parse_event_args(["World", "Cup", "Final"])
         assert name == "World Cup Final"
         assert gi is None
         assert ni is None
@@ -35,66 +35,66 @@ class TestParseEventArgs:
         assert name == "Match"
 
     def test_empty_args_returns_none_name(self):
-        name, gi, ni, date = parse_event_args([])
+        name, gi, ni, date, *_ = parse_event_args([])
         assert name is None
 
     # ── Going icon flag ───────────────────────────────────────────────────
 
     def test_gi_flag_short(self):
-        _, gi, _, _ = parse_event_args(["-gi", "⚽", "Party"])
+        _, gi, _, _, *_ = parse_event_args(["-gi", "⚽", "Party"])
         assert gi == "⚽"
 
     def test_goingicon_flag_long(self):
-        _, gi, _, _ = parse_event_args(["-goingicon", "⚽", "Party"])
+        _, gi, _, _, *_ = parse_event_args(["-goingicon", "⚽", "Party"])
         assert gi == "⚽"
 
     def test_gi_flag_strips_from_name(self):
         # '-gi ⚽' must NOT appear in the event name
-        name, gi, _, _ = parse_event_args(["Party", "-gi", "⚽"])
+        name, gi, _, _, *_ = parse_event_args(["Party", "-gi", "⚽"])
         assert name == "Party"
         assert gi == "⚽"
 
     # ── Not-going icon flag ───────────────────────────────────────────────
 
     def test_ni_flag_short(self):
-        _, _, ni, _ = parse_event_args(["-ni", "❎", "Party"])
+        _, _, ni, _, *_ = parse_event_args(["-ni", "❎", "Party"])
         assert ni == "❎"
 
     def test_notgoingicon_flag_long(self):
-        _, _, ni, _ = parse_event_args(["-notgoingicon", "❎", "Party"])
+        _, _, ni, _, *_ = parse_event_args(["-notgoingicon", "❎", "Party"])
         assert ni == "❎"
 
     # ── Date flag ─────────────────────────────────────────────────────────
 
     def test_date_flag_date_only(self):
         # -date 14.07.2026  → single token consumed
-        _, _, _, date = parse_event_args(["Party", "-date", "14.07.2026"])
+        _, _, _, date, *_ = parse_event_args(["Party", "-date", "14.07.2026"])
         assert date == "14.07.2026"
 
     def test_date_flag_with_time(self):
         # -date 14.07.2026 19:00  → two tokens consumed (time matches HH:MM)
-        _, _, _, date = parse_event_args(["Party", "-date", "14.07.2026", "19:00"])
+        _, _, _, date, *_ = parse_event_args(["Party", "-date", "14.07.2026", "19:00"])
         assert date == "14.07.2026 19:00"
 
     def test_d_flag_short(self):
-        _, _, _, date = parse_event_args(["-d", "01.01.2025", "Event"])
+        _, _, _, date, *_ = parse_event_args(["-d", "01.01.2025", "Event"])
         assert date == "01.01.2025"
 
     def test_date_with_time_not_consumed_if_no_time(self):
         # Next token is NOT a time → only one token consumed
-        name, _, _, date = parse_event_args(["Party", "-date", "14.07.2026", "stuff"])
+        name, _, _, date, *_ = parse_event_args(["Party", "-date", "14.07.2026", "stuff"])
         assert date == "14.07.2026"
         assert name == "Party stuff"
 
     def test_date_absent_returns_none(self):
-        _, _, _, date = parse_event_args(["Party"])
+        _, _, _, date, *_ = parse_event_args(["Party"])
         assert date is None
 
     # ── All flags combined ────────────────────────────────────────────────
 
     def test_all_flags_combined(self):
         args = ["Big", "Event", "-gi", "⚽", "-ni", "❎", "-date", "14.07.2026", "19:00"]
-        name, gi, ni, date = parse_event_args(args)
+        name, gi, ni, date, *_ = parse_event_args(args)
         assert name == "Big Event"
         assert gi   == "⚽"
         assert ni   == "❎"
@@ -102,7 +102,7 @@ class TestParseEventArgs:
 
     def test_flags_before_name(self):
         # Flags can appear anywhere in the token list
-        name, gi, ni, date = parse_event_args(["-gi", "⚽", "Party", "Night"])
+        name, gi, ni, date, *_ = parse_event_args(["-gi", "⚽", "Party", "Night"])
         assert name == "Party Night"
         assert gi   == "⚽"
 

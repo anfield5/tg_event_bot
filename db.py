@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import asyncio
 import functools
 from datetime import datetime
@@ -65,6 +66,10 @@ def _seed_feature_flags(cursor):
          "Creates a new event with optional custom Going/Not Going icons and a date."),
         ("editevent", "/editevent (edit the active event)", "FREE", None,
          "Edits the name/date/icons of the currently active event."),
+        ("event_limit", "-limit on /newevent and /editevent (Waitlist capacity)", "PRO", None,
+         "Whether a hub can cap an event's total headcount and configure Waitlist visibility "
+         "with -limit N [visible|hidden|onlycount]. When gated off, the flag is rejected with "
+         "a clear error instead of being silently ignored."),
         ("user_management", "User Management (/adduser, /listusers, /updateuser, /notify, /refreshusers)", "FREE", None,
          "Tracking, notifying, and syncing the roster of users for THIS group - available to every group regardless of tier."),
         ("shareevent", "/shareevent (per target group/channel)", "FREE", 3,
@@ -301,7 +306,11 @@ def init_db(db_path: str = DB_PATH):
             counters_data TEXT,
             event_date TEXT DEFAULT NULL,
             kicked_data TEXT DEFAULT '[]',
-            feature_snapshot TEXT DEFAULT NULL
+            feature_snapshot TEXT DEFAULT NULL,
+            total_limit INTEGER DEFAULT NULL,
+            waitlist_data TEXT DEFAULT '[]',
+            waitlist_open INTEGER DEFAULT 0,
+            waitlist_visibility TEXT DEFAULT 'hidden'
         )
     """)
 
@@ -506,6 +515,29 @@ def init_db(db_path: str = DB_PATH):
     events_cols = [col[1] for col in cursor.fetchall()]
     if "feature_snapshot" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN feature_snapshot TEXT DEFAULT NULL")
+
+    # 0a5. Add `total_limit`/`waitlist_data` to events if missing. total_limit
+    # is NULL for "no cap" (matches every pre-existing event, which never had
+    # a limit). waitlist_data is a JSON list of entries each carrying their
+    # own chat_id/chat_name, since the waitlist is a SINGLE event-wide list
+    # but must render filtered-per-chat in each post and unfiltered (with
+    # "from <chat_name>") in /waitlist - see event_engine.py's rendering.
+    if "total_limit" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN total_limit INTEGER DEFAULT NULL")
+    if "waitlist_data" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN waitlist_data TEXT DEFAULT '[]'")
+    if "waitlist_open" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN waitlist_open INTEGER DEFAULT 0")
+
+    # 0a6. Add `waitlist_visibility` (visible/hidden/onlycount) alongside
+    # the older boolean waitlist_open, which stays in the schema for
+    # backward-compat inertia but is no longer read by any code path.
+    # One-time migration: for pre-existing rows, carry the old boolean
+    # over (1 -> visible, 0 -> hidden) so nobody's setting silently
+    # resets - only genuinely new rows default to 'hidden' going forward.
+    if "waitlist_visibility" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN waitlist_visibility TEXT DEFAULT 'hidden'")
+        cursor.execute("UPDATE events SET waitlist_visibility = 'visible' WHERE waitlist_open = 1")
 
     # 0b. Add `chat_type`/`chat_name` to sub_chats if it exists from an
     # earlier version of this same migration that predates them.
@@ -862,3 +894,116 @@ def get_feature_limit_for_chat(chat_id: str, feature_key: str, db_path: str = No
     # unlimited by construction, and anything below wouldn't have access
     # at all (that's has_feature()'s job, not this function's).
     return limit_count if group_tier == min_tier else None
+
+
+def get_event_total_going_headcount(event_id: str, db_path: str = None) -> int:
+    """
+    Total headcount currently counted against an event's total_limit: every
+    person marked going in the main hub (plus their guests, via
+    counters_data) PLUS every person marked going in any child chat's
+    event_users row (plus their own guests column). This is a person-based
+    cap, not a row-count - someone with 3 guests fills 4 spots, matching
+    what -limit is meant to represent (physical capacity), not just a cap
+    on distinct "Going" clicks.
+
+    Used by the capacity check on every "going" click (both master-hub and
+    child-chat) before it's allowed to actually add someone - see
+    event_engine.button_handler.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT going_data, counters_data FROM events WHERE event_id = ?", (event_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return 0
+    going_data, counters_data = row
+    going_list = json.loads(going_data) if going_data else []
+    counters = json.loads(counters_data) if counters_data else {}
+    main_headcount = len(going_list) + sum(counters.values())
+
+    cursor.execute(
+        "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
+        (event_id,),
+    )
+    child_headcount = cursor.fetchone()[0]
+    conn.close()
+    return main_headcount + child_headcount
+
+
+def add_to_waitlist(event_id: str, chat_id: str, chat_name: str, username: str, user_id: str, db_path: str = None):
+    """
+    Appends one entry to an event's waitlist_data (a single event-wide JSON
+    list; each entry carries its own chat_id/chat_name so rendering can
+    filter to "this chat only" in a post, or show everyone with "from
+    <chat_name>" in /waitlist - see event_engine.py's rendering and
+    handlers.waitlist_command).
+
+    Does nothing (silently) if this exact user is already waiting in this
+    exact chat, so a double-click can't queue someone twice.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT waitlist_data FROM events WHERE event_id = ?", (event_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return
+    waitlist = json.loads(row[0]) if row[0] else []
+    already_waiting = any(
+        str(e.get("user_id")) == str(user_id) and str(e.get("chat_id")) == str(chat_id)
+        for e in waitlist
+    )
+    if not already_waiting:
+        waitlist.append({
+            "chat_id": str(chat_id),
+            "chat_name": chat_name,
+            "username": username,
+            "user_id": str(user_id),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        cursor.execute(
+            "UPDATE events SET waitlist_data = ? WHERE event_id = ?",
+            (json.dumps(waitlist), event_id),
+        )
+        conn.commit()
+    conn.close()
+
+
+def promote_next_from_waitlist(event_id: str, chat_id: str, db_path: str = None):
+    """
+    Removes and returns the OLDEST waitlist entry for THIS SPECIFIC chat_id
+    (FIFO - whoever's been waiting longest in that chat goes first), or
+    None if that chat's waitlist is empty. Only removes the entry from
+    waitlist_data - the caller (event_engine.button_handler) is responsible
+    for actually adding the promoted person into going_data/event_users,
+    since that differs between the main hub and a child chat.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT waitlist_data FROM events WHERE event_id = ?", (event_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+    waitlist = json.loads(row[0]) if row[0] else []
+    this_chat_entries = [e for e in waitlist if str(e.get("chat_id")) == str(chat_id)]
+    if not this_chat_entries:
+        conn.close()
+        return None
+    this_chat_entries.sort(key=lambda e: e.get("timestamp", ""))
+    promoted = this_chat_entries[0]
+    waitlist = [e for e in waitlist if e is not promoted]
+    cursor.execute(
+        "UPDATE events SET waitlist_data = ? WHERE event_id = ?",
+        (json.dumps(waitlist), event_id),
+    )
+    conn.commit()
+    conn.close()
+    return promoted

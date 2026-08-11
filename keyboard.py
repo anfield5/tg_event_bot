@@ -28,6 +28,7 @@ def create_event_keyboard(
     kicked_users: set = None,
     verification_enabled: bool = True,
     add_extra_member_enabled: bool = True,
+    is_full: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Generates dynamic inline keyboards.
@@ -67,8 +68,9 @@ def create_event_keyboard(
     buttons = []
 
     if event_status == 0:
+        going_label = "Standby" if is_full else "Going"
         buttons.append([
-            InlineKeyboardButton(f"{going_icon} Going",        callback_data=f"going_{event_id}"),
+            InlineKeyboardButton(f"{going_icon} {going_label}", callback_data=f"going_{event_id}"),
             InlineKeyboardButton(f"{notgoing_icon} Not Going", callback_data=f"notgoing_{event_id}"),
         ])
         buttons.append([

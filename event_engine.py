@@ -23,6 +23,7 @@ Covers:
 import json
 import re
 import asyncio
+from datetime import datetime
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -30,7 +31,7 @@ from telegram.error import BadRequest
 
 from keyboard import create_event_keyboard
 from config import (
-    ICON_CANCEL_EVENT, ICON_CLOCK, ICON_GUEST, ICON_SHARED, ICON_STATS,
+    ICON_CANCEL_EVENT, ICON_CLOCK, ICON_GUEST, ICON_SHARED, ICON_STATS, ICON_STANDBY,
     ICON_WARNING, logger,
 )
 from utils import escape_markdown, now2ddmmyy, is_real_admin
@@ -129,6 +130,64 @@ def _mention_link(chat_id: str, username: str, user_id=None) -> str:
     return f"[{escape_markdown(display)}](tg://user?id={user_id})"
 
 
+def _render_waitlist_local(waitlist: list, chat_id: str) -> tuple:
+    """
+    Filters an event's waitlist_data down to entries added from THIS
+    specific chat_id only, no "from" labels (since every entry shown is
+    already local to this chat by construction). Used for:
+      - a child chat's own post in 'visible' mode (never shows another
+        chat's entries, even though waitlist_data is one event-wide list)
+      - /waitlist called from a child chat
+
+    Returns (count, text_lines).
+    """
+    entries = [e for e in waitlist if str(e.get("chat_id")) == str(chat_id)]
+    lines = [
+        f"{ICON_STANDBY} {_mention_link(chat_id, e['username'], e['user_id'])}"
+        for e in entries
+    ]
+    return len(entries), "\n".join(lines)
+
+
+async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: ContextTypes.DEFAULT_TYPE) -> tuple:
+    """
+    Every entry across every chat the event was shared to, with a "from
+    <chat_name>" suffix for anything that ISN'T local to main_chat_id.
+    Used for the main hub's OWN post in 'visible' mode - per the design,
+    only the hub's own post gets the full cross-chat view; every child
+    chat's post still only shows its own local entries (see
+    _render_waitlist_local), and /waitlist mirrors this same "hub sees
+    everyone, child sees only local" split.
+
+    Returns (count, text_lines).
+    """
+    title_cache = {}
+
+    async def _title(cid):
+        if cid not in title_cache:
+            try:
+                obj = await context.bot.get_chat(int(cid) if str(cid).replace("-", "").isdigit() else cid)
+                title_cache[cid] = obj.title or "Group"
+            except Exception:
+                title_cache[cid] = "Group"
+        return title_cache[cid]
+
+    lines = []
+    for e in waitlist:
+        mention = f"{ICON_STANDBY} {_mention_link(e['chat_id'], e['username'], e['user_id'])}"
+        if str(e.get("chat_id")) != str(main_chat_id):
+            chat_title = await _title(e["chat_id"])
+            mention += f" from {escape_markdown(chat_title)}"
+        lines.append(mention)
+    return len(waitlist), "\n".join(lines)
+
+
+def _render_waitlist_count(waitlist: list) -> int:
+    """Total count across every chat combined, for 'onlycount' mode -
+    the same global number regardless of which chat's post is asking."""
+    return len(waitlist)
+
+
 async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: str):
     """
     Re-renders EVERY view of one event after its state changed: the master
@@ -164,7 +223,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             """
             SELECT chat_id, message_id, name, going_icon, notgoing_icon,
                    event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                   feature_snapshot
+                   feature_snapshot, total_limit, waitlist_data, waitlist_visibility
             FROM events WHERE event_id = ?
             """,
             (event_id,),
@@ -175,7 +234,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
          event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-         feature_snapshot_raw) = master
+         feature_snapshot_raw, total_limit, waitlist_data_raw, waitlist_visibility) = master
 
         try:
             feature_snapshot = json.loads(feature_snapshot_raw) if feature_snapshot_raw else {}
@@ -188,6 +247,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         master_not_going = json.loads(notgoing_data)
         master_counters  = json.loads(counters_data)
         master_kicked    = set(json.loads(kicked_data or "[]"))
+        master_waitlist  = json.loads(waitlist_data_raw or "[]")
 
         cursor.execute(
             "SELECT chat_id, message_id, share_mode FROM event_shares WHERE event_id = ?", (event_id,)
@@ -283,10 +343,20 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     date_line   = f"{ICON_CLOCK} {escape_markdown(event_date)}\n" if event_date else ""
     title_line  = f"{ICON_CANCEL_EVENT} *CANCELED* ~{escape_markdown(name)}~" if event_status == -1 else f"*{escape_markdown(name)}*"
 
+    if waitlist_visibility == "visible":
+        wl_count, wl_text = await _render_waitlist_all(master_waitlist, main_chat_id, context)
+        waitlist_section = f"\n\n*Waitlist* \\({wl_count}\\):\n{wl_text}"
+    elif waitlist_visibility == "onlycount":
+        wl_count = _render_waitlist_count(master_waitlist)
+        waitlist_section = f"\n\n*Waitlist:* {wl_count}"
+    else:
+        waitlist_section = ""
+
     master_text = (
         f"{header}{title_line}\n\n {date_line}\n"
         f"*Going* \\({total_master_going}\\):\n{going_list_text}\n\n"
         f"*Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
+        f"{waitlist_section}"
         f"{master_shares_block}\n\n"
         f"{ICON_STATS} *TOTAL Going:* {global_total}"
     )
@@ -301,6 +371,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         )
         all_child_going_for_buttons = cursor2.fetchall()
 
+    is_full = total_limit is not None and global_total >= total_limit
+
     master_keyboard = create_event_keyboard(
         event_id, event_status, going_icon, notgoing_icon,
         master_going, master_counters,
@@ -309,6 +381,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         kicked_users=master_kicked,
         verification_enabled=verification_enabled,
         add_extra_member_enabled=add_extra_member_enabled,
+        is_full=is_full,
     )
 
     try:
@@ -392,14 +465,25 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 f"{date_line} \n"
             )
 
+        if waitlist_visibility == "visible":
+            wl_count, wl_text = _render_waitlist_local(master_waitlist, s_chat_id)
+            child_waitlist_section = f"*Waitlist* \\({wl_count}\\):\n{wl_text}\n\n"
+        elif waitlist_visibility == "onlycount":
+            wl_count = _render_waitlist_count(master_waitlist)
+            child_waitlist_section = f"*Waitlist:* {wl_count}\n\n"
+        else:
+            child_waitlist_section = ""
+
         child_text += (
             f"*Going here:* \\({c_info['count']}\\)\n{c_info['users_text']}\n\n"
+            f"{child_waitlist_section}"
             f"{ICON_STATS} *Total Going \\(all groups\\):* {global_total}\n"
         )
 
         child_keyboard = create_event_keyboard(
             event_id, event_status, going_icon, notgoing_icon, is_child=True,
             verification_enabled=verification_enabled,
+            is_full=is_full,
             add_extra_member_enabled=add_extra_member_enabled,
         )
         try:
@@ -533,7 +617,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     """
                     SELECT chat_id, message_id, name, going_icon, notgoing_icon,
                            event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                           feature_snapshot
+                           feature_snapshot, total_limit, waitlist_data
                     FROM events WHERE event_id = ?
                     """,
                     (event_id,),
@@ -544,7 +628,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
                  event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                 feature_snapshot_raw) = row
+                 feature_snapshot_raw, total_limit, waitlist_data_raw) = row
 
                 # NULL/malformed -> "everything enabled", matching how this
                 # event always behaved before feature_snapshot existed.
@@ -559,6 +643,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 not_going = set(json.loads(notgoing_data))
                 counters  = json.loads(counters_data)
                 kicked    = json.loads(kicked_data or "[]")
+                waitlist  = json.loads(waitlist_data_raw or "[]")
+
+                def _current_headcount():
+                    """Reads-only, uses the SAME cursor/connection already
+                    open here - never call db.get_event_total_going_headcount()
+                    from inside this transaction, it opens its own connection
+                    and would deadlock against this one."""
+                    main_hc = len(going) + sum(counters.values())
+                    cursor.execute(
+                        "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
+                        (event_id,),
+                    )
+                    child_hc = cursor.fetchone()[0]
+                    return main_hc + child_hc
+
+                def _is_at_capacity():
+                    return total_limit is not None and _current_headcount() >= total_limit
+
+                waitlist_promotion = None  # set below if a notgoing click frees a slot
 
                 if event_status in (2, -1):
                     return
@@ -624,15 +727,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     current_guests = u_row[1] if u_row else 0
 
                     if action == "going":
-                        # In child chats, Going should only set status to 'going', never toggle off
-                        cursor.execute(
-                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
-                            (event_id, click_chat_id, str(user_id), username_raw, current_guests),
-                        )
-                        pending_track_user.append(
-                            (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
-                        )
-                        data_changed = True
+                        if current_status != "going" and _is_at_capacity():
+                            waitlist.append({
+                                "chat_id": str(click_chat_id),
+                                "chat_name": None,  # resolved lazily by /waitlist and rendering, not stored stale here
+                                "username": username_raw,
+                                "user_id": str(user_id),
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            })
+                            data_changed = True
+                            try:
+                                await query.answer(text=f"{ICON_STANDBY} Event is full - you've been added to the Waitlist", show_alert=True)
+                            except Exception:
+                                pass
+                        else:
+                            # In child chats, Going should only set status to 'going', never toggle off
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
+                                (event_id, click_chat_id, str(user_id), username_raw, current_guests),
+                            )
+                            pending_track_user.append(
+                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                            )
+                            data_changed = True
                     elif action == "notgoing":
                         if current_guests > 0:
                             cursor.execute(
@@ -648,6 +765,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
                         )
                         data_changed = True
+                        if current_status == "going":
+                            this_chat_waiting = [e for e in waitlist if str(e.get("chat_id")) == str(click_chat_id)]
+                            if this_chat_waiting:
+                                this_chat_waiting.sort(key=lambda e: e.get("timestamp", ""))
+                                promoted = this_chat_waiting[0]
+                                waitlist = [e for e in waitlist if e is not promoted]
+                                cursor.execute(
+                                    "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
+                                    (event_id, click_chat_id, promoted["user_id"], promoted["username"]),
+                                )
+                                pending_track_user.append(
+                                    (click_chat_id, promoted["username"], promoted["user_id"], None, None)
+                                )
+                                waitlist_promotion = (click_chat_id, promoted["username"], promoted["user_id"])
                     elif action == "add":
                         # NOTE: does NOT force status='going' - mirrors the main
                         # hub, where Add Guest only ever touches the guest
@@ -697,15 +828,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # ── Master open (event_status == 0) ───────────────────────────
                 if event_status == 0:
                     if action == "going":
+                        went_to_waitlist = False
                         if username_raw not in going_usernames:
-                            going.append(f"{username_raw} ({user_id})")
-                        not_going.discard(username_raw)
-                        # Store user_id for refreshusers
-                        pending_track_user.append(
-                            (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
-                        )
+                            if _is_at_capacity():
+                                waitlist.append({
+                                    "chat_id": str(click_chat_id),
+                                    "chat_name": None,
+                                    "username": username_raw,
+                                    "user_id": str(user_id),
+                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                })
+                                went_to_waitlist = True
+                                try:
+                                    await query.answer(text=f"{ICON_STANDBY} Event is full - you've been added to the Waitlist", show_alert=True)
+                                except Exception:
+                                    pass
+                            else:
+                                going.append(f"{username_raw} ({user_id})")
+                        if not went_to_waitlist:
+                            not_going.discard(username_raw)
+                            # Store user_id for refreshusers
+                            pending_track_user.append(
+                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                            )
                         data_changed = True
                     elif action == "notgoing":
+                        was_going = username_raw in going_usernames
                         going    = [u for u in going if u.split(" (")[0] != username_raw]
                         not_going.add(username_raw)
                         pending_track_user.append(
@@ -715,6 +863,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # they're only ever added/removed via Add Guest/Sub
                         # Guest, never as a side effect of opting out.
                         data_changed = True
+                        if was_going:
+                            this_chat_waiting = [e for e in waitlist if str(e.get("chat_id")) == str(main_chat_id)]
+                            if this_chat_waiting:
+                                this_chat_waiting.sort(key=lambda e: e.get("timestamp", ""))
+                                promoted = this_chat_waiting[0]
+                                waitlist = [e for e in waitlist if e is not promoted]
+                                going.append(f"{promoted['username']} ({promoted['user_id']})")
+                                not_going.discard(promoted["username"])
+                                pending_track_user.append(
+                                    (main_chat_id, promoted["username"], promoted["user_id"], None, None)
+                                )
+                                waitlist_promotion = (main_chat_id, promoted["username"], promoted["user_id"])
                     elif action == "add":
                         counters[username_raw] = counters.get(username_raw, 0) + 1
                         data_changed = True
@@ -840,8 +1000,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         data_changed = True
 
                 cursor.execute(
-                    "UPDATE events SET event_status = ?, going_data = ?, notgoing_data = ?, counters_data = ?, kicked_data = ? WHERE event_id = ?",
-                    (event_status, json.dumps(going), json.dumps(list(not_going)), json.dumps(counters), json.dumps(kicked), event_id),
+                    "UPDATE events SET event_status = ?, going_data = ?, notgoing_data = ?, counters_data = ?, kicked_data = ?, waitlist_data = ? WHERE event_id = ?",
+                    (event_status, json.dumps(going), json.dumps(list(not_going)), json.dumps(counters), json.dumps(kicked), json.dumps(waitlist), event_id),
                 )
                 conn.commit()
 
@@ -855,6 +1015,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for t_chat_id, t_username, t_user_id, t_first_name, t_last_name in pending_track_user:
             track_user(t_chat_id, t_username, "active", user_id=t_user_id,
                        first_name=t_first_name, last_name=t_last_name)
+
+        if waitlist_promotion:
+            promo_chat_id, promo_username, promo_user_id = waitlist_promotion
+            try:
+                mention = _mention_link(promo_chat_id, promo_username, promo_user_id)
+                await context.bot.send_message(
+                    chat_id=int(promo_chat_id),
+                    text=f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!",
+                    parse_mode="MarkdownV2",
+                )
+            except Exception as e:
+                logger.error(f"Waitlist promotion announcement failed for chat {promo_chat_id}: {e}")
 
         # Log action to Sheets
         if data_changed:

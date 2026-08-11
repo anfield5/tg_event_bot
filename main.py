@@ -15,7 +15,7 @@ from handlers import (
     newevent, editevent,
     notify,
     updateuser, listusers, refreshusers, refreshusersall, adduser,
-    shareevent,
+    shareevent, waitlist_command,
     setalias, removealias, listalias,
     addmonitor, removemonitor, listmonitors,
     button_handler,
@@ -277,6 +277,7 @@ def main():
     app.add_handler(CommandHandler("refreshusersall", refreshusersall))
     app.add_handler(CommandHandler("adduser",      adduser))
     app.add_handler(CommandHandler("shareevent",   shareevent))
+    app.add_handler(CommandHandler("waitlist",     waitlist_command))
 
     # 4. Alias subsystem
     app.add_handler(CommandHandler("setalias",    setalias))
