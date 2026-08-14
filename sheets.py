@@ -110,9 +110,9 @@ async def sync_users_sheet(chat_id, current_members: list):
     accepted for backward compatibility - first_name/last_name just won't
     be written for those entries.
 
-    Columns: USER_ID, USER_NAME, PLACE_ID, STATUS, DATE_start, DATE_end,
+    Columns: USER_ID, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end,
     ARCHIVED_USER_NAME, FIRST_NAME, LAST_NAME.
-    A row is uniquely identified by (USER_ID, PLACE_ID) - the same person can
+    A row is uniquely identified by (USER_ID, CHAT_ID) - the same person can
     have separate rows for separate places/groups managed by this bot.
 
     Behavior:
@@ -126,7 +126,7 @@ async def sync_users_sheet(chat_id, current_members: list):
         for them, even for an already-known row - covers someone who
         changed their Telegram name, or whose name simply wasn't captured
         the first time this feature existed.
-      - Any existing row for this PLACE_ID that ISN'T in current_members ->
+      - Any existing row for this CHAT_ID that ISN'T in current_members ->
         STATUS is set to "LEFT" and DATE_end is set to current date
         (their row/history is kept, not deleted).
     """
@@ -140,7 +140,7 @@ async def sync_users_sheet(chat_id, current_members: list):
 
         index = {}
         for idx, r in enumerate(records, start=2):
-            key = (str(r.get("USER_ID", "")).strip(), str(r.get("PLACE_ID", "")).strip())
+            key = (str(r.get("USER_ID", "")).strip(), str(r.get("CHAT_ID", "")).strip())
             index[key] = (idx, r)
 
         current_keys = set()
@@ -220,11 +220,11 @@ async def sync_event_users_sheet(chat_id, event_id, user_ids):
         logger.error(f"Google Sheets EventUsers synchronization failed: {repr(e)}")
 
 
-async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start, date_end):
+async def log_user_presence_if_not_exists(chat_id, user_id, presence_chat_id, date_start, date_end):
     """
     Logs user presence to UserPresenceLog sheet when a user leaves a monitored
     group or the main group.
-    Columns: USER_ID, PLACE_ID, DATE_start, DATE_end
+    Columns: USER_ID, CHAT_ID, DATE_start, DATE_end
     """
     sheet_target = await get_sheet_for_chat(chat_id)
     ss = await open_spreadsheet(sheet_target)
@@ -234,14 +234,14 @@ async def log_user_presence_if_not_exists(chat_id, user_id, place_id, date_start
         ws = await ss.worksheet("UserPresenceLog")
         records = await ws.get_all_records()
 
-        # if it exists in UserPresenceLog with same USER_ID, PLACE_ID and same DATE_start — we do NOT write a duplicate.
+        # if it exists in UserPresenceLog with same USER_ID, CHAT_ID and same DATE_start — we do NOT write a duplicate.
         for r in records:
             if (str(r.get("USER_ID", "")).strip() == str(user_id) and 
-                str(r.get("PLACE_ID", "")).strip() == str(place_id) and 
+                str(r.get("CHAT_ID", "")).strip() == str(presence_chat_id) and 
                 str(r.get("DATE_start", "")).strip() == str(date_start)):
                 return  # already logged
 
-        await ws.append_row([str(user_id), str(place_id), str(date_start), str(date_end)])
+        await ws.append_row([str(user_id), str(presence_chat_id), str(date_start), str(date_end)])
     except Exception as e:
         logger.error(f"Google Sheets UserPresenceLog check failed: {repr(e)}")
 

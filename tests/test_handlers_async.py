@@ -1498,7 +1498,7 @@ class TestRefreshusers:
     async def test_appends_new_member_to_users_sheet(self, db_path):
         """
         A chat administrator not yet present in the Users tab must get a
-        new row: USER_ID, USER_NAME, PLACE_ID, STATUS="MEMBER", a live
+        new row: USER_ID, USER_NAME, CHAT_ID, STATUS="MEMBER", a live
         DATE_start timestamp, blank DATE_end, blank ARCHIVED_USER_NAME.
         """
         bot = make_bot()
@@ -1551,7 +1551,7 @@ class TestRefreshusers:
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
-        ws.records = [{"USER_ID": "111", "USER_NAME": "oldname", "PLACE_ID": "-100123",
+        ws.records = [{"USER_ID": "111", "USER_NAME": "oldname", "CHAT_ID": "-100123",
                        "STATUS": "Member", "ARCHIVED_USER_NAME": ""}]
         fake_ss.worksheets["Users"] = ws
 
@@ -1583,7 +1583,7 @@ class TestRefreshusers:
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
-        ws.records = [{"USER_ID": "111", "USER_NAME": "secondname", "PLACE_ID": "-100123",
+        ws.records = [{"USER_ID": "111", "USER_NAME": "secondname", "CHAT_ID": "-100123",
                        "STATUS": "Member", "ARCHIVED_USER_NAME": "firstname"}]
         fake_ss.worksheets["Users"] = ws
 
@@ -1594,7 +1594,7 @@ class TestRefreshusers:
         assert ws.cell_updates["G2"] == [["firstname,secondname"]]
 
     async def test_marks_departed_user_as_left_in_sheet(self, db_path):
-        """A Users-sheet row for this PLACE_ID whose person is confirmed gone must get STATUS=Left."""
+        """A Users-sheet row for this CHAT_ID whose person is confirmed gone must get STATUS=Left."""
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','gone','222','active')")
         conn.commit()
@@ -1613,7 +1613,7 @@ class TestRefreshusers:
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
-        ws.records = [{"USER_ID": "222", "USER_NAME": "gone", "PLACE_ID": "-100123",
+        ws.records = [{"USER_ID": "222", "USER_NAME": "gone", "CHAT_ID": "-100123",
                        "STATUS": "Member", "ARCHIVED_USER_NAME": ""}]
         fake_ss.worksheets["Users"] = ws
 
@@ -1624,7 +1624,7 @@ class TestRefreshusers:
         assert ws.cell_updates["D2"] == [["LEFT"]]
 
     async def test_does_not_touch_rows_from_other_places(self, db_path):
-        """A Users-sheet row belonging to a DIFFERENT PLACE_ID must never be touched by this chat's refresh."""
+        """A Users-sheet row belonging to a DIFFERENT CHAT_ID must never be touched by this chat's refresh."""
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
         bot.get_chat_administrators = AsyncMock(return_value=[])
@@ -1636,7 +1636,7 @@ class TestRefreshusers:
 
         fake_ss = FakeSpreadsheet()
         ws = FakeWorksheet()
-        ws.records = [{"USER_ID": "999", "USER_NAME": "elsewhere", "PLACE_ID": "-999999",
+        ws.records = [{"USER_ID": "999", "USER_NAME": "elsewhere", "CHAT_ID": "-999999",
                        "STATUS": "Member", "ARCHIVED_USER_NAME": ""}]
         fake_ss.worksheets["Users"] = ws
 
@@ -4694,11 +4694,15 @@ class TestEventCreatorCanClose:
         assert row == (0,)
 
 
-class TestAddGuestRespectsCapacity:
-    """Add Guest at capacity is blocked with the same Waitlist alert as
-    Going, instead of silently exceeding total_limit. No literal waitlist
-    entry is created for the guest (a guest has no independent user_id/
-    username identity to later promote), just the increment is blocked."""
+class TestAddGuestGoesToWaitlist:
+    """Add Guest at capacity creates a real waitlist entry (is_guest=True)
+    for the clicking person, instead of just being blocked - each click
+    queues one more slot (no dedup, unlike person entries). When a slot
+    frees up, promoting a guest entry increments the OWNER's guest counter
+    (main hub counters, or child chat's event_users.guests) rather than
+    adding a new person to going. If the owner is no longer going by the
+    time a slot frees up, the stale entry is discarded without consuming
+    the freed slot, and the next waitlist entry is tried instead."""
 
     async def _click(self, action, chat_id, uid, username):
         query = _make_fake_button_query(f"{action}_ev1", chat_id, uid, username)
@@ -4718,9 +4722,9 @@ class TestAddGuestRespectsCapacity:
         ctx.application.create_task = MagicMock(side_effect=_discard_task)
         with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
             await event_engine.button_handler(upd, ctx)
-        return query
+        return query, ctx
 
-    async def test_add_guest_blocked_in_main_group_at_capacity(self, db_path):
+    async def test_add_guest_in_main_group_at_capacity_creates_waitlist_entry(self, db_path):
         conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
@@ -4730,13 +4734,17 @@ class TestAddGuestRespectsCapacity:
         )
         conn.commit()
 
-        query = await self._click("add", "-100", 1, "alice")
+        query, ctx = await self._click("add", "-100", 1, "alice")
 
         assert query.answer.call_args.kwargs.get("show_alert") is True
-        row = conn.execute("SELECT counters_data FROM events WHERE event_id='ev1'").fetchone()
+        row = conn.execute("SELECT counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
         assert json.loads(row[0]) == {}
+        waitlist = json.loads(row[1])
+        assert len(waitlist) == 1
+        assert waitlist[0]["username"] == "alice"
+        assert waitlist[0]["is_guest"] is True
 
-    async def test_add_guest_blocked_in_child_chat_at_capacity(self, db_path):
+    async def test_add_guest_in_child_chat_at_capacity_creates_waitlist_entry(self, db_path):
         conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
@@ -4748,11 +4756,14 @@ class TestAddGuestRespectsCapacity:
         conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','5','erin','going',0)")
         conn.commit()
 
-        query = await self._click("add", "-200", 5, "erin")
+        query, ctx = await self._click("add", "-200", 5, "erin")
 
         assert query.answer.call_args.kwargs.get("show_alert") is True
-        row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-200' AND user_id='5'").fetchone()
-        assert row == (0,)
+        row = conn.execute("SELECT guests, event_id FROM event_users WHERE event_id='ev1' AND chat_id='-200' AND user_id='5'").fetchone()
+        assert row[0] == 0
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        waitlist = json.loads(wl_row[0])
+        assert len(waitlist) == 1 and waitlist[0]["username"] == "erin" and waitlist[0]["is_guest"] is True
 
     async def test_add_guest_still_works_under_capacity(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -4766,8 +4777,50 @@ class TestAddGuestRespectsCapacity:
 
         await self._click("add", "-100", 1, "alice")
 
-        row = conn.execute("SELECT counters_data FROM events WHERE event_id='ev1'").fetchone()
+        row = conn.execute("SELECT counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
         assert json.loads(row[0]) == {"alice": 1}
+        assert json.loads(row[1]) == []
+
+    async def test_guest_slot_promoted_when_a_spot_frees_up(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2)""",
+            (json.dumps(["alice (1)", "bob (2)"]),),
+        )
+        conn.commit()
+
+        await self._click("add", "-100", 1, "alice")  # queues a guest slot for alice
+        _, ctx = await self._click("notgoing", "-100", 2, "bob")  # frees a slot
+
+        row = conn.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(row[1]) == {"alice": 1}
+        assert json.loads(row[2]) == []
+        assert "guest for" in ctx.bot.send_message.call_args.kwargs["text"]
+
+    async def test_stale_guest_slot_discarded_when_owner_leaves(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',3,?)""",
+            (
+                json.dumps(["alice (1)", "bob (2)", "carol (3)"]),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "alice", "user_id": "1", "timestamp": "t", "is_guest": True}]),
+            ),
+        )
+        conn.commit()
+
+        # alice herself leaves - her own queued guest slot has nothing to
+        # attach to anymore and must be discarded, not promoted
+        _, ctx = await self._click("notgoing", "-100", 1, "alice")
+
+        row = conn.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert "alice" not in row[0]
+        assert json.loads(row[1]) == {}
+        assert json.loads(row[2]) == []
+        assert ctx.bot.send_message.call_args is None
 
 
 class TestRefreshusersSurfacesUnresolvedExtraMembers:
@@ -4941,3 +4994,90 @@ class TestChildChatClickTracksUserForSheetsSync:
         synced_chat_id, synced_members = sync_calls[0]
         assert synced_chat_id == "-200"
         assert any(m[1] == "newperson" for m in synced_members)
+
+
+class TestSubGuestTriggersWaitlistPromotion:
+    """Decrementing a guest count (Sub Guest / '-' button) also frees a
+    capacity slot, same as someone clicking Not Going - anyone waiting
+    for that chat should be automatically promoted."""
+
+    async def _click(self, action, chat_id, uid, username):
+        query = _make_fake_button_query(f"{action}_ev1", chat_id, uid, username)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+        return query, ctx
+
+    async def test_sub_guest_in_main_group_promotes_waiting_person(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]',?,'[]',3,?)""",
+            (
+                json.dumps(["alice (1)"]),
+                json.dumps({"alice": 2}),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t"}]),
+            ),
+        )
+        conn.commit()
+
+        _, ctx = await self._click("sub", "-100", 1, "alice")
+
+        row = conn.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert any("carol" in g for g in json.loads(row[0]))
+        assert json.loads(row[1]) == {"alice": 1}
+        assert json.loads(row[2]) == []
+        assert "moved from the Waitlist to Going" in ctx.bot.send_message.call_args.kwargs["text"]
+
+    async def test_sub_guest_in_child_chat_promotes_waiting_person(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',2,?)""",
+            (json.dumps([{"chat_id": "-200", "chat_name": None, "username": "dave", "user_id": "7", "timestamp": "t"}]),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','child')")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','2','-visible','group')")
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','5','erin','going',1)")
+        conn.commit()
+
+        _, ctx = await self._click("sub", "-200", 5, "erin")
+
+        dave_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-200' AND user_id='7'"
+        ).fetchone()
+        assert dave_row == ("going",)
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(wl_row[0]) == []
+        assert "moved from the Waitlist to Going" in ctx.bot.send_message.call_args.kwargs["text"]
+
+    async def test_sub_guest_with_empty_waitlist_is_a_no_op_promotion(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]',?,'[]')""",
+            (json.dumps(["alice (1)"]), json.dumps({"alice": 2})),
+        )
+        conn.commit()
+
+        _, ctx = await self._click("sub", "-100", 1, "alice")
+
+        assert ctx.bot.send_message.call_args is None
+        row = conn.execute("SELECT counters_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(row[0]) == {"alice": 1}

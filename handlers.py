@@ -377,7 +377,7 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         # -limit was explicitly supplied.
         updated_limit = current_limit
         updated_waitlist_visibility = current_waitlist_visibility
-        promotions_to_announce = []  # [(chat_id, username, user_id), ...] - sent after commit
+        promotions_to_announce = []  # [(chat_id, username, user_id, is_guest), ...] - sent after commit
         if limit_raw is not None:
             validated = await _validate_limit_flag(update.message, chat_id, limit_raw)
             if validated is None:
@@ -420,29 +420,55 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
                 waitlist = json.loads(waitlist_raw or "[]")
                 waitlist.sort(key=lambda e: e.get("timestamp", ""))
 
-                to_promote = waitlist[:free_slots]
-                remaining_waitlist = waitlist[free_slots:]
-
-                for entry in to_promote:
+                slots_left = free_slots
+                remaining_waitlist = list(waitlist)
+                for entry in waitlist:
+                    if slots_left <= 0:
+                        break
                     p_chat_id = entry["chat_id"]
                     p_username = entry["username"]
                     p_user_id = entry["user_id"]
-                    if str(p_chat_id) == str(chat_id):
-                        # Promote into the main hub's own going list
-                        going.append(f"{p_username} ({p_user_id})")
-                    else:
-                        # Promote into a child chat's event_users
-                        cursor.execute(
-                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
-                            (event_id, p_chat_id, p_user_id, p_username),
-                        )
-                    promotions_to_announce.append((p_chat_id, p_username, p_user_id))
 
-                if to_promote:
-                    cursor.execute(
-                        "UPDATE events SET going_data = ?, waitlist_data = ? WHERE event_id = ?",
-                        (json.dumps(going), json.dumps(remaining_waitlist), event_id),
-                    )
+                    if entry.get("is_guest"):
+                        if str(p_chat_id) == str(chat_id):
+                            still_going = any(g.split(" (")[0] == p_username for g in going)
+                            if still_going:
+                                counters[p_username] = counters.get(p_username, 0) + 1
+                        else:
+                            cursor.execute(
+                                "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (event_id, p_chat_id, p_user_id),
+                            )
+                            owner_row = cursor.fetchone()
+                            still_going = bool(owner_row and owner_row[0] == "going")
+                            if still_going:
+                                cursor.execute(
+                                    "UPDATE event_users SET guests = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                    (owner_row[1] + 1, event_id, p_chat_id, p_user_id),
+                                )
+                        if not still_going:
+                            # Owner is no longer going - discard this stale
+                            # guest-slot entry WITHOUT spending a slot from
+                            # the budget, and move on to the next candidate.
+                            remaining_waitlist.remove(entry)
+                            continue
+                    else:
+                        if str(p_chat_id) == str(chat_id):
+                            going.append(f"{p_username} ({p_user_id})")
+                        else:
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
+                                (event_id, p_chat_id, p_user_id, p_username),
+                            )
+
+                    remaining_waitlist.remove(entry)
+                    promotions_to_announce.append((p_chat_id, p_username, p_user_id, entry.get("is_guest", False)))
+                    slots_left -= 1
+
+                cursor.execute(
+                    "UPDATE events SET going_data = ?, counters_data = ?, waitlist_data = ? WHERE event_id = ?",
+                    (json.dumps(going), json.dumps(counters), json.dumps(remaining_waitlist), event_id),
+                )
 
         cursor.execute(
             """
@@ -454,12 +480,16 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         )
         conn.commit()
 
-    for p_chat_id, p_username, p_user_id in promotions_to_announce:
+    for p_chat_id, p_username, p_user_id, p_is_guest in promotions_to_announce:
         try:
             mention = _mention_link(p_chat_id, p_username, p_user_id)
+            if p_is_guest:
+                promo_text = f"{ICON_STANDBY} A spot opened up \\- one more guest for {mention} has been added from the Waitlist\\!"
+            else:
+                promo_text = f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
             await context.bot.send_message(
                 chat_id=int(p_chat_id),
-                text=f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!",
+                text=promo_text,
                 parse_mode="MarkdownV2",
             )
         except Exception as e:
@@ -737,7 +767,10 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
                         failed.append(f"{identifier}: not currently in that chat (status={member.status})")
                     else:
                         username = member.user.username or member.user.first_name or f"user{target_user_id}"
-                        track_user(target_chat_id, username, "active", user_id=target_user_id)
+                        track_user(
+                            target_chat_id, username, "active", user_id=target_user_id,
+                            first_name=member.user.first_name, last_name=member.user.last_name,
+                        )
                         added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
                 except Exception as e:
                     # If can't get user from Telegram, fail - don't add without real user_id
@@ -774,7 +807,10 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
                     else:
                         resolved_user_id = str(match.id)
                         resolved_username = match.username or match.first_name or target_username
-                        track_user(target_chat_id, resolved_username, "active", user_id=resolved_user_id)
+                        track_user(
+                            target_chat_id, resolved_username, "active", user_id=resolved_user_id,
+                            first_name=match.first_name, last_name=match.last_name,
+                        )
                         added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
                 except Exception as e:
                     # If can't resolve, fail - don't add without real user_id
@@ -1084,7 +1120,7 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                 for uid, uname, first_name, last_name in monitor_present
             }.values())
 
-            # Sync to sheets with place_id (each monitor gets its own place_id)
+            # Sync to sheets with chat_id (each monitor gets its own chat_id)
             await sync_users_sheet(monitor_chat_id, monitor_present)
 
             status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"

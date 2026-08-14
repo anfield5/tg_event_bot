@@ -661,7 +661,72 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 def _is_at_capacity():
                     return total_limit is not None and _current_headcount() >= total_limit
 
-                waitlist_promotion = None  # set below if a notgoing click frees a slot
+                def _promote_child(target_chat_id):
+                    """Tries to promote ONE waiting entry (person or guest
+                    slot) for target_chat_id, skipping stale guest-slot
+                    entries whose owner is no longer going (tried the next
+                    one instead, at no cost to the caller). Returns
+                    (username, user_id, is_guest) on success, or None if
+                    there was nothing valid to promote. Mutates `waitlist`
+                    and `pending_track_user` via nonlocal/closure."""
+                    nonlocal waitlist
+                    this_chat_waiting = [e for e in waitlist if str(e.get("chat_id")) == str(target_chat_id)]
+                    this_chat_waiting.sort(key=lambda e: e.get("timestamp", ""))
+                    for candidate in this_chat_waiting:
+                        if candidate.get("is_guest"):
+                            cursor.execute(
+                                "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (event_id, target_chat_id, candidate["user_id"]),
+                            )
+                            owner_row = cursor.fetchone()
+                            if owner_row and owner_row[0] == "going":
+                                cursor.execute(
+                                    "UPDATE event_users SET guests = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                    (owner_row[1] + 1, event_id, target_chat_id, candidate["user_id"]),
+                                )
+                                waitlist = [e for e in waitlist if e is not candidate]
+                                return (candidate["username"], candidate["user_id"], True)
+                            waitlist = [e for e in waitlist if e is not candidate]
+                            continue
+                        else:
+                            waitlist = [e for e in waitlist if e is not candidate]
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
+                                (event_id, target_chat_id, candidate["user_id"], candidate["username"]),
+                            )
+                            pending_track_user.append(
+                                (target_chat_id, candidate["username"], candidate["user_id"], None, None)
+                            )
+                            return (candidate["username"], candidate["user_id"], False)
+                    return None
+
+                def _promote_master():
+                    """Same as _promote_child, but for the main hub - mutates
+                    going/counters/not_going (all in closure scope) instead
+                    of event_users."""
+                    nonlocal waitlist, going
+                    this_chat_waiting = [e for e in waitlist if str(e.get("chat_id")) == str(main_chat_id)]
+                    this_chat_waiting.sort(key=lambda e: e.get("timestamp", ""))
+                    for candidate in this_chat_waiting:
+                        if candidate.get("is_guest"):
+                            still_going = any(g.split(" (")[0] == candidate["username"] for g in going)
+                            if still_going:
+                                counters[candidate["username"]] = counters.get(candidate["username"], 0) + 1
+                                waitlist = [e for e in waitlist if e is not candidate]
+                                return (candidate["username"], candidate["user_id"], True)
+                            waitlist = [e for e in waitlist if e is not candidate]
+                            continue
+                        else:
+                            waitlist = [e for e in waitlist if e is not candidate]
+                            going.append(f"{candidate['username']} ({candidate['user_id']})")
+                            not_going.discard(candidate["username"])
+                            pending_track_user.append(
+                                (main_chat_id, candidate["username"], candidate["user_id"], None, None)
+                            )
+                            return (candidate["username"], candidate["user_id"], False)
+                    return None
+
+                waitlist_promotion = None  # set below if a notgoing/sub click frees a slot
 
                 if event_status in (2, -1):
                     return
@@ -771,23 +836,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         data_changed = True
                         if current_status == "going":
-                            this_chat_waiting = [e for e in waitlist if str(e.get("chat_id")) == str(click_chat_id)]
-                            if this_chat_waiting:
-                                this_chat_waiting.sort(key=lambda e: e.get("timestamp", ""))
-                                promoted = this_chat_waiting[0]
-                                waitlist = [e for e in waitlist if e is not promoted]
-                                cursor.execute(
-                                    "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
-                                    (event_id, click_chat_id, promoted["user_id"], promoted["username"]),
-                                )
-                                pending_track_user.append(
-                                    (click_chat_id, promoted["username"], promoted["user_id"], None, None)
-                                )
-                                waitlist_promotion = (click_chat_id, promoted["username"], promoted["user_id"])
+                            promoted = _promote_child(click_chat_id)
+                            if promoted:
+                                p_username, p_user_id, p_is_guest = promoted
+                                waitlist_promotion = (click_chat_id, p_username, p_user_id, p_is_guest)
                     elif action == "add":
                         if _is_at_capacity():
+                            waitlist.append({
+                                "chat_id": str(click_chat_id),
+                                "chat_name": None,
+                                "username": username_raw,
+                                "user_id": str(user_id),
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "is_guest": True,
+                            })
+                            data_changed = True
                             try:
-                                await query.answer(text=f"{ICON_STANDBY} Event is full - can't add another guest right now", show_alert=True)
+                                await query.answer(text=f"{ICON_STANDBY} Event is full - your guest has been added to the Waitlist", show_alert=True)
                             except Exception:
                                 pass
                         else:
@@ -811,6 +876,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 (new_guests, event_id, click_chat_id, str(user_id)),
                             )
                             data_changed = True
+                            # Removing a guest frees a capacity slot too - promote
+                            # whoever's been waiting longest for this chat, same as
+                            # a notgoing click freeing a slot.
+                            promoted = _promote_child(click_chat_id)
+                            if promoted:
+                                p_username, p_user_id, p_is_guest = promoted
+                                waitlist_promotion = (click_chat_id, p_username, p_user_id, p_is_guest)
                         else:
                             return
 
@@ -845,12 +917,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         context.application.create_task(schedule_view_refresh(context, event_id))
 
                     if waitlist_promotion:
-                        promo_chat_id, promo_username, promo_user_id = waitlist_promotion
+                        promo_chat_id, promo_username, promo_user_id, promo_is_guest = waitlist_promotion
                         try:
                             mention = _mention_link(promo_chat_id, promo_username, promo_user_id)
+                            if promo_is_guest:
+                                promo_text = f"{ICON_STANDBY} A spot opened up \\- one more guest for {mention} has been added from the Waitlist\\!"
+                            else:
+                                promo_text = f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
                             await context.bot.send_message(
                                 chat_id=int(promo_chat_id),
-                                text=f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!",
+                                text=promo_text,
                                 parse_mode="MarkdownV2",
                             )
                         except Exception as e:
@@ -919,21 +995,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # Guest, never as a side effect of opting out.
                         data_changed = True
                         if was_going:
-                            this_chat_waiting = [e for e in waitlist if str(e.get("chat_id")) == str(main_chat_id)]
-                            if this_chat_waiting:
-                                this_chat_waiting.sort(key=lambda e: e.get("timestamp", ""))
-                                promoted = this_chat_waiting[0]
-                                waitlist = [e for e in waitlist if e is not promoted]
-                                going.append(f"{promoted['username']} ({promoted['user_id']})")
-                                not_going.discard(promoted["username"])
-                                pending_track_user.append(
-                                    (main_chat_id, promoted["username"], promoted["user_id"], None, None)
-                                )
-                                waitlist_promotion = (main_chat_id, promoted["username"], promoted["user_id"])
+                            promoted = _promote_master()
+                            if promoted:
+                                p_username, p_user_id, p_is_guest = promoted
+                                waitlist_promotion = (main_chat_id, p_username, p_user_id, p_is_guest)
                     elif action == "add":
                         if _is_at_capacity():
+                            waitlist.append({
+                                "chat_id": str(main_chat_id),
+                                "chat_name": None,
+                                "username": username_raw,
+                                "user_id": str(user_id),
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "is_guest": True,
+                            })
+                            data_changed = True
                             try:
-                                await query.answer(text=f"{ICON_STANDBY} Event is full - can't add another guest right now", show_alert=True)
+                                await query.answer(text=f"{ICON_STANDBY} Event is full - your guest has been added to the Waitlist", show_alert=True)
                             except Exception:
                                 pass
                         else:
@@ -951,6 +1029,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 else:
                                     counters[username_raw] = 0
                             data_changed = True
+                            promoted = _promote_master()
+                            if promoted:
+                                p_username, p_user_id, p_is_guest = promoted
+                                waitlist_promotion = (main_chat_id, p_username, p_user_id, p_is_guest)
                         else:
                             return
                     elif action == "close":
@@ -1078,12 +1160,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        first_name=t_first_name, last_name=t_last_name)
 
         if waitlist_promotion:
-            promo_chat_id, promo_username, promo_user_id = waitlist_promotion
+            promo_chat_id, promo_username, promo_user_id, promo_is_guest = waitlist_promotion
             try:
                 mention = _mention_link(promo_chat_id, promo_username, promo_user_id)
+                if promo_is_guest:
+                    promo_text = f"{ICON_STANDBY} A spot opened up \\- one more guest for {mention} has been added from the Waitlist\\!"
+                else:
+                    promo_text = f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
                 await context.bot.send_message(
                     chat_id=int(promo_chat_id),
-                    text=f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!",
+                    text=promo_text,
                     parse_mode="MarkdownV2",
                 )
             except Exception as e:
