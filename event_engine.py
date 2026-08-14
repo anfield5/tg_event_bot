@@ -617,7 +617,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     """
                     SELECT chat_id, message_id, name, going_icon, notgoing_icon,
                            event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                           feature_snapshot, total_limit, waitlist_data
+                           feature_snapshot, total_limit, waitlist_data, created_by_user_id
                     FROM events WHERE event_id = ?
                     """,
                     (event_id,),
@@ -628,7 +628,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
                  event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                 feature_snapshot_raw, total_limit, waitlist_data_raw) = row
+                 feature_snapshot_raw, total_limit, waitlist_data_raw, created_by_user_id) = row
 
                 # NULL/malformed -> "everything enabled", matching how this
                 # event always behaved before feature_snapshot existed.
@@ -785,16 +785,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 )
                                 waitlist_promotion = (click_chat_id, promoted["username"], promoted["user_id"])
                     elif action == "add":
-                        # NOTE: does NOT force status='going' - mirrors the main
-                        # hub, where Add Guest only ever touches the guest
-                        # counter and is completely independent of whether the
-                        # clicker themselves is going/not going/undeclared.
-                        preserved_status = current_status if current_status != "none" else ""
-                        cursor.execute(
-                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
-                            (event_id, click_chat_id, str(user_id), username_raw, preserved_status, current_guests + 1),
-                        )
-                        data_changed = True
+                        if _is_at_capacity():
+                            try:
+                                await query.answer(text=f"{ICON_STANDBY} Event is full - can't add another guest right now", show_alert=True)
+                            except Exception:
+                                pass
+                        else:
+                            # NOTE: does NOT force status='going' - mirrors the main
+                            # hub, where Add Guest only ever touches the guest
+                            # counter and is completely independent of whether the
+                            # clicker themselves is going/not going/undeclared.
+                            preserved_status = current_status if current_status != "none" else ""
+                            cursor.execute(
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
+                                (event_id, click_chat_id, str(user_id), username_raw, preserved_status, current_guests + 1),
+                            )
+                            data_changed = True
                     elif action == "sub":
                         # NOTE: In child chats, user must have status (going/notgoing)
                         # Sub Guest only decrements guests, never removes the user
@@ -819,6 +825,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         (json.dumps(waitlist), event_id),
                     )
                     conn.commit()
+
+                    for t_chat_id, t_username, t_user_id, t_first_name, t_last_name in pending_track_user:
+                        track_user(t_chat_id, t_username, "active", user_id=t_user_id,
+                                   first_name=t_first_name, last_name=t_last_name)
 
                     if data_changed:
                         try:
@@ -849,7 +859,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 # ── Admin-only actions guard ──────────────────────────────────
-                if action in ["close", "directclose", "kick", "save", "incgst", "decgst", "addext", "cancel"]:
+                # close/directclose/save (the Verify&Close flow) also allow
+                # the event's OWN creator, not just group admins - /newevent
+                # itself has no admin check, so before this a non-admin
+                # creator had no way to ever close their own event. The
+                # other actions here (kick, cancel, guest adjustments,
+                # adding external members) stay strictly group-admin-only -
+                # more sensitive moderation actions a random creator
+                # shouldn't get unilateral power over.
+                is_creator = created_by_user_id is not None and str(created_by_user_id) == str(user_id)
+                if action in ["close", "directclose", "save"]:
+                    if not (is_admin or is_creator):
+                        return
+                elif action in ["kick", "incgst", "decgst", "addext", "cancel"]:
                     if not is_admin:
                         return
 
@@ -909,8 +931,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 )
                                 waitlist_promotion = (main_chat_id, promoted["username"], promoted["user_id"])
                     elif action == "add":
-                        counters[username_raw] = counters.get(username_raw, 0) + 1
-                        data_changed = True
+                        if _is_at_capacity():
+                            try:
+                                await query.answer(text=f"{ICON_STANDBY} Event is full - can't add another guest right now", show_alert=True)
+                            except Exception:
+                                pass
+                        else:
+                            counters[username_raw] = counters.get(username_raw, 0) + 1
+                            data_changed = True
                     elif action == "sub":
                         if username_raw in counters:
                             if counters[username_raw] > 1:

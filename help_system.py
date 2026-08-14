@@ -122,13 +122,18 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _build_main_help_text(pro: bool) -> str:
+def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
     """
     The one and only source of the main /help text - both help_command
     (direct /help) and help_back_handler (the "Back" button from a detail
     section) call this, so the two can never drift apart again the way
     they already have twice (missing -d/-date, then missing -gi/-ni).
+
+    has_event_limit controls whether /waitlist is shown - it lives right
+    after -limit's own description (not in Distribution, where a group
+    that can't even set -limit would see a dead-end command).
     """
+    waitlist_line = "/waitlist \\- Show the Waitlist for the latest event \\(hub sees everyone with `from <chat>`, a child chat sees only its own\\)\n" if has_event_limit else ""
     text = (
         "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Create a new event\n"
@@ -139,6 +144,7 @@ def _build_main_help_text(pro: bool) -> str:
         "    visible \\- hub's post shows everyone across every chat; a child chat's post shows only its own\n"
         "    hidden \\(default\\) \\- nothing shown in the post, admin\\-only via /waitlist\n"
         "    onlycount \\- shows just the total count, no names\n"
+        f"{waitlist_line}"
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Edit the active event \\(same flags as /newevent\\)\n"
     )
     if pro:
@@ -172,7 +178,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id_for_help = await _help_target_chat_id(update, context)
     pro = is_premium(chat_id_for_help)
-    main_help = _build_main_help_text(pro)
+    has_event_limit = has_feature(chat_id_for_help, "event_limit")
+    main_help = _build_main_help_text(pro, has_event_limit)
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
@@ -219,8 +226,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ),
         "help_distribution": (
             "📢 *Distribution Control*\n\n"
-            "/shareevent \\[target\\_alias/chatid\\] \\[\\-v\\|\\-h\\|\\-oc\\] \\- Share active event\n"
-            "/waitlist \\- Show the Waitlist for the latest event \\(hub sees everyone with `from <chat>`, a child chat sees only its own\\)\n\n"
+            "/shareevent \\[target\\_alias/chatid\\] \\[\\-v\\|\\-h\\|\\-oc\\] \\- Share active event\n\n"
             "Modes:\n"
             "  • \\-v \\| \\-visible: Show full event in child chat\n"
             "  • \\-h \\| \\-hidden: Hide event, only show going/notgoing counts\n"
@@ -262,7 +268,8 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id_for_help = await _help_target_chat_id(update, context)
     pro = is_premium(chat_id_for_help)
-    main_help = _build_main_help_text(pro)
+    has_event_limit = has_feature(chat_id_for_help, "event_limit")
+    main_help = _build_main_help_text(pro, has_event_limit)
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)

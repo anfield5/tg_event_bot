@@ -262,11 +262,12 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 """
                 INSERT INTO events
                     (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility)
-                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?)
+                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, created_by_user_id)
+                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?)
                 """,
                 (event_id, chat_id, str(message.message_id),
-                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value),
+                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value,
+                 str(update.effective_user.id)),
             )
             conn.commit()
     except Exception as e:
@@ -628,7 +629,7 @@ async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         return
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT username, status FROM main_group_users WHERE chat_id = ?", (chat_id,))
+        cursor.execute("SELECT username, status, user_id FROM main_group_users WHERE chat_id = ?", (chat_id,))
         rows = cursor.fetchall()
 
     if not rows:
@@ -637,7 +638,7 @@ async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         )
         return
 
-    lines = [f"• @{escape_markdown(r[0])} \\(`{escape_markdown(r[1])}`\\)" for r in rows]
+    lines = [f"• {_mention_link(chat_id, r[0], r[2])} \\(`{escape_markdown(r[1])}`\\)" for r in rows]
     text  = f"{ICON_STATS} *Tracked Users:*\n\n" + "\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
@@ -740,7 +741,13 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
                         added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
                 except Exception as e:
                     # If can't get user from Telegram, fail - don't add without real user_id
-                    failed.append(f"{identifier}: {e}")
+                    if "Participant_id_invalid" in str(e):
+                        failed.append(
+                            f"{identifier}: not a valid user\\_id for this chat \\(Telegram rejected it\\)\\. "
+                            f"Ask them to DM the bot with /userid to get their correct numeric ID\\."
+                        )
+                    else:
+                        failed.append(f"{identifier}: {e}")
             else:
                 # Treat as username. The Bot API's getChatMember only accepts
                 # a numeric user_id - there is no way to look up a chat
@@ -929,6 +936,34 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         lines.append(f"➕ Added \\(new admins found\\): {mentions}")
     if not lines:
         lines.append("✅ Nothing to change \\- list already matches the group\\.")
+
+    # ── 2b. Surface unresolvable "Add Extra Member" entries ─────────────────
+    # These live only in the active event's going_data (added via Verification
+    # Mode -> Add Extra Member, resolved against main_group_users at the time),
+    # never in main_group_users itself if no user_id could be found for them.
+    # They can NEVER be synced to the Users sheet (every row there is keyed
+    # by a real numeric USER_ID) - surfaced here so the admin knows to
+    # manually resolve them, e.g. by asking the person to message the bot
+    # once so a real user_id gets captured, then re-adding them.
+    try:
+        with get_connection() as fresh_conn:
+            fresh_cursor = fresh_conn.cursor()
+            fresh_cursor.execute(
+                "SELECT going_data FROM events WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
+                (chat_id,),
+            )
+            active_event_row = fresh_cursor.fetchone()
+        if active_event_row:
+            going_list = json.loads(active_event_row[0])
+            unresolved = [g.split(" (")[0] for g in going_list if g.endswith("(no_id_in_main_group)")]
+            if unresolved:
+                mentions = ", ".join(f"@{escape_markdown(u)}" for u in unresolved)
+                lines.append(
+                    f"{ICON_WARNING} Added via Extra Member but never resolved to a real user\\_id "
+                    f"\\(can't sync to Sheets without one\\): {mentions}\\. Ask them to message the bot once, then re\\-add\\."
+                )
+    except Exception as e:
+        logger.error(f"refreshusers: unresolved-extra-member check failed: {e}")
 
     # ── 3. Sync the Google Sheets "Users" tab too (no-op on free tier) ──────
     try:
@@ -1290,9 +1325,10 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
                 (event_id, str(target_chat_api), str(sent.message_id), mode, chat_type_flag),
             )
             conn.commit()
+        target_display_name = target_input if alias_row else (target_chat_obj.title or str(target_chat_api))
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
-            text="🚀 Event shared successfully\\.",
+            text=f"🚀 Event shared successfully to {escape_markdown(target_display_name)}\\.",
             parse_mode="MarkdownV2",
         )
     except Exception as e:

@@ -310,7 +310,8 @@ def init_db(db_path: str = DB_PATH):
             total_limit INTEGER DEFAULT NULL,
             waitlist_data TEXT DEFAULT '[]',
             waitlist_open INTEGER DEFAULT 0,
-            waitlist_visibility TEXT DEFAULT 'hidden'
+            waitlist_visibility TEXT DEFAULT 'hidden',
+            created_by_user_id TEXT DEFAULT NULL
         )
     """)
 
@@ -538,6 +539,16 @@ def init_db(db_path: str = DB_PATH):
     if "waitlist_visibility" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN waitlist_visibility TEXT DEFAULT 'hidden'")
         cursor.execute("UPDATE events SET waitlist_visibility = 'visible' WHERE waitlist_open = 1")
+
+    # 0a7. Add `created_by_user_id` - lets the event's own creator close it,
+    # not just group admins (previously ANY member could create an event
+    # via /newevent with zero admin check, but only a group admin could
+    # ever close one - a non-admin creator had no way to close their own
+    # event). Pre-existing events simply get NULL (unknown creator), which
+    # is safe: NULL never matches a real user_id, so old events keep the
+    # exact same admin-only close behavior they always had.
+    if "created_by_user_id" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN created_by_user_id TEXT DEFAULT NULL")
 
     # 0b. Add `chat_type`/`chat_name` to sub_chats if it exists from an
     # earlier version of this same migration that predates them.
