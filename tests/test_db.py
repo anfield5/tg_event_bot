@@ -14,6 +14,7 @@ from db import (
     init_db, track_user, get_feature_flags, update_feature_flag, log_command_usage,
     get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
     register_chat_added, register_chat_removed, get_feature_limit_for_chat, get_display_name,
+    dedupe_waitlist,
 )
 
 
@@ -932,3 +933,61 @@ class TestGetDisplayName:
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         assert get_display_name("-1", "", "fallback_name", db_path=path) == "fallback_name"
+
+
+# ---------------------------------------------------------------------------
+# dedupe_waitlist - defensive cleanup for stale duplicate waitlist entries
+# (e.g. from before click-time dedup existed, or any other data corruption
+# source). PERSON entries (same user_id+chat_id) are deduped to the
+# earliest one; GUEST-slot entries are NEVER deduped (multiple queued
+# guest slots for the same person are legitimate).
+# ---------------------------------------------------------------------------
+
+class TestDedupeWaitlist:
+    def test_exact_duplicate_persons_kept_once_earliest(self):
+        wl = [
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "2026-01-01 00:00:03"},
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "2026-01-01 00:00:01"},
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "2026-01-01 00:00:02"},
+        ]
+        result = dedupe_waitlist(wl)
+        assert len(result) == 1
+        assert result[0]["timestamp"] == "2026-01-01 00:00:01"
+
+    def test_same_person_different_chats_both_kept(self):
+        wl = [
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t1"},
+            {"chat_id": "-200", "user_id": "1", "username": "andr", "timestamp": "t2"},
+        ]
+        result = dedupe_waitlist(wl)
+        assert len(result) == 2
+
+    def test_multiple_guest_slots_never_deduped(self):
+        wl = [
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t1", "is_guest": True},
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t2", "is_guest": True},
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t3", "is_guest": True},
+        ]
+        result = dedupe_waitlist(wl)
+        assert len(result) == 3
+
+    def test_mixed_duplicate_persons_and_legit_guest_slots(self):
+        wl = [
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t1"},
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t2"},
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t3", "is_guest": True},
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t4", "is_guest": True},
+        ]
+        result = dedupe_waitlist(wl)
+        assert len(result) == 3  # 1 person + 2 guest slots
+
+    def test_empty_waitlist(self):
+        assert dedupe_waitlist([]) == []
+
+    def test_no_duplicates_returns_all_unchanged(self):
+        wl = [
+            {"chat_id": "-100", "user_id": "1", "username": "andr", "timestamp": "t1"},
+            {"chat_id": "-100", "user_id": "2", "username": "bob", "timestamp": "t2"},
+        ]
+        result = dedupe_waitlist(wl)
+        assert len(result) == 2

@@ -5081,3 +5081,122 @@ class TestSubGuestTriggersWaitlistPromotion:
         assert ctx.bot.send_message.call_args is None
         row = conn.execute("SELECT counters_data FROM events WHERE event_id='ev1'").fetchone()
         assert json.loads(row[0]) == {"alice": 1}
+
+
+class TestWaitlistCommandCleansUpStaleDuplicates:
+    """/waitlist applies defensive dedup and persists the cleanup to the
+    DB, so pre-existing stale duplicate person-entries (e.g. accumulated
+    before click-time dedup existed) don't keep resurfacing."""
+
+    async def test_stale_duplicates_shown_deduped_and_persisted(self, db_path):
+        conn = sqlite3.connect(db_path)
+        entries = [
+            {"chat_id": "-100", "chat_name": None, "username": "Andr", "user_id": "1", "timestamp": f"2026-01-01 00:00:0{i}"}
+            for i in range(6)
+        ]
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps(entries),),
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.waitlist_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert text.count("Andr") == 1
+
+        row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        cleaned = json.loads(row[0])
+        assert len(cleaned) == 1
+
+    async def test_guest_slots_not_deduped_by_waitlist_command(self, db_path):
+        conn = sqlite3.connect(db_path)
+        entries = [
+            {"chat_id": "-100", "chat_name": None, "username": "andr", "user_id": "1", "timestamp": "t1", "is_guest": True},
+            {"chat_id": "-100", "chat_name": None, "username": "andr", "user_id": "1", "timestamp": "t2", "is_guest": True},
+        ]
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps(entries),),
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.waitlist_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "\\(2\\)" in text
+        row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert len(json.loads(row[0])) == 2
+
+
+class TestNotifyUsesListusersFormat:
+    """/notify now renders pending users the same way /listusers does -
+    clickable mentions, not plain @username text."""
+
+    async def test_pending_users_shown_as_mentions(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-1','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, user_id, username, first_name, last_name, status) VALUES ('-1','100','alice','Alice','Smith','active')"
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.notify(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "tg://user?id=100" in text
+        assert "Alice Smith" in text
+
+    async def test_decided_users_excluded(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-1','1','Party','👍','❌',0,?,'[]','{}','[]')""",
+            (json.dumps(["alice (100)"]),),
+        )
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, user_id, username, status) VALUES ('-1','100','alice','active')"
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.notify(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "already responded" in text

@@ -1031,3 +1031,29 @@ def promote_next_from_waitlist(event_id: str, chat_id: str, db_path: str = None)
     conn.commit()
     conn.close()
     return promoted
+
+
+def dedupe_waitlist(waitlist: list) -> list:
+    """
+    Pure function: removes duplicate PERSON entries (same user_id + chat_id,
+    is_guest falsy) keeping the earliest one by timestamp - a person waiting
+    twice "as themselves" in the same chat is always a bug, never legitimate
+    (matches the click-time dedup already enforced going forward in
+    event_engine.button_handler). GUEST-slot entries (is_guest truthy) are
+    NEVER deduped here - multiple queued guest slots for the same person are
+    a legitimate, intentional result of clicking Add Guest more than once.
+
+    Used both defensively at render time (so pre-existing stale duplicate
+    data - e.g. from before this dedup existed - doesn't display broken)
+    and to actually clean up the stored data going forward.
+    """
+    person_seen = {}  # (user_id, chat_id) -> earliest entry
+    guest_entries = []
+    for entry in waitlist:
+        if entry.get("is_guest"):
+            guest_entries.append(entry)
+            continue
+        key = (str(entry.get("user_id")), str(entry.get("chat_id")))
+        if key not in person_seen or entry.get("timestamp", "") < person_seen[key].get("timestamp", ""):
+            person_seen[key] = entry
+    return list(person_seen.values()) + guest_entries

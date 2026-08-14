@@ -89,11 +89,11 @@ nothing to Sheets at all):
 
 | Tab | Columns | Written by |
 |---|---|---|
-| `Users` | USER_ID, USER_NAME, PLACE_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME, FIRST_NAME, LAST_NAME | `/refreshusers`, `/refreshusersall` - one row per (user, place); STATUS flips MEMBER/LEFT rather than deleting rows |
+| `Users` | USER_ID, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME, FIRST_NAME, LAST_NAME | `/refreshusers`, `/refreshusersall` - one row per (user, chat); STATUS flips MEMBER/LEFT rather than deleting rows |
 | `Events` | EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, GOING_COUNT | row appended on `/newevent`, columns F:H updated on Save & Close |
 | `Actions` | EVENT_ID, ACTION, USER_NAME, USER_ID, DATE | every button click (going/notgoing/kick/save/...) |
 | `EventUsers` | EVENT_ID, USER_ID | final attendee list, written once at Save & Close (main chat + every child chat combined) |
-| `UserPresenceLog` | USER_ID, PLACE_ID, DATE_start, DATE_end | logged when someone leaves a monitored/main chat |
+| `UserPresenceLog` | USER_ID, CHAT_ID, DATE_start, DATE_end | logged when someone leaves a monitored/main chat |
 
 ## How the DB and Sheets interact
 

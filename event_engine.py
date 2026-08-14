@@ -35,7 +35,7 @@ from config import (
     ICON_WARNING, logger,
 )
 from utils import escape_markdown, now2ddmmyy, is_real_admin
-from db import get_connection, get_display_name, track_user
+from db import get_connection, get_display_name, track_user, dedupe_waitlist
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet
 
 
@@ -247,7 +247,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         master_not_going = json.loads(notgoing_data)
         master_counters  = json.loads(counters_data)
         master_kicked    = set(json.loads(kicked_data or "[]"))
-        master_waitlist  = json.loads(waitlist_data_raw or "[]")
+        master_waitlist  = dedupe_waitlist(json.loads(waitlist_data_raw or "[]"))
 
         cursor.execute(
             "SELECT chat_id, message_id, share_mode FROM event_shares WHERE event_id = ?", (event_id,)

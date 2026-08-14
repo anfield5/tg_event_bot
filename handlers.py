@@ -24,7 +24,7 @@ from config import (
     ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_STANDBY,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import track_user, get_connection, get_feature_limit_for_chat
+from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet,
@@ -559,7 +559,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
         decided_users  = going_users | notgoing_users
 
         cursor.execute(
-            "SELECT username FROM main_group_users WHERE chat_id = ? AND status = 'active'", (chat_id,)
+            "SELECT username, user_id FROM main_group_users WHERE chat_id = ? AND status = 'active'", (chat_id,)
         )
         all_active = cursor.fetchall()
 
@@ -570,9 +570,9 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
         return
 
     pending = []
-    for (uname,) in all_active:
+    for uname, uid in all_active:
         if uname and uname not in decided_users:
-            pending.append(f"@{escape_markdown(uname)}")
+            pending.append(f"• {_mention_link(chat_id, uname, uid)}")
 
     if not pending:
         await message.reply_text(
@@ -1535,7 +1535,7 @@ async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hub_chat_id = sub_row[0] if is_child_caller else calling_chat_id
 
         cursor.execute(
-            "SELECT waitlist_data FROM events WHERE chat_id = ? ORDER BY ROWID DESC LIMIT 1",
+            "SELECT event_id, waitlist_data FROM events WHERE chat_id = ? ORDER BY ROWID DESC LIMIT 1",
             (hub_chat_id,),
         )
         event_row = cursor.fetchone()
@@ -1544,7 +1544,20 @@ async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No event found for this group\\.", parse_mode="MarkdownV2")
         return
 
-    waitlist = json.loads(event_row[0] or "[]")
+    raw_waitlist = json.loads(event_row[1] or "[]")
+    waitlist = dedupe_waitlist(raw_waitlist)
+    if len(waitlist) != len(raw_waitlist):
+        # Stale duplicate person-entries found (likely left over from
+        # before click-time dedup existed) - persist the cleanup so they
+        # don't keep resurfacing on every /waitlist call.
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE events SET waitlist_data = ? WHERE event_id = ?",
+                (json.dumps(waitlist), event_row[0]),
+            )
+            conn.commit()
+
     if is_child_caller:
         waitlist = [e for e in waitlist if str(e.get("chat_id")) == calling_chat_id]
 
