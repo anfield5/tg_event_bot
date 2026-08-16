@@ -139,13 +139,30 @@ def _render_waitlist_local(waitlist: list, chat_id: str) -> tuple:
         chat's entries, even though waitlist_data is one event-wide list)
       - /waitlist called from a child chat
 
+    Person entries render as "<Standby icon> <mention>", matching a
+    regular Going entry. Guest-slot entries (is_guest=True) are grouped by
+    owner - multiple queued slots for the same person collapse into ONE
+    line with a count, using the exact same format as the going-list's own
+    guest lines (ICON_GUEST, "N, from: <owner>") - not the person-waiting
+    format, since a guest slot isn't a separate person waiting.
+
     Returns (count, text_lines).
     """
     entries = [e for e in waitlist if str(e.get("chat_id")) == str(chat_id)]
-    lines = [
+    person_lines = [
         f"{ICON_STANDBY} {_mention_link(chat_id, e['username'], e['user_id'])}"
-        for e in entries
+        for e in entries if not e.get("is_guest")
     ]
+    guest_counts = {}
+    for e in entries:
+        if e.get("is_guest"):
+            key = (e["user_id"], e["username"])
+            guest_counts[key] = guest_counts.get(key, 0) + 1
+    guest_lines = [
+        f"{ICON_GUEST} {count}, from: {_mention_link(chat_id, uname, uid)}"
+        for (uid, uname), count in guest_counts.items()
+    ]
+    lines = person_lines + guest_lines
     return len(entries), "\n".join(lines)
 
 
@@ -158,6 +175,11 @@ async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: Conte
     chat's post still only shows its own local entries (see
     _render_waitlist_local), and /waitlist mirrors this same "hub sees
     everyone, child sees only local" split.
+
+    Person entries render as "<Standby icon> <mention> [from <chat>]".
+    Guest-slot entries are grouped by (owner, chat) - matching
+    _render_waitlist_local's own grouping - and rendered with the going-
+    list's guest-line format instead of the person-waiting format.
 
     Returns (count, text_lines).
     """
@@ -172,13 +194,28 @@ async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: Conte
                 title_cache[cid] = "Group"
         return title_cache[cid]
 
-    lines = []
+    person_lines = []
+    guest_counts = {}  # (user_id, username, chat_id) -> count
     for e in waitlist:
+        if e.get("is_guest"):
+            key = (e["user_id"], e["username"], e["chat_id"])
+            guest_counts[key] = guest_counts.get(key, 0) + 1
+            continue
         mention = f"{ICON_STANDBY} {_mention_link(e['chat_id'], e['username'], e['user_id'])}"
         if str(e.get("chat_id")) != str(main_chat_id):
             chat_title = await _title(e["chat_id"])
             mention += f" from {escape_markdown(chat_title)}"
-        lines.append(mention)
+        person_lines.append(mention)
+
+    guest_lines = []
+    for (uid, uname, cid), count in guest_counts.items():
+        line = f"{ICON_GUEST} {count}, from: {_mention_link(cid, uname, uid)}"
+        if str(cid) != str(main_chat_id):
+            chat_title = await _title(cid)
+            line += f" \\({escape_markdown(chat_title)}\\)"
+        guest_lines.append(line)
+
+    lines = person_lines + guest_lines
     return len(waitlist), "\n".join(lines)
 
 
@@ -781,6 +818,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # ── Child-chat interaction ────────────────────────────────────
                 if is_click_in_child:
                     if action not in ["going", "notgoing", "add", "sub"]:
+                        try:
+                            await query.answer(
+                                text="⛔️ This action is only available from the main event post.",
+                                show_alert=True,
+                            )
+                        except Exception:
+                            pass
                         return
 
                     cursor.execute(
@@ -946,9 +990,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 is_creator = created_by_user_id is not None and str(created_by_user_id) == str(user_id)
                 if action in ["close", "directclose", "save"]:
                     if not (is_admin or is_creator):
+                        try:
+                            await query.answer(
+                                text="⛔️ Only group admins or the event's creator can do this.",
+                                show_alert=True,
+                            )
+                        except Exception:
+                            pass
                         return
                 elif action in ["kick", "incgst", "decgst", "addext", "cancel"]:
                     if not is_admin:
+                        try:
+                            await query.answer(text="⛔️ Only group admins can do this.", show_alert=True)
+                        except Exception:
+                            pass
                         return
 
                 # ── Master open (event_status == 0) ───────────────────────────

@@ -19,7 +19,9 @@ from tests.helpers import (
 )
 import handlers
 import event_engine
+import monitors
 import subscription
+import aliases
 import config
 
 
@@ -1671,19 +1673,30 @@ class TestRefreshusersall:
         assert "PRO" in reply
         assert "No monitored" not in reply
 
-    async def test_no_monitors_configured(self, db_path):
+    async def test_no_monitored_children_still_processes_hub_itself(self, db_path):
+        """No child chats are monitored, but the hub itself is now always
+        processed regardless - refreshusersall covers 'the group the
+        command was run in PLUS every monitored child', not just children."""
         insert_premium(db_path, chat_id="-100123")
         bot = make_bot()
-        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="The Hub"))
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+
+        async def gcm_side_effect(chat_id, user_id):
+            return MagicMock(status="administrator")
+
+        bot.get_chat_member = AsyncMock(side_effect=gcm_side_effect)
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
         ctx  = make_context(bot=bot, args=[])
 
-        await handlers.refreshusersall(upd, ctx)
+        with patch("handlers.sync_users_sheet", new_callable=AsyncMock):
+            await handlers.refreshusersall(upd, ctx)
 
         reply = msg.reply_text.call_args.args[0]
-        assert "No monitored" in reply
+        assert "The Hub" in reply
+        assert "No monitored" not in reply
 
     async def test_non_admin_is_rejected(self, db_path):
         bot = make_bot()
@@ -4977,6 +4990,7 @@ class TestChildChatClickTracksUserForSheetsSync:
             return member_mock  # verifying the tracked person
 
         bot.get_chat_member = AsyncMock(side_effect=gcm_side_effect)
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Hub"))
         chat = make_chat(chat_id=-100, chat_type="supergroup")
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
@@ -4990,10 +5004,11 @@ class TestChildChatClickTracksUserForSheetsSync:
         with patch("handlers.sync_users_sheet", side_effect=fake_sync):
             await handlers.refreshusersall(upd2, ctx2)
 
-        assert len(sync_calls) == 1
-        synced_chat_id, synced_members = sync_calls[0]
-        assert synced_chat_id == "-200"
-        assert any(m[1] == "newperson" for m in synced_members)
+        # The hub itself is now always processed too, alongside the
+        # monitored child - so 2 sync calls, not 1.
+        assert len(sync_calls) == 2
+        child_call = next(c for c in sync_calls if c[0] == "-200")
+        assert any(m[1] == "newperson" for m in child_call[1])
 
 
 class TestSubGuestTriggersWaitlistPromotion:
@@ -5200,3 +5215,486 @@ class TestNotifyUsesListusersFormat:
 
         text = msg.reply_text.call_args.args[0]
         assert "already responded" in text
+
+
+class TestWaitlistGuestRenderingMatchesGoing:
+    """Real bug found via user report: guest-slot entries in the Waitlist
+    were rendered identically to person entries (Standby icon + mention),
+    misleadingly showing the OWNER as if THEY were personally waiting.
+    Guest entries now render exactly like the going-list's own guest
+    lines (ICON_GUEST, 'N, from: <owner>'), grouped by owner - multiple
+    queued slots collapse into one line with a count."""
+
+    async def test_waitlist_command_groups_guest_slots_like_going(self, db_path):
+        conn = sqlite3.connect(db_path)
+        entries = [
+            {"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t1"},
+            {"chat_id": "-100", "chat_name": None, "username": "alice", "user_id": "1", "timestamp": "t2", "is_guest": True},
+            {"chat_id": "-100", "chat_name": None, "username": "alice", "user_id": "1", "timestamp": "t3", "is_guest": True},
+        ]
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps(entries),),
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.waitlist_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "carol" in text
+        assert "👤⊕ 2, from:" in text
+        # The guest line must NOT use the Standby icon (that would be the
+        # old, wrong "person waiting" rendering)
+        guest_line = [l for l in text.split("\n") if "alice" in l][0]
+        assert "💤" not in guest_line
+
+    async def test_waitlist_command_child_chat_also_groups_guests(self, db_path):
+        conn = sqlite3.connect(db_path)
+        entries = [
+            {"chat_id": "-200", "chat_name": None, "username": "dave", "user_id": "7", "timestamp": "t1", "is_guest": True},
+            {"chat_id": "-200", "chat_name": None, "username": "dave", "user_id": "7", "timestamp": "t2", "is_guest": True},
+            {"chat_id": "-200", "chat_name": None, "username": "dave", "user_id": "7", "timestamp": "t3", "is_guest": True},
+        ]
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',?)""",
+            (json.dumps(entries),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','child')")
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-200, chat_type="supergroup")
+        user = make_user(user_id=7)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.waitlist_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "👤⊕ 3, from:" in text
+
+    async def test_post_render_also_groups_guest_slots(self, db_path):
+        """The actual post's own Waitlist section (not just /waitlist)
+        must use the same corrected format - both consume the same
+        underlying _render_waitlist_local/_render_waitlist_all."""
+        waitlist = [
+            {"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t1"},
+            {"chat_id": "-100", "chat_name": None, "username": "alice", "user_id": "1", "timestamp": "t2", "is_guest": True},
+            {"chat_id": "-100", "chat_name": None, "username": "alice", "user_id": "1", "timestamp": "t3", "is_guest": True},
+        ]
+        count, text = event_engine._render_waitlist_local(waitlist, "-100")
+        assert count == 3
+        assert "carol" in text
+        assert "👤⊕ 2, from:" in text
+
+
+class TestRefreshusersallCoversHubItself:
+    """Design correction: /refreshusersall must cover the group the
+    command was run in PLUS every monitored child under it, not just the
+    children. The hub's own chat_id is now always included as the first
+    entry to process, resolved via a live get_chat() call for its real
+    title (works whether called directly or via a DM hub-selection
+    override)."""
+
+    async def test_hub_and_monitored_child_both_synced(self, db_path):
+        conn = sqlite3.connect(db_path)
+        insert_premium(db_path, chat_id="-100")
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, user_id, username, first_name, last_name, status) VALUES ('-100','55','hubperson','Hub','Person','active')"
+        )
+        conn.execute(
+            "INSERT INTO sub_chats (chat_id, owner_chat_id, alias, is_monitored, chat_name) VALUES ('-200','-100','child',1,'Monitored Child')"
+        )
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, user_id, username, first_name, last_name, status) VALUES ('-200','7','childperson','Child','Person','active')"
+        )
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Real Hub Name"))
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+
+        def _member_mock(username, first_name, last_name):
+            m = MagicMock(status="member")
+            m.user.username = username
+            m.user.first_name = first_name
+            m.user.last_name = last_name
+            return m
+
+        async def gcm_side_effect(chat_id, user_id):
+            if str(user_id) == "1":
+                return MagicMock(status="administrator")
+            if str(user_id) == "55":
+                return _member_mock("hubperson", "Hub", "Person")
+            if str(user_id) == "7":
+                return _member_mock("childperson", "Child", "Person")
+            return MagicMock(status="member")
+
+        bot.get_chat_member = AsyncMock(side_effect=gcm_side_effect)
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin_user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=admin_user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        sync_calls = []
+        async def fake_sync(cid, members):
+            sync_calls.append((cid, [m[1] for m in members]))
+
+        with patch("handlers.sync_users_sheet", side_effect=fake_sync):
+            await handlers.refreshusersall(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Real Hub Name" in reply
+        assert "Monitored Child" in reply
+        assert any(cid == "-100" and "hubperson" in members for cid, members in sync_calls)
+        assert any(cid == "-200" and "childperson" in members for cid, members in sync_calls)
+
+
+class TestAddmonitorRequiresBotAdmin:
+    """Real gap found and fixed: /addmonitor previously only checked that
+    the bot was a MEMBER of the target chat, not an ADMIN. Per Telegram's
+    own documented requirement, chat_member updates about OTHER users
+    (needed for auto-tracking new joiners without a button click) are only
+    delivered when the bot itself is an admin in that chat - a bot that's
+    only a regular member would silently never notice anyone new joining,
+    with no indication to the admin that monitoring wasn't actually
+    working. Now checked upfront with a clear, actionable error.
+
+    addmonitor makes exactly 2 sequential get_chat_member calls in this
+    order: (1) the calling user's admin status in the MAIN chat, (2) the
+    BOT's own status in the TARGET chat - and, only if that passes, a 3rd
+    call for the calling user's admin status in the TARGET chat. Mocking
+    by argument-matching turned out to be fragile in ways not fully
+    understood (a real pytest run showed non-deterministic results not
+    reproducible in isolated re-runs) - using an ORDERED side_effect list
+    instead removes argument-matching from the equation entirely: each
+    call just gets the next value in sequence, with zero room for
+    ambiguity regardless of what values chat_id/user_id actually carry.
+    """
+
+    async def _setup_hub(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+
+    async def test_bot_only_regular_member_is_rejected(self, db_path):
+        await self._setup_hub(db_path)
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),  # (1) caller admin in main chat
+            MagicMock(status="member"),         # (2) bot only a regular member in target
+        ])
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await monitors.addmonitor(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Bot must be an" in text
+        assert "admin" in text
+        assert bot.get_chat_member.call_count == 2  # never reached the 3rd (caller-in-target) check
+
+    async def test_bot_admin_in_target_chat_succeeds(self, db_path):
+        await self._setup_hub(db_path)
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),  # (1) caller admin in main chat
+            MagicMock(status="administrator"),  # (2) bot is admin in target
+            MagicMock(status="administrator"),  # (3) caller admin in target too
+        ])
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await monitors.addmonitor(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Bot must be an" not in text
+        assert "Added monitor" in text
+
+    async def test_bot_is_creator_of_target_chat_also_succeeds(self, db_path):
+        """'creator' status counts as admin-equivalent, not just
+        'administrator' specifically."""
+        await self._setup_hub(db_path)
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),  # (1) caller admin in main chat
+            MagicMock(status="creator"),        # (2) bot is creator of target
+            MagicMock(status="administrator"),  # (3) caller admin in target too
+        ])
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await monitors.addmonitor(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Bot must be an" not in text
+
+    async def test_bot_not_in_target_chat_at_all_still_gives_the_original_error(self, db_path):
+        """The pre-existing 'bot is not a member' check (a different,
+        earlier failure mode) must still work correctly and not get
+        confused with the new admin-specific check."""
+        await self._setup_hub(db_path)
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),  # (1) caller admin in main chat
+            Exception("Chat not found"),        # (2) bot isn't even in the target chat
+        ])
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await monitors.addmonitor(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "not a member" in text
+
+class TestDeduplicatedProTierChecks:
+    """Fixes from the errors/warnings audit: setsheet and refreshusersall
+    previously hand-rolled their own is_premium() check with a duplicated
+    message, instead of reusing the centralized require_premium() already
+    used by aliases.py/monitors.py. Now both go through it."""
+
+    async def test_setsheet_free_tier_uses_require_premium(self, db_path):
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["sheetid123"])
+
+        await subscription.setsheet(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "PRO" in text
+        assert "Google Sheets binding" in text
+
+    async def test_refreshusersall_free_tier_uses_require_premium(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        await handlers.refreshusersall(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "PRO" in text
+        assert "addmonitor" in text
+
+
+class TestAliasMessageConsistencyFixes:
+    """setalias's duplicate-alias message was missing the warning icon and
+    MarkdownV2 escaping (the only unescaped message in the file);
+    removealias used an inconsistent 🔍 icon instead of ❌ like every other
+    'not found' message in the project. Both now name the specific alias
+    for better detail too."""
+
+    async def test_duplicate_alias_message_has_warning_icon(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','existingalias')")
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="New Target"))
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-300", "existingalias"])
+
+        await aliases.setalias(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "⚠️" in text
+        assert "existingalias" in text
+
+    async def test_removealias_not_found_uses_x_icon(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["doesnotexist"])
+
+        await aliases.removealias(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "❌" in text
+        assert "🔍" not in text
+        assert "doesnotexist" in text
+
+
+class TestSilentPermissionDenialNowGivesFeedback:
+    """Real gap found and fixed: two places in button_handler silently
+    returned with zero feedback when a click was blocked for lacking
+    permission - every OTHER permission-denial path in the project gives
+    explicit feedback, this was the only exception."""
+
+    async def _click(self, action, chat_id, uid, username):
+        query = _make_fake_button_query(f"{action}_ev1", chat_id, uid, username)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+        return query
+
+    async def test_random_non_admin_non_creator_gets_feedback_on_cancel(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, created_by_user_id)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]','42')"""
+        )
+        conn.commit()
+
+        query = await self._click("cancel", "-100", 999, "random")
+
+        assert query.answer.call_args.kwargs.get("show_alert") is True
+        assert "Only group admins" in query.answer.call_args.kwargs.get("text", "")
+
+    async def test_admin_only_action_in_child_chat_gives_feedback(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','child')")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','2','-visible','group')")
+        conn.commit()
+
+        query = await self._click("kick", "-200", 999, "random")
+
+        assert query.answer.call_args.kwargs.get("show_alert") is True
+        assert "main event post" in query.answer.call_args.kwargs.get("text", "")
+
+    async def test_creator_still_gets_no_feedback_needed_for_close(self, db_path):
+        """Sanity check: the fix doesn't break the legitimate case - the
+        event's own creator closing it should NOT trigger the new alert."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, created_by_user_id)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]','42')"""
+        )
+        conn.commit()
+
+        query = await self._click("close", "-100", 42, "creator")
+
+        assert query.answer.call_args.kwargs.get("show_alert") is not True
+
+
+class TestNeweventWarnsOnExistingActiveEvent:
+    """Missing warning found and fixed: /newevent previously created a new
+    event with zero acknowledgment that an older active event already
+    existed, leaving it orphaned (still clickable for participants, but no
+    longer reachable via /waitlist, /editevent etc which target the
+    latest event)."""
+
+    async def test_no_warning_when_no_existing_event(self, db_path):
+        bot = make_bot()
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["FirstParty"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        assert not any(
+            "already an active event" in c.args[0] for c in msg.reply_text.call_args_list
+        )
+
+    async def test_warns_when_creating_second_event_while_first_still_active(self, db_path):
+        bot = make_bot()
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+
+        msg1 = make_message(chat=chat)
+        upd1 = make_update(chat=chat, user=user, message=msg1)
+        ctx1 = make_context(bot=bot, args=["FirstParty"])
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd1, ctx1)
+
+        msg2 = make_message(chat=chat)
+        upd2 = make_update(chat=chat, user=user, message=msg2)
+        ctx2 = make_context(bot=bot, args=["SecondParty"])
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd2, ctx2)
+
+        warning_calls = [c.args[0] for c in msg2.reply_text.call_args_list if "already an active event" in c.args[0]]
+        assert len(warning_calls) == 1
+        assert "FirstParty" in warning_calls[0]
+
+    async def test_no_warning_when_previous_event_is_closed(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-1','1','OldParty','👍','❌',2,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["NewParty"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        assert not any(
+            "already an active event" in c.args[0] for c in msg.reply_text.call_args_list
+        )

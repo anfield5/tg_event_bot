@@ -279,12 +279,7 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     if chat_id is None:
         return
 
-    if not is_premium(chat_id):
-        await update.message.reply_text(
-            f"{ICON_WARNING} /setsheet is a PRO\\-only feature\\. "
-            f"Use /setsub info or contact the bot owner to upgrade\\.",
-            parse_mode="MarkdownV2",
-        )
+    if not await require_premium(update, "Google Sheets binding (/setsheet)", chat_id=chat_id):
         return
 
     admin_ok = await is_real_admin(

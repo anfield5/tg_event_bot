@@ -102,7 +102,10 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
             (alias_name, hub_chat_id),
         )
         if cursor.fetchone():
-            await update.message.reply_text("Alias already exist", parse_mode="MarkdownV2")
+            await update.message.reply_text(
+                f"{ICON_WARNING} Alias `{escape_markdown(alias_name)}` already exists\\.",
+                parse_mode="MarkdownV2",
+            )
             return
 
         cursor.execute(
@@ -178,7 +181,9 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE, overri
         )
         row = cursor.fetchone()
         if not row:
-            await update.message.reply_text("🔍 Alias not found\\.", parse_mode="MarkdownV2")
+            await update.message.reply_text(
+                f"❌ Alias `{escape_markdown(alias_name)}` not found\\.", parse_mode="MarkdownV2"
+            )
             return
 
         if row[0]:

@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
 from keyboard import create_event_keyboard
-from subscription import is_premium, has_feature
+from subscription import is_premium, has_feature, require_premium
 from aliases import setalias, removealias, listalias
 from monitors import addmonitor, removemonitor, listmonitors
 from help_system import (
@@ -16,6 +16,7 @@ from help_system import (
 )
 from event_engine import (
     get_event_lock, schedule_view_refresh, update_all_shared_views, button_handler, _mention_link,
+    _render_waitlist_local, _render_waitlist_all,
 )
 
 from config import (
@@ -255,6 +256,14 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         "add_extra_member": add_extra_member_enabled,
     })
 
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT message_id, name FROM events WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
+            (chat_id,),
+        )
+        existing_active = cursor.fetchone()
+
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -274,6 +283,14 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         logger.error(f"Failed to save new event: {e}")
         await message.reply_text("❌ Database error: could not create event\\.", parse_mode="MarkdownV2")
         return
+
+    if existing_active:
+        await message.reply_text(
+            f"{ICON_WARNING} There's already an active event \\(`{escape_markdown(existing_active[1])}`\\) in this chat\\. "
+            f"Its post is still clickable for participants, but commands like /waitlist and /editevent now target "
+            f"this NEW event instead\\. Consider closing the old one first next time\\.",
+            parse_mode="MarkdownV2",
+        )
 
     date_line = f"{ICON_CLOCK} {escape_markdown(event_date)}\n" if event_date else ""
     text = (
@@ -1015,12 +1032,14 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
 @register_hub_command("refreshusersall")
 async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
-    Same as /refreshusers, but for every monitored group/channel under this
-    hub in one go (see /addmonitor). This is a heavier, potentially slow
-    bulk operation - it makes live Telegram API calls for every tracked
-    user AND every admin in EVERY monitored chat, one after another - so
-    it's kept as its own explicit command rather than a flag on the
-    lightweight, everyday /refreshusers.
+    Covers the group/channel this command was run in PLUS every monitored
+    child under it (see /addmonitor) - the hub's own members aren't a
+    separate step, this replaces needing a plain /refreshusers call for
+    the hub itself. This is a heavier, potentially slow bulk operation -
+    it makes live Telegram API calls for every tracked user AND every
+    admin in EVERY chat it touches, one after another - so it's kept as
+    its own explicit command rather than a flag on the lightweight,
+    everyday /refreshusers.
     """
     chat_id = await resolve_hub_chat_id(update, context, "refreshusersall", override_chat_id)
     if chat_id is None:
@@ -1030,13 +1049,7 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
         await update.message.reply_text(f"{ICON_ADMIN_ONLY} Only admins can use /refreshusersall\\.", parse_mode="MarkdownV2")
         return
 
-    if not is_premium(chat_id):
-        await update.message.reply_text(
-            f"{ICON_WARNING} /refreshusersall is a PRO\\-only feature \\(it syncs monitored groups/channels, "
-            f"which are only ever configured via /addmonitor, itself PRO\\-only\\)\\. "
-            f"Use /setsub info or contact the bot owner to upgrade\\.",
-            parse_mode="MarkdownV2",
-        )
+    if not await require_premium(update, "Monitoring sync (/refreshusersall, tied to /addmonitor)", chat_id=chat_id):
         return
 
     with get_connection() as conn:
@@ -1047,11 +1060,18 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
         )
         monitors = cursor.fetchall()
 
-    if not monitors:
-        await update.message.reply_text(
-            f"{ICON_GLOBE} No monitored groups/channels configured\\. See /addmonitor\\.", parse_mode="MarkdownV2"
-        )
-        return
+    # The hub itself is always included too - refreshusersall covers the
+    # group the command was run in PLUS every monitored child under it,
+    # not just the children. Resolved via a live API call so this works
+    # the same whether called directly from the hub or via a DM override.
+    try:
+        hub_chat_obj = await context.bot.get_chat(int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id)
+        hub_chat_name = hub_chat_obj.title or chat_id
+    except Exception:
+        hub_chat_name = chat_id
+    monitors = [(chat_id, "group", hub_chat_name)] + list(monitors)
+
+
 
     lines = [f"{ICON_GLOBE} *Processing monitored groups/channels:*"]
     for monitor_chat_id, chat_type, chat_name in monitors:
@@ -1559,33 +1579,15 @@ async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
 
     if is_child_caller:
-        waitlist = [e for e in waitlist if str(e.get("chat_id")) == calling_chat_id]
+        count, text_lines = _render_waitlist_local(waitlist, calling_chat_id)
+    else:
+        count, text_lines = await _render_waitlist_all(waitlist, hub_chat_id, context)
 
-    if not waitlist:
+    if count == 0:
         await update.message.reply_text("The waitlist is currently empty\\.", parse_mode="MarkdownV2")
         return
 
-    chat_title_cache = {}
-
-    async def _title(cid):
-        if cid not in chat_title_cache:
-            try:
-                obj = await context.bot.get_chat(int(cid) if str(cid).replace("-", "").isdigit() else cid)
-                chat_title_cache[cid] = obj.title or "Group"
-            except Exception:
-                chat_title_cache[cid] = "Group"
-        return chat_title_cache[cid]
-
-    lines = []
-    for entry in waitlist:
-        mention = _mention_link(entry["chat_id"], entry["username"], entry["user_id"])
-        if not is_child_caller and str(entry["chat_id"]) != str(hub_chat_id):
-            chat_title = await _title(entry["chat_id"])
-            lines.append(f"{mention} from {escape_markdown(chat_title)}")
-        else:
-            lines.append(mention)
-
-    text = f"*Waitlist* \\({len(waitlist)}\\):\n" + "\n".join(lines)
+    text = f"*Waitlist* \\({count}\\):\n" + text_lines
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 

@@ -48,12 +48,27 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             )
             return
 
-        # Check if bot is in target chat
+        # Check if bot is in target chat AND is an admin there - Telegram
+        # only delivers chat_member updates about OTHER users (needed for
+        # auto-tracking new joiners without a button click) when the bot
+        # itself is an admin in that chat. A bot that's only a regular
+        # member would silently never see new people join, so this is
+        # checked upfront with a clear error instead of monitoring
+        # succeeding and quietly failing to notice anyone later.
         try:
             bot_member = await context.bot.get_chat_member(target_chat_id, context.bot.id)
         except Exception:
             await update.message.reply_text(
                 "❌ Bot is not a member of the target group/channel\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+
+        if bot_member.status not in ("administrator", "creator"):
+            await update.message.reply_text(
+                "❌ Bot must be an *admin* in the target group/channel to monitor it \\- "
+                "Telegram only tells the bot about new members joining when it has admin rights there\\. "
+                "Please promote the bot, then re\\-run /addmonitor\\.",
                 parse_mode="MarkdownV2",
             )
             return
