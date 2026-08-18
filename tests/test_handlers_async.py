@@ -5698,3 +5698,281 @@ class TestNeweventWarnsOnExistingActiveEvent:
         assert not any(
             "already an active event" in c.args[0] for c in msg.reply_text.call_args_list
         )
+
+
+class TestMasterPostWaitlistBelowGoingFromSections:
+    """Real ordering bug found and fixed: the main hub's own post
+    previously showed Waitlist BEFORE the 'Going from <child chat>'
+    sections, contradicting the intended reading order (Going, Not Going,
+    Going from every child, THEN Waitlist at the bottom). The child
+    chat's own post was already correctly ordered."""
+
+    async def test_waitlist_appears_after_going_from_child_sections(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',5,?,'visible')""",
+            (
+                json.dumps(["alice (1)"]),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t1"}]),
+            ),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','child')")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','2','-visible','group')")
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','5','erin','going',0)")
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Child Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        main_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        text = main_call.kwargs["text"]
+
+        going_from_idx = text.index("Going from Child Group")
+        waitlist_idx = text.index("*Waitlist*")
+        assert going_from_idx < waitlist_idx
+
+
+class TestWaitlistMechanicsUnaffectedByVisibility:
+    """Verified: adding/promoting from the Waitlist is entirely independent
+    of waitlist_visibility - visibility only controls RENDERING, never the
+    underlying mechanics. Going/NotGoing/Add/Remove Guest all correctly
+    queue/promote people even when the Waitlist is hidden from view."""
+
+    async def _click(self, action, chat_id, uid, username):
+        query = _make_fake_button_query(f"{action}_ev1", chat_id, uid, username)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+        return query, ctx
+
+    async def test_going_at_capacity_queues_correctly_when_hidden(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,'hidden')""",
+            (json.dumps(["alice (1)", "bob (2)"]),),
+        )
+        conn.commit()
+
+        query, _ = await self._click("going", "-100", 3, "carol")
+
+        assert "Waitlist" in query.answer.call_args.kwargs.get("text", "")
+        row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        wl = json.loads(row[0])
+        assert len(wl) == 1 and wl[0]["username"] == "carol"
+
+    async def test_promotion_and_announcement_still_fire_when_hidden(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,?,'hidden')""",
+            (
+                json.dumps(["alice (1)", "bob (2)"]),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t1"}]),
+            ),
+        )
+        conn.commit()
+
+        _, ctx = await self._click("notgoing", "-100", 2, "bob")
+
+        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert any("carol" in g for g in json.loads(row[0]))
+        assert json.loads(row[1]) == []
+        assert ctx.bot.send_message.call_args is not None  # announcement fires despite hidden display
+
+
+class TestEditeventVisibilityAndLimitChanges:
+    """Verified: /editevent correctly handles limit and visibility changes
+    both together and independently, with people already in the Waitlist."""
+
+    async def test_raising_limit_and_visibility_together_promotes_correctly(self, db_path):
+        conn = sqlite3.connect(db_path)
+        insert_premium(db_path, chat_id="-100")
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,?,'hidden')""",
+            (
+                json.dumps(["alice (1)", "bob (2)"]),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t1"}]),
+            ),
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin_user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=admin_user, message=msg)
+        ctx = make_context(bot=bot, args=["-limit", "3", "visible"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.editevent(upd, ctx)
+
+        row = conn.execute("SELECT going_data, waitlist_data, waitlist_visibility, total_limit FROM events WHERE event_id='ev1'").fetchone()
+        assert row[2] == "visible"
+        assert row[3] == 3
+        assert any("carol" in g for g in json.loads(row[0]))
+        assert json.loads(row[1]) == []
+        assert bot.send_message.call_count == 1
+
+    async def test_visibility_only_change_does_not_falsely_promote(self, db_path):
+        conn = sqlite3.connect(db_path)
+        insert_premium(db_path, chat_id="-100")
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,?,'hidden')""",
+            (
+                json.dumps(["alice (1)", "bob (2)"]),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t1"}]),
+            ),
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin_user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=admin_user, message=msg)
+        ctx = make_context(bot=bot, args=["-limit", "2", "onlycount"])  # same limit, viz change only
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.editevent(upd, ctx)
+
+        row = conn.execute("SELECT going_data, waitlist_data, waitlist_visibility FROM events WHERE event_id='ev1'").fetchone()
+        assert row[2] == "onlycount"
+        assert "carol" not in row[0]
+        assert len(json.loads(row[1])) == 1
+        assert bot.send_message.call_count == 0
+
+    async def test_onlycount_rendering_shows_count_not_names_after_switch(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,?,'onlycount')""",
+            (
+                json.dumps(["alice (1)", "bob (2)"]),
+                json.dumps([{"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t1"}]),
+            ),
+        )
+        conn.commit()
+
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        text = ctx.bot.edit_message_text.call_args_list[0].kwargs["text"]
+        assert "carol" not in text
+        assert "Waitlist:* 1" in text
+
+
+class TestCrossChatWaitlistDuplicateBlocked:
+    """Real bug found while investigating a user report: cross-chat
+    protection only checked event_users status='going', never the
+    Waitlist - meaning someone already queued in chat A's waitlist could
+    click Going in chat B (also full) and end up double-queued in BOTH,
+    silently getting the same generic "added to Waitlist" alert both
+    times with no indication anything was wrong. Now blocked with the
+    same "already added elsewhere" warning a confirmed going registration
+    gets."""
+
+    async def _click(self, action, chat_id, uid, username):
+        query = _make_fake_button_query(f"{action}_ev1", chat_id, uid, username)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+        return query
+
+    async def test_already_waitlisted_in_chat_a_blocked_from_queuing_in_chat_b(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',1)""",
+            (json.dumps(["someoneelse (999)"]),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','childA')")
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-300','-100','childB')")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','2','-visible','group')")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-300','3','-visible','group')")
+        conn.commit()
+
+        await self._click("going", "-200", 7, "frank")  # queued in chat A's waitlist
+        query2 = await self._click("going", "-300", 7, "frank")  # should be BLOCKED, not double-queued
+
+        assert query2.answer.call_args.kwargs.get("show_alert") is True
+        assert "already added to this event" in query2.answer.call_args.kwargs.get("text", "")
+
+        wl = json.loads(conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0])
+        frank_entries = [e for e in wl if e["username"] == "frank"]
+        assert len(frank_entries) == 1
+
+    async def test_add_guest_not_blocked_by_unrelated_waitlist_entry_elsewhere(self, db_path):
+        """The new check only applies to 'going' - Add Guest for someone
+        already confirmed going in THIS chat shouldn't be blocked just
+        because they have an unrelated stale waitlist entry in another
+        chat."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',10,?)""",
+            (json.dumps([{"chat_id": "-200", "chat_name": None, "username": "frank", "user_id": "7", "timestamp": "t"}]),),
+        )
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-300','-100','childB')")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-300','3','-visible','group')")
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-300','7','frank','going',0)")
+        conn.commit()
+
+        query = await self._click("add", "-300", 7, "frank")
+
+        assert query.answer.call_args.kwargs.get("show_alert") is not True
+        row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-300' AND user_id='7'").fetchone()
+        assert row == (1,)

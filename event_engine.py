@@ -393,8 +393,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         f"{header}{title_line}\n\n {date_line}\n"
         f"*Going* \\({total_master_going}\\):\n{going_list_text}\n\n"
         f"*Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
-        f"{waitlist_section}"
-        f"{master_shares_block}\n\n"
+        f"{master_shares_block}"
+        f"{waitlist_section}\n\n"
         f"{ICON_STATS} *TOTAL Going:* {global_total}"
     )
 
@@ -804,6 +804,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if not is_click_in_child:
                             user_already_registered = True
                             break
+
+                    # Also block if they're already QUEUED in another chat's
+                    # Waitlist for this same event - without this, someone
+                    # stuck waiting in chat A could click Going in chat B
+                    # (also full) and end up double-queued in both, rather
+                    # than getting the same "already added elsewhere"
+                    # warning that a confirmed 'going' registration gets.
+                    # Only applies to fresh "going" attempts - "add"/"sub"
+                    # (guest count adjustments) mean they're ALREADY
+                    # confirmed going in THIS chat, so being separately
+                    # waitlisted elsewhere doesn't create the same conflict.
+                    if not user_already_registered and action == "going":
+                        for entry in waitlist:
+                            if str(entry.get("user_id")) == str(user_id) and str(entry.get("chat_id")) != str(click_chat_id):
+                                user_already_registered = True
+                                break
 
                     if user_already_registered:
                         try:
