@@ -130,6 +130,21 @@ def _mention_link(chat_id: str, username: str, user_id=None) -> str:
     return f"[{escape_markdown(display)}](tg://user?id={user_id})"
 
 
+def _promotion_announcement_text(chat_id: str, username: str, user_id, is_guest: bool) -> str:
+    """
+    Builds the "a spot opened up" announcement shown after a Waitlist
+    promotion - previously this exact if/else was copy-pasted in 3 places
+    (button_handler's own child-branch return path, button_handler's
+    shared master-path return, and editevent's own limit-raise
+    promotion in handlers.py). One wording change now only needs to
+    happen here.
+    """
+    mention = _mention_link(chat_id, username, user_id)
+    if is_guest:
+        return f"{ICON_STANDBY} A spot opened up \\- one more guest for {mention} has been added from the Waitlist\\!"
+    return f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
+
+
 def _render_waitlist_local(waitlist: list, chat_id: str) -> tuple:
     """
     Filters an event's waitlist_data down to entries added from THIS
@@ -979,14 +994,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if waitlist_promotion:
                         promo_chat_id, promo_username, promo_user_id, promo_is_guest = waitlist_promotion
                         try:
-                            mention = _mention_link(promo_chat_id, promo_username, promo_user_id)
-                            if promo_is_guest:
-                                promo_text = f"{ICON_STANDBY} A spot opened up \\- one more guest for {mention} has been added from the Waitlist\\!"
-                            else:
-                                promo_text = f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
                             await context.bot.send_message(
                                 chat_id=int(promo_chat_id),
-                                text=promo_text,
+                                text=_promotion_announcement_text(promo_chat_id, promo_username, promo_user_id, promo_is_guest),
                                 parse_mode="MarkdownV2",
                             )
                         except Exception as e:
@@ -1233,14 +1243,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if waitlist_promotion:
             promo_chat_id, promo_username, promo_user_id, promo_is_guest = waitlist_promotion
             try:
-                mention = _mention_link(promo_chat_id, promo_username, promo_user_id)
-                if promo_is_guest:
-                    promo_text = f"{ICON_STANDBY} A spot opened up \\- one more guest for {mention} has been added from the Waitlist\\!"
-                else:
-                    promo_text = f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
                 await context.bot.send_message(
                     chat_id=int(promo_chat_id),
-                    text=promo_text,
+                    text=_promotion_announcement_text(promo_chat_id, promo_username, promo_user_id, promo_is_guest),
                     parse_mode="MarkdownV2",
                 )
             except Exception as e:

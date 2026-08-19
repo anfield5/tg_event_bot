@@ -16,7 +16,7 @@ from help_system import (
 )
 from event_engine import (
     get_event_lock, schedule_view_refresh, update_all_shared_views, button_handler, _mention_link,
-    _render_waitlist_local, _render_waitlist_all,
+    _render_waitlist_local, _render_waitlist_all, _promotion_announcement_text,
 )
 
 from config import (
@@ -499,14 +499,9 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
 
     for p_chat_id, p_username, p_user_id, p_is_guest in promotions_to_announce:
         try:
-            mention = _mention_link(p_chat_id, p_username, p_user_id)
-            if p_is_guest:
-                promo_text = f"{ICON_STANDBY} A spot opened up \\- one more guest for {mention} has been added from the Waitlist\\!"
-            else:
-                promo_text = f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
             await context.bot.send_message(
                 chat_id=int(p_chat_id),
-                text=promo_text,
+                text=_promotion_announcement_text(p_chat_id, p_username, p_user_id, p_is_guest),
                 parse_mode="MarkdownV2",
             )
         except Exception as e:

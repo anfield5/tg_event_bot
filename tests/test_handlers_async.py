@@ -5976,3 +5976,22 @@ class TestCrossChatWaitlistDuplicateBlocked:
         assert query.answer.call_args.kwargs.get("show_alert") is not True
         row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-300' AND user_id='7'").fetchone()
         assert row == (1,)
+
+
+class TestPromotionAnnouncementTextHelper:
+    """Refactor: the Waitlist promotion announcement text was copy-pasted
+    identically in 3 separate places (button_handler's child-branch
+    return path, button_handler's shared master-path, and editevent's
+    own limit-raise promotion in handlers.py). Extracted into
+    _promotion_announcement_text() so a wording change only needs to
+    happen once."""
+
+    def test_person_promotion_text(self, db_path):
+        text = event_engine._promotion_announcement_text("-100", "alice", "1", False)
+        assert "moved from the Waitlist to Going" in text
+        assert "alice" in text or "tg://user?id=1" in text
+
+    def test_guest_promotion_text(self, db_path):
+        text = event_engine._promotion_announcement_text("-100", "alice", "1", True)
+        assert "one more guest for" in text
+        assert "added from the Waitlist" in text
