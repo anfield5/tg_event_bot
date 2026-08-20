@@ -63,15 +63,19 @@ def _seed_feature_flags(cursor):
     """
     seed_rows = [
         ("newevent", "/newevent (create a new event)", "FREE", None,
-         "Creates a new event with optional custom Going/Not Going icons and a date."),
+         "Creates a new event: -gi/-goingicon and -ni/-notgoingicon set custom emoji, "
+         "-d/-date sets the event date and optional time, -limit caps capacity (see event_limit)."),
         ("editevent", "/editevent (edit the active event)", "FREE", None,
-         "Edits the name/date/icons of the currently active event."),
+         "Edits the name/date/icons/limit of the currently active event - same flags as /newevent."),
         ("event_limit", "-limit on /newevent and /editevent (Waitlist capacity)", "PRO", None,
          "Whether a hub can cap an event's total headcount and configure Waitlist visibility "
          "with -limit N [visible|hidden|onlycount]. When gated off, the flag is rejected with "
          "a clear error instead of being silently ignored."),
         ("user_management", "User Management (/adduser, /listusers, /updateuser, /notify, /refreshusers)", "FREE", None,
-         "Tracking, notifying, and syncing the roster of users for THIS group - available to every group regardless of tier."),
+         "Tracking, notifying, and syncing the roster of users for THIS group - available to every group "
+         "regardless of tier. /adduser adds people manually, /listusers shows the tracked list, /updateuser "
+         "marks people active/passive, /notify pings anyone who hasn't responded, /refreshusers syncs "
+         "with Telegram and Google Sheets."),
         ("shareevent", "/shareevent (per target group/channel)", "FREE", 3,
          "Sharing an event to a child group/channel. limit_count caps how many distinct events can be "
          "shared to the same target - only applies while min_tier is FREE (a PRO/ADMIN-gated hub is always "
@@ -905,6 +909,52 @@ def get_feature_limit_for_chat(chat_id: str, feature_key: str, db_path: str = No
     # unlimited by construction, and anything below wouldn't have access
     # at all (that's has_feature()'s job, not this function's).
     return limit_count if group_tier == min_tier else None
+
+
+def get_shareevent_remaining_for_chat(chat_id: str, db_path: str = None):
+    """
+    shareevent's limit_count is enforced PER (hub, target) PAIR, counted
+    across the hub's ENTIRE history of events (not just the currently
+    active one) - event_shares has UNIQUE(event_id, chat_id), so the same
+    event can never be shared to the same target twice; the limit
+    instead caps how many DIFFERENT events have been shared to that same
+    target over time (matches the exact enforcement query in
+    handlers.shareevent). There's no single "remaining" number that's
+    honestly correct for the whole hub, since different targets can be
+    at different points toward the cap.
+
+    Returns (limit, remaining) for /help's display, where `remaining` is
+    the LOWEST remaining count among every target this hub has EVER
+    shared anything to (i.e. the hub's most-constrained target right
+    now) - or the full limit if the hub has never shared anything.
+
+    Returns (None, None) if shareevent is unlimited for this chat's tier.
+    """
+    limit = get_feature_limit_for_chat(chat_id, "shareevent", db_path=db_path)
+    if limit is None or limit <= 0:
+        return None, None
+
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT es.chat_id, COUNT(*) FROM event_shares es
+        JOIN events e ON es.event_id = e.event_id
+        WHERE e.chat_id = ?
+        GROUP BY es.chat_id
+        """,
+        (str(chat_id),),
+    )
+    per_target_counts = cursor.fetchall()
+    conn.close()
+
+    if not per_target_counts:
+        return limit, limit
+
+    lowest_remaining = min(max(limit - count, 0) for _, count in per_target_counts)
+    return limit, lowest_remaining
 
 
 def get_event_total_going_headcount(event_id: str, db_path: str = None) -> int:

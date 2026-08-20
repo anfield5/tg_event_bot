@@ -18,7 +18,7 @@ from config import (
 )
 from subscription import is_premium, has_feature
 from hub_resolver import _get_known_candidate_chats
-from db import get_feature_flags
+from db import get_feature_flags, get_shareevent_remaining_for_chat
 from utils import escape_markdown
 
 
@@ -63,6 +63,7 @@ _BUTTON_FEATURE_MAP = {
     "utility":       [],
     "aliases":       ["aliases"],
     "monitoring":    ["monitoring", "refreshusersall"],
+    "dm_access":     ["dm_access"],
 }
 
 _BUTTON_LABELS = {
@@ -72,6 +73,7 @@ _BUTTON_LABELS = {
     "distribution": ("📢", "Distribution", "help_distribution"),
     "aliases":      ("⚙️", "Aliases", "help_alias"),
     "monitoring":   ("🔍", "Monitoring", "help_monitoring"),
+    "dm_access":    ("💬", "DM Access", "help_dm_access"),
 }
 
 
@@ -96,6 +98,7 @@ def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
         [_make_button("users"), _make_button("utility")],
         [_make_button("lifecycle"), _make_button("distribution")],
         [_make_button("aliases"), _make_button("monitoring")],
+        [_make_button("dm_access")],
     ])
 
 
@@ -148,7 +151,7 @@ def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Edit the active event \\(same flags as /newevent\\)\n"
     )
     if pro:
-        text += "/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet\n"
+        text += "/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet \\(Users/Events/Actions/EventUsers/UserPresenceLog tabs\\)\n"
         text += "sheetid\\|sheeturl \\- either the raw spreadsheet ID, or a full Google Sheets URL \\(the ID is extracted automatically\\)\n"
     text += "\n📚 *More Info*"
     return text
@@ -192,11 +195,22 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     # never sends these callback_data values in the first place (it sends
     # "upgrade_info" instead), but re-check here too in case the tier changed
     # between the button being shown and being tapped.
-    if query.data in ("help_alias", "help_monitoring") and not is_premium(await _help_target_chat_id(update, context)):
+    if query.data in ("help_alias", "help_monitoring", "help_dm_access") and not is_premium(await _help_target_chat_id(update, context)):
         await query.answer("This section is PRO-only.", show_alert=True)
         return
 
     await query.answer()
+
+    hub_chat_id_for_limits = await _help_target_chat_id(update, context)
+    shareevent_limit, shareevent_remaining = get_shareevent_remaining_for_chat(hub_chat_id_for_limits)
+    if shareevent_limit is not None:
+        shareevent_limit_line = (
+            f"FREE hubs can share to the same target before being blocked "
+            f"\\(limit {shareevent_limit}, remaining {shareevent_remaining}\\) \\- a PRO/ADMIN\\-gated "
+            f"hub is always unlimited\\. The limit is adjustable via /updatefeature\\."
+        )
+    else:
+        shareevent_limit_line = "Currently unlimited for every tier \\(adjustable via /updatefeature\\)\\."
 
     help_sections = {
         "help_users": (
@@ -218,7 +232,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/chatid \\- Show this chat's ID"
         ),
         "help_alias": (
-            "⚙️ *Alias Subsystem*\n\n"
+            "⚙️ *Aliases*\n\n"
             "/setalias \\[target\\_id\\] \\[aliasname\\] \\- Bind alias to chat ID\n"
             "/removealias \\[aliasname\\] \\- Remove alias\n"
             "/listaliases \\- Show all aliases\n\n"
@@ -231,14 +245,26 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "  • \\-v \\| \\-visible: Show full event in child chat\n"
             "  • \\-h \\| \\-hidden: Hide event, only show going/notgoing counts\n"
             "  • \\-oc \\| \\-onlycount: Show only total going count\n\n"
-            "Defaults to \\-oc if no mode is given"
+            "Defaults to \\-oc if no mode is given\\.\n\n"
+            f"{shareevent_limit_line}"
         ),
         "help_monitoring": (
-            "🔍 *Monitoring System*\n\n"
+            "🔍 *Monitoring*\n\n"
             "/addmonitor \\[chat\\_id\\] \\- Add group/channel to monitor list\n"
             "/removemonitor \\[chat\\_id\\] \\- Remove from monitor list\n"
             "/listmonitors \\- Show all monitored groups/channels\n\n"
             "Monitored chats are tracked for user presence and can be synced with /refreshusersall"
+        ),
+        "help_dm_access": (
+            "💬 *DM Access*\n\n"
+            "Whether commands can be run in a private DM with the bot at all\\.\n\n"
+            "FREE hubs must run commands directly inside the group chat itself \\- "
+            "commands typed in a DM with the bot are rejected\\.\n\n"
+            "PRO hubs can run commands from a DM too\\. The DM \"sticks\" to whichever "
+            "group you last picked \\(sticky group selection\\) until you switch:\n"
+            "/switchgroup \\- \\(DM only\\) change which group your DM commands target\n\n"
+            "/start, /help, and /switchgroup itself are never gated by this \\- only the "
+            "actual work commands \\(/newevent, /adduser, etc\\.\\) require PRO to run from a DM\\."
         ),
         "help_lifecycle": (
             f"🗳 *Event Lifecycle Buttons*\n\n"
@@ -249,7 +275,11 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
             f"  • \\- / \\+ \\- admin only, adjust guest count\n"
             f"  • \\{ICON_ADD} Add Extra Member \\- admin only, add by username\n"
-            f"  • {ICON_SAVE} Save & Close Event \\- admin only, finalize and export to EventUsers"
+            f"  • {ICON_SAVE} Save & Close Event \\- admin only, finalize and export to EventUsers\n\n"
+            f"Verify&Close and Add Extra Member are both locked in per\\-event at "
+            f"creation time \\- changing either via /updatefeature never affects an "
+            f"event already running\\. If Verify&Close is disabled for a hub, the "
+            f"OPEN\\-state button closes the event directly instead of entering review\\."
         ),
     }
     

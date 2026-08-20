@@ -10,11 +10,12 @@ since those functions accept an optional path argument.
 
 import sqlite3
 import pytest
+from datetime import datetime, timedelta
 from db import (
     init_db, track_user, get_feature_flags, update_feature_flag, log_command_usage,
     get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
     register_chat_added, register_chat_removed, get_feature_limit_for_chat, get_display_name,
-    dedupe_waitlist,
+    dedupe_waitlist, get_shareevent_remaining_for_chat,
 )
 
 
@@ -991,3 +992,96 @@ class TestDedupeWaitlist:
         ]
         result = dedupe_waitlist(wl)
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_shareevent_remaining_for_chat - shareevent's limit is enforced PER
+# (hub, target) PAIR, counted across the hub's entire event history (not
+# just the active event, since event_shares has UNIQUE(event_id, chat_id)
+# so the same event can never re-share to the same target). "remaining"
+# is the hub's most-constrained target right now.
+# ---------------------------------------------------------------------------
+
+class TestGetShareeventRemainingForChat:
+    def test_no_events_ever_returns_full_limit(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
+        assert (limit, remaining) == (3, 3)
+
+    def test_active_event_never_shared_returns_full_limit(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
+        assert (limit, remaining) == (3, 3)
+
+    def test_most_constrained_target_drives_the_number(self, tmp_path):
+        """Multiple DIFFERENT events (across the hub's history) sharing
+        to the same target - childA hits the exact limit, childB has
+        more room. Remaining should reflect the tightest one."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = sqlite3.connect(path)
+        for i in range(1, 4):
+            conn.execute(
+                f"""INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+                   event_status, going_data, notgoing_data, counters_data, kicked_data)
+                   VALUES ('ev{i}','-100','{i}','P{i}','👍','❌',2,'[]','[]','{{}}','[]')"""
+            )
+            conn.execute(
+                "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES (?, '-200', ?, '-oc', 'group')",
+                (f"ev{i}", str(10 + i)),
+            )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1', '-300', '20', '-oc', 'group')"
+        )
+        conn.commit()
+        limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
+        assert (limit, remaining) == (3, 0)
+
+    def test_pro_tier_returns_none_none_unlimited(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        end = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = sqlite3.connect(path)
+        conn.execute("INSERT INTO all_groups (chat_id, type, subs_date_end) VALUES ('-999','PRO',?)", (end,))
+        conn.commit()
+        limit, remaining = get_shareevent_remaining_for_chat("-999", db_path=path)
+        assert (limit, remaining) == (None, None)
+
+    def test_cleared_limit_zero_returns_none_none_unlimited(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        update_feature_flag("shareevent", "FREE", limit_count=0, db_path=path)
+        limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
+        assert (limit, remaining) == (None, None)
+
+    def test_remaining_never_goes_negative(self, tmp_path):
+        """If usage somehow exceeds the limit (e.g. limit was lowered
+        after shares already happened), remaining floors at 0."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = sqlite3.connect(path)
+        for i in range(1, 4):
+            conn.execute(
+                f"""INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+                   event_status, going_data, notgoing_data, counters_data, kicked_data)
+                   VALUES ('ev{i}','-100','{i}','P{i}','👍','❌',2,'[]','[]','{{}}','[]')"""
+            )
+            conn.execute(
+                "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES (?, '-200', ?, '-oc', 'group')",
+                (f"ev{i}", str(10 + i)),
+            )
+        conn.commit()
+        conn.close()
+        update_feature_flag("shareevent", "FREE", limit_count=1, db_path=path)
+        limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
+        assert limit == 1
+        assert remaining == 0

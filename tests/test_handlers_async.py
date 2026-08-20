@@ -22,6 +22,8 @@ import event_engine
 import monitors
 import subscription
 import aliases
+import help_system
+import db
 import config
 
 
@@ -1148,7 +1150,8 @@ class TestHelpTierAwareKeyboard:
         assert monitor_btn.callback_data == "help_monitoring"
 
     async def test_row_layout_lifecycle_distribution_first_aliases_monitoring_second(self, db_path):
-        """Row 1: Users + Utility. Row 2: Event Lifecycle + Distribution. Row 3: Aliases + Monitoring."""
+        """Row 1: Users + Utility. Row 2: Event Lifecycle + Distribution.
+        Row 3: Aliases + Monitoring. Row 4: DM Access."""
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
@@ -1158,7 +1161,7 @@ class TestHelpTierAwareKeyboard:
 
         keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
         rows = keyboard.inline_keyboard
-        assert len(rows) == 3
+        assert len(rows) == 4
         row1_texts = [b.text for b in rows[0]]
         row2_texts = [b.text for b in rows[1]]
         assert any("Users" in t for t in row1_texts)
@@ -1168,6 +1171,8 @@ class TestHelpTierAwareKeyboard:
         row3_texts = [b.text for b in rows[2]]
         assert any("Alias" in t for t in row3_texts)
         assert any("Monitoring" in t for t in row3_texts)
+        row4_texts = [b.text for b in rows[3]]
+        assert any("DM Access" in t for t in row4_texts)
 
     async def test_distribution_button_always_active(self, db_path):
         """Distribution (shareevent) is free for everyone, regardless of tier."""
@@ -5995,3 +6000,213 @@ class TestPromotionAnnouncementTextHelper:
         text = event_engine._promotion_announcement_text("-100", "alice", "1", True)
         assert "one more guest for" in text
         assert "added from the Waitlist" in text
+
+
+class TestDmAccessHelpSection:
+    """Real gap found in an earlier audit and now fixed: dm_access has a
+    detailed feature_flags.description shown when tapping the upgrade
+    prompt, but /help previously had NO corresponding section at all -
+    someone reading /help could never find this documented anywhere.
+    Added a full help_dm_access section, wired into the keyboard, the
+    tier-gate defensive check, and the upgrade-info feature map."""
+
+    async def test_dm_access_button_appears_in_keyboard(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        all_texts = [b.text for row in keyboard.inline_keyboard for b in row]
+        assert any("DM Access" in t for t in all_texts)
+
+    async def test_free_hub_shows_locked_dm_access_button(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        dm_button = next(b for row in keyboard.inline_keyboard for b in row if "DM Access" in b.text)
+        assert "upgrade_info_dm_access" == dm_button.callback_data
+
+    async def test_pro_hub_shows_unlocked_dm_access_section(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        dm_button = next(b for row in keyboard.inline_keyboard for b in row if "DM Access" in b.text)
+        assert dm_button.callback_data == "help_dm_access"
+        assert "⚡" not in dm_button.text
+
+    async def test_dm_access_section_renders_with_expected_content(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
+        chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_dm_access"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "switchgroup" in text
+        assert "\\\"" not in text  # no stray backslash before literal quotes
+
+    async def test_upgrade_prompt_matches_feature_flags_description(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "upgrade_info_dm_access"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.upgrade_info_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "sticky group selection" in text
+        assert "/switchgroup" in text
+
+
+class TestLifecycleHelpMentionsPerEventLockIn:
+    """Real gap found during a follow-up verification pass: feature_flags
+    descriptions for verification/add_extra_member both mention they're
+    'locked in per-event at creation time' (changing the tier later never
+    affects an event already running) - a real, important nuance that was
+    completely absent from help_lifecycle's own text."""
+
+    async def test_lock_in_nuance_present_in_lifecycle_section(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "locked in per\\-event at creation time" in text
+        assert "closes the event directly" in text
+
+
+class TestDistributionHelpShowsLiveShareLimit:
+    """Real gaps found and fixed across two rounds of review:
+    1) The share-limit mention in help_distribution was initially a
+       hardcoded literal, not read live from feature_flags.limit_count.
+    2) limit_count=0 (this project's 'cleared/unlimited' convention) was
+       shown as 'up to 0 times' instead of the unlimited message.
+    3) The user asked for a "(limit N, remaining K)" format, computed
+       fresh from the DB on every /help render - not just the limit
+       itself, but this specific chat's actual remaining usage. Since
+       shareevent's limit is enforced PER (hub, target) PAIR (counted
+       across the hub's entire event history, not just the active
+       event - event_shares has UNIQUE(event_id, chat_id) so the same
+       event can never re-share to the same target), 'remaining' is
+       the hub's most-constrained target right now (db.
+       get_shareevent_remaining_for_chat's own docstring covers this
+       in full)."""
+
+    async def _render_distribution(self):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_distribution"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+        await help_system.help_callback_handler(upd, ctx)
+        return query.edit_message_text.call_args.args[0]
+
+    async def test_default_shows_full_limit_and_remaining(self, db_path):
+        text = await self._render_distribution()
+        assert "limit 3, remaining 3" in text
+
+    async def test_remaining_drops_as_real_shares_accumulate(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-1','1','P1','👍','❌',2,'[]','[]','{}','[]')"""
+        )
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','10','-oc','group')")
+        conn.commit()
+
+        text = await self._render_distribution()
+        assert "limit 3, remaining 2" in text
+        assert "remaining 3" not in text
+
+    async def test_updates_live_between_consecutive_calls(self, db_path):
+        """No caching - calling /help twice in a row with new usage in
+        between must reflect the new state immediately, no restart."""
+        text1 = await self._render_distribution()
+        assert "remaining 3" in text1
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-1','1','P1','👍','❌',2,'[]','[]','{}','[]')"""
+        )
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','10','-oc','group')")
+        conn.commit()
+
+        text2 = await self._render_distribution()
+        assert "remaining 2" in text2
+
+    async def test_changed_limit_reflected_live(self, db_path):
+        db.update_feature_flag("shareevent", "FREE", limit_count=5, db_path=db_path)
+        text = await self._render_distribution()
+        assert "limit 5, remaining 5" in text
+        assert "limit 3" not in text
+
+    async def test_cleared_limit_shows_unlimited_message(self, db_path):
+        db.update_feature_flag("shareevent", "FREE", limit_count=0, db_path=db_path)
+        text = await self._render_distribution()
+        assert "Currently unlimited" in text
+        assert "limit 0" not in text
+
+class TestEnrichedFeatureFlagsDescriptions:
+    """newevent/editevent/user_management's feature_flags.description were
+    noticeably thinner than what /help already documents for the same
+    commands - enriched to match (e.g. newevent's description now
+    mentions -gi/-ni/-d, not just a generic one-liner)."""
+
+    def test_newevent_description_mentions_icon_flags(self, db_path):
+        rows = {r[0]: r for r in db.get_feature_flags(db_path=db_path)}
+        assert "-gi" in rows["newevent"][4] or "goingicon" in rows["newevent"][4]
+
+    def test_user_management_description_lists_individual_commands(self, db_path):
+        rows = {r[0]: r for r in db.get_feature_flags(db_path=db_path)}
+        desc = rows["user_management"][4]
+        assert "/adduser" in desc
+        assert "/notify" in desc
