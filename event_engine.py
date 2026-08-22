@@ -275,7 +275,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             """
             SELECT chat_id, message_id, name, going_icon, notgoing_icon,
                    event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                   feature_snapshot, total_limit, waitlist_data, waitlist_visibility
+                   feature_snapshot, total_limit, waitlist_data, waitlist_visibility, notgoing_visibility
             FROM events WHERE event_id = ?
             """,
             (event_id,),
@@ -286,7 +286,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
          event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-         feature_snapshot_raw, total_limit, waitlist_data_raw, waitlist_visibility) = master
+         feature_snapshot_raw, total_limit, waitlist_data_raw, waitlist_visibility, notgoing_visibility) = master
 
         try:
             feature_snapshot = json.loads(feature_snapshot_raw) if feature_snapshot_raw else {}
@@ -302,7 +302,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         master_waitlist  = dedupe_waitlist(json.loads(waitlist_data_raw or "[]"))
 
         cursor.execute(
-            "SELECT chat_id, message_id, share_mode FROM event_shares WHERE event_id = ?", (event_id,)
+            "SELECT chat_id, message_id, share_mode, share_notgoing_visibility, share_waitlist_visibility FROM event_shares WHERE event_id = ?",
+            (event_id,),
         )
         shares = cursor.fetchall()
 
@@ -311,7 +312,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         # that loop also makes Telegram API calls (get_chat), which
         # shouldn't happen while holding a DB connection open.
         per_share_users = {}
-        for s_chat_id, _, _ in shares:
+        for s_chat_id, _, _, _, _ in shares:
             cursor.execute(
                 "SELECT username, status, guests, user_id FROM event_users "
                 "WHERE event_id = ? AND chat_id = ?",
@@ -323,9 +324,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     total_child_going       = 0
     child_addons_for_master = []
 
-    for s_chat_id, _, _ in shares:
+    for s_chat_id, _, _, _, _ in shares:
         users      = per_share_users[str(s_chat_id)]
         users_list = []
+        notgoing_list = []
         chat_sum   = 0
         for username, status, guests, u_id in users:
             if status == "going":
@@ -334,10 +336,14 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             if guests > 0:
                 users_list.append(f"{ICON_GUEST} {guests}, from: {_mention_link(s_chat_id, username, u_id)}")
                 chat_sum += guests
+            if status == "notgoing":
+                notgoing_list.append(f"{notgoing_icon} {_mention_link(s_chat_id, username, u_id)}")
 
         child_data[str(s_chat_id)] = {
-            "users_text": "\n".join(users_list),
-            "count":      chat_sum,
+            "users_text":      "\n".join(users_list),
+            "count":           chat_sum,
+            "notgoing_text":   "\n".join(notgoing_list),
+            "notgoing_count":  len(notgoing_list),
         }
         total_child_going += chat_sum
 
@@ -385,10 +391,16 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     going_list_text = "\n".join(going_names_list + guest_lines)
 
-    not_going_list_text = (
-        "\n".join(f"{notgoing_icon} {_mention_link(main_chat_id, u)}" for u in master_not_going)
-        if master_not_going else ""
-    )
+    if notgoing_visibility == "visible":
+        not_going_list_text = (
+            "\n".join(f"{notgoing_icon} {_mention_link(main_chat_id, u)}" for u in master_not_going)
+            if master_not_going else ""
+        )
+        notgoing_section = f"\n\n*Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
+    elif notgoing_visibility == "onlycount":
+        notgoing_section = f"\n\n*Not Going:* {len(master_not_going)}"
+    else:
+        notgoing_section = ""
 
     # Header: changed wording
     header      = f"{ICON_WARNING} *SQUAD VERIFICATION*\n_Review members before save_\n\n" if event_status == 1 else ""
@@ -406,8 +418,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     master_text = (
         f"{header}{title_line}\n\n {date_line}\n"
-        f"*Going* \\({total_master_going}\\):\n{going_list_text}\n\n"
-        f"*Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
+        f"*Going* \\({total_master_going}\\):\n{going_list_text}"
+        f"{notgoing_section}"
         f"{master_shares_block}"
         f"{waitlist_section}\n\n"
         f"{ICON_STATS} *TOTAL Going:* {global_total}"
@@ -476,11 +488,13 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         f"{ICON_CANCEL_EVENT} *CANCELED* ~{escape_markdown(name)}~"
         if event_status == -1 else f"*{escape_markdown(name)}*"
     )
-    for s_chat_id, _, _ in shares:
+    for s_chat_id, _, _, _, _ in shares:
         await _get_title(s_chat_id)
 
-    async def _render_and_edit_child(s_chat_id, s_msg_id, mode):
-        c_info = child_data.get(str(s_chat_id), {"users_text": "", "count": 0})
+    async def _render_and_edit_child(s_chat_id, s_msg_id, mode, share_notgoing_viz=None, share_waitlist_viz=None):
+        c_info = child_data.get(str(s_chat_id), {"users_text": "", "count": 0, "notgoing_text": "", "notgoing_count": 0})
+        effective_notgoing_viz = share_notgoing_viz if share_notgoing_viz else notgoing_visibility
+        effective_waitlist_viz = share_waitlist_viz if share_waitlist_viz else waitlist_visibility
 
         if mode == "-visible":
             child_text = (
@@ -488,7 +502,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 f"{date_line} \n"
                 f"*Going from {escaped_main_title}* \\({current_post_total}\\):\n{going_list_text}\n\n"
             )
-            for other_id, _, _ in shares:
+            for other_id, _, _, _, _ in shares:
                 if str(other_id) != str(s_chat_id):
                     o_title = title_cache.get(str(other_id), "Group")
                     o_info  = child_data.get(str(other_id), {"users_text": "", "count": 0})
@@ -504,7 +518,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 f"{date_line} \n"
                 f"*Going from {escaped_main_title}:* {current_post_total}\n\n"
             )
-            for other_id, _, _ in shares:
+            for other_id, _, _, _, _ in shares:
                 if str(other_id) != str(s_chat_id):
                     o_title = title_cache.get(str(other_id), "Group")
                     o_info  = child_data.get(str(other_id), {"count": 0})
@@ -517,10 +531,17 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 f"{date_line} \n"
             )
 
-        if waitlist_visibility == "visible":
+        if effective_notgoing_viz == "visible":
+            child_notgoing_section = f"*Not Going* \\({c_info['notgoing_count']}\\):\n{c_info['notgoing_text']}\n\n"
+        elif effective_notgoing_viz == "onlycount":
+            child_notgoing_section = f"*Not Going:* {c_info['notgoing_count']}\n\n"
+        else:
+            child_notgoing_section = ""
+
+        if effective_waitlist_viz == "visible":
             wl_count, wl_text = _render_waitlist_local(master_waitlist, s_chat_id)
             child_waitlist_section = f"*Waitlist* \\({wl_count}\\):\n{wl_text}\n\n"
-        elif waitlist_visibility == "onlycount":
+        elif effective_waitlist_viz == "onlycount":
             wl_count = _render_waitlist_count(master_waitlist)
             child_waitlist_section = f"*Waitlist:* {wl_count}\n\n"
         else:
@@ -528,6 +549,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         child_text += (
             f"*Going here:* \\({c_info['count']}\\)\n{c_info['users_text']}\n\n"
+            f"{child_notgoing_section}"
             f"{child_waitlist_section}"
             f"{ICON_STATS} *Total Going \\(all groups\\):* {global_total}\n"
         )
@@ -560,7 +582,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         # aborting the others (each already has its own try/except above,
         # this is just an extra safety net around the gather itself).
         await asyncio.gather(
-            *[_render_and_edit_child(s_chat_id, s_msg_id, mode) for s_chat_id, s_msg_id, mode in shares],
+            *[
+                _render_and_edit_child(s_chat_id, s_msg_id, mode, share_ngl, share_wl)
+                for s_chat_id, s_msg_id, mode, share_ngl, share_wl in shares
+            ],
             return_exceptions=True,
         )
 

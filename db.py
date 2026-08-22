@@ -103,6 +103,9 @@ def _seed_feature_flags(cursor):
          "Custom short names for child groups/channels, used with /shareevent."),
         ("owner_overview", "/allgroups, /allchannels (view everything the bot is in)", "ADMIN", None,
          "Lists every group/channel the bot is in, paginated, with an optional -pro filter on /allgroups."),
+        ("stats", "/stats (event activity stats for this group)", "PRO", None,
+         "Shows how many events this hub has created, how many were closed, and total/average headcount "
+         "across every closed event - a quick snapshot of the bot's usage in this specific group."),
     ]
     seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(
@@ -315,6 +318,7 @@ def init_db(db_path: str = DB_PATH):
             waitlist_data TEXT DEFAULT '[]',
             waitlist_open INTEGER DEFAULT 0,
             waitlist_visibility TEXT DEFAULT 'hidden',
+            notgoing_visibility TEXT DEFAULT 'visible',
             created_by_user_id TEXT DEFAULT NULL
         )
     """)
@@ -351,8 +355,10 @@ def init_db(db_path: str = DB_PATH):
             event_id TEXT,
             chat_id TEXT,
             message_id TEXT,
-            share_mode TEXT,      -- '-visible', '-onlycount', or '-hidden'
+            share_mode TEXT,      -- '-visible', '-onlycount', or '-hidden' (main going list, i.e. -mgl)
             chat_type TEXT,       -- 'group' or 'channel'
+            share_notgoing_visibility TEXT DEFAULT NULL,  -- -sngl override; NULL = inherit event's notgoing_visibility
+            share_waitlist_visibility TEXT DEFAULT NULL,  -- -swl override; NULL = inherit event's waitlist_visibility
             UNIQUE(event_id, chat_id)
         )
     """)
@@ -553,6 +559,28 @@ def init_db(db_path: str = DB_PATH):
     # exact same admin-only close behavior they always had.
     if "created_by_user_id" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN created_by_user_id TEXT DEFAULT NULL")
+
+    # 0a8. Add `notgoing_visibility` (-ngl/-notgoinglist flag on
+    # /newevent, /editevent). The Not Going list was ALWAYS shown
+    # unconditionally before this flag existed, so pre-existing rows
+    # get 'visible' explicitly (not the new-row default of 'visible' by
+    # coincidence - this is deliberate: if the column default is ever
+    # changed later, old events must still behave exactly as before).
+    if "notgoing_visibility" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN notgoing_visibility TEXT DEFAULT 'visible'")
+        cursor.execute("UPDATE events SET notgoing_visibility = 'visible' WHERE notgoing_visibility IS NULL")
+
+    # 0a9. Add event_shares' per-share notgoing/waitlist visibility
+    # override columns (-sngl/-swl flags on /shareevent) - pre-existing
+    # shares get NULL, meaning "inherit the event's own setting",
+    # matching their exact prior behavior (there was no per-share
+    # override before these flags existed).
+    cursor.execute("PRAGMA table_info(event_shares)")
+    event_shares_cols = [row[1] for row in cursor.fetchall()]
+    if "share_notgoing_visibility" not in event_shares_cols:
+        cursor.execute("ALTER TABLE event_shares ADD COLUMN share_notgoing_visibility TEXT DEFAULT NULL")
+    if "share_waitlist_visibility" not in event_shares_cols:
+        cursor.execute("ALTER TABLE event_shares ADD COLUMN share_waitlist_visibility TEXT DEFAULT NULL")
 
     # 0b. Add `chat_type`/`chat_name` to sub_chats if it exists from an
     # earlier version of this same migration that predates them.

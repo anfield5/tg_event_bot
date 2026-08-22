@@ -85,41 +85,61 @@ def parse_event_args(args: list):
         Examples:
             -date 14.07.2026
             -date 14.07.2026 19:00
-    -limit <N> [visible|hidden|onlycount] – caps going+guests across the
-        whole event (main group + every share); once full, new Going
-        clicks join the Waitlist instead. Third word is optional (default
-        hidden) and controls Waitlist visibility in the POST itself:
+    -limit <N> – caps going+guests across the whole event (main group +
+        every share); once full, new Going clicks join the Waitlist
+        instead. Gated behind the event_limit feature (PRO by default).
+        Visibility of the Waitlist itself is now a SEPARATE flag, not a
+        trailing word after the number:
+
+    -wl / -waitlist visible|hidden|onlycount – controls Waitlist
+        visibility in the POST itself:
           visible   – shown under Not Going. In the main hub's own post,
                       shows EVERY waiting person across every chat the
                       event was shared to (labeled "from <chat>" for
                       cross-chat entries); in a child chat's own post,
                       shows only that chat's own local entries.
-          hidden    – nothing shown in any post; people still queue
-                      normally, viewable only via /waitlist.
+          hidden    – nothing shown in any post (default); people still
+                      queue normally, viewable only via /waitlist.
           onlycount – shows just the total count across every chat
                       combined, no names, in every post.
         /waitlist always returns everyone regardless of this setting -
         it's admin-only, not gated by the post's own visibility.
-        Gated behind the event_limit feature (PRO by default).
         Examples:
-            -limit 20 visible
-            -limit 25 onlycount
-            -limit 30 hidden
-            -limit 40             (hidden by default)
+            -limit 20 -wl visible
+            -limit 25 -waitlist onlycount
+            -limit 30              (waitlist stays hidden by default)
 
-    Returns: (event_name, going_icon, notgoing_icon, event_date_raw, total_limit_raw, reserve_raw)
-    event_date_raw/total_limit_raw/reserve_raw are the raw token(s); validation happens in the caller.
+    -ngl / -notgoinglist visible|hidden|onlycount – controls Not Going
+        list visibility in the post, same visible/hidden/onlycount
+        vocabulary as -waitlist:
+          visible   – shown as before (default - matches every event's
+                      behavior prior to this flag existing).
+          hidden    – the Not Going section doesn't appear in the post
+                      at all.
+          onlycount – shows just the total count, no names.
+        Examples:
+            -ngl hidden
+            -notgoinglist onlycount
+
+    Returns: (event_name, going_icon, notgoing_icon, event_date_raw, total_limit_raw,
+              waitlist_visibility_raw, notgoing_visibility_raw)
+    event_date_raw/total_limit_raw are the raw token(s); validation happens in the caller.
+    waitlist_visibility_raw/notgoing_visibility_raw are None if the flag wasn't given.
     """
     going_icon    = None
     notgoing_icon = None
     event_date    = None
     total_limit   = None
-    reserve_mode  = None
+    waitlist_visibility_raw = None
+    notgoing_visibility_raw = None
 
     gi_flags   = {"-gi", "-goingicon"}
     ni_flags   = {"-ni", "-notgoingicon"}
     date_flags = {"-d", "-date"}
     limit_flags = {"-limit"}
+    waitlist_flags = {"-wl", "-waitlist"}
+    notgoinglist_flags = {"-ngl", "-notgoinglist"}
+    visibility_words = ("visible", "hidden", "onlycount")
 
     tokens       = args[:]
     clean_tokens = []
@@ -149,20 +169,21 @@ def parse_event_args(args: list):
         elif token in limit_flags and i + 1 < len(tokens):
             total_limit = tokens[i + 1]  # validated by the caller
             i += 2
-            # Optional visible|hidden right after the amount - exact match
-            # only, so an event whose name happens to start with that word
-            # isn't accidentally swallowed (same lookahead technique as
-            # -date's optional HH:MM suffix above).
-            if i < len(tokens) and tokens[i].strip().lower() in ("visible", "hidden", "onlycount"):
-                reserve_mode = tokens[i].strip().lower()
-                i += 1
+
+        elif token in waitlist_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in visibility_words:
+            waitlist_visibility_raw = tokens[i + 1].strip().lower()
+            i += 2
+
+        elif token in notgoinglist_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in visibility_words:
+            notgoing_visibility_raw = tokens[i + 1].strip().lower()
+            i += 2
 
         else:
             clean_tokens.append(token)
             i += 1
 
     event_name = " ".join(clean_tokens) if clean_tokens else None
-    return event_name, going_icon, notgoing_icon, event_date, total_limit, reserve_mode
+    return event_name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility_raw, notgoing_visibility_raw
 
 
 def parse_user_args(args: list) -> list:
@@ -220,7 +241,7 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         )
         return
 
-    event_name_raw, g_icon, n_icon, date_raw, limit_raw, reserve_raw = parse_event_args(args)
+    event_name_raw, g_icon, n_icon, date_raw, limit_raw, waitlist_viz_raw, notgoing_viz_raw = parse_event_args(args)
     going_icon    = g_icon if g_icon else DEFAULT_GOING_ICON
     notgoing_icon = n_icon if n_icon else DEFAULT_NOTGOING_ICON
 
@@ -239,13 +260,30 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     # else, so an ungated/invalid flag gets a clear message instead of
     # silently being ignored.
     total_limit_value = None
-    waitlist_visibility_value = "hidden"
     if limit_raw is not None:
         total_limit_value = await _validate_limit_flag(message, chat_id, limit_raw)
         if total_limit_value is None:
             return
-        if reserve_raw is not None:
-            waitlist_visibility_value = reserve_raw
+
+    # -w/-waitlist is now independent of -limit being given in the SAME
+    # command (previously it was a trailing word right after -limit's
+    # number) - still gated on the same event_limit feature, since it's
+    # the same underlying waitlist mechanic, just usable on its own
+    # (e.g. set now, raise the actual -limit later via /editevent).
+    waitlist_visibility_value = "hidden"
+    if waitlist_viz_raw is not None:
+        if not has_feature(chat_id, "event_limit"):
+            await message.reply_text(
+                f"{ICON_WARNING} `\\-wl`/`\\-waitlist` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+        waitlist_visibility_value = waitlist_viz_raw
+
+    # -ngl/-notgoinglist is ungated - the Not Going list has always been
+    # visible to everyone with no tier restriction, this flag just adds
+    # the ability to hide/summarize it, available at every tier.
+    notgoing_visibility_value = notgoing_viz_raw if notgoing_viz_raw is not None else "visible"
 
     event_id = str(uuid4())[:8]
 
@@ -271,11 +309,11 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 """
                 INSERT INTO events
                     (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, created_by_user_id)
-                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?)
+                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, notgoing_visibility, created_by_user_id)
+                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?, ?)
                 """,
                 (event_id, chat_id, str(message.message_id),
-                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value,
+                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value, notgoing_visibility_value,
                  str(update.effective_user.id)),
             )
             conn.commit()
@@ -357,7 +395,7 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT event_id, name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility
+            SELECT event_id, name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility, notgoing_visibility
             FROM events
             WHERE chat_id = ? AND event_status IN (0, 1)
             ORDER BY ROWID DESC LIMIT 1
@@ -371,8 +409,8 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             )
             return
 
-        event_id, current_name, current_gi, current_ni, current_date, current_limit, current_waitlist_visibility = row
-        new_name, new_gi, new_ni, date_raw, limit_raw, reserve_raw = parse_event_args(args)
+        event_id, current_name, current_gi, current_ni, current_date, current_limit, current_waitlist_visibility, current_notgoing_visibility = row
+        new_name, new_gi, new_ni, date_raw, limit_raw, waitlist_viz_raw, notgoing_viz_raw = parse_event_args(args)
 
         updated_name = new_name   if new_name   else current_name
         updated_gi   = new_gi     if new_gi     else current_gi
@@ -394,7 +432,26 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         # -limit was explicitly supplied.
         updated_limit = current_limit
         updated_waitlist_visibility = current_waitlist_visibility
+        updated_notgoing_visibility = current_notgoing_visibility
         promotions_to_announce = []  # [(chat_id, username, user_id, is_guest), ...] - sent after commit
+
+        # -w/-waitlist can now be set independently of -limit in the SAME
+        # command (previously it was only readable as a trailing word
+        # right after -limit's number) - still requires event_limit,
+        # since it's the same underlying waitlist mechanic.
+        if waitlist_viz_raw is not None:
+            if not has_feature(chat_id, "event_limit"):
+                await update.message.reply_text(
+                    f"{ICON_WARNING} `\\-wl`/`\\-waitlist` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+            updated_waitlist_visibility = waitlist_viz_raw
+
+        # -ngl/-notgoinglist is ungated, same as newevent.
+        if notgoing_viz_raw is not None:
+            updated_notgoing_visibility = notgoing_viz_raw
+
         if limit_raw is not None:
             validated = await _validate_limit_flag(update.message, chat_id, limit_raw)
             if validated is None:
@@ -422,8 +479,6 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
                 return
 
             updated_limit = validated
-            if reserve_raw is not None:
-                updated_waitlist_visibility = reserve_raw
 
             # Limit was raised: promote FIFO (oldest first, globally across
             # every chat's waitlist entries) until either the waitlist is
@@ -490,10 +545,10 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         cursor.execute(
             """
             UPDATE events
-            SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?, total_limit = ?, waitlist_visibility = ?
+            SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?, total_limit = ?, waitlist_visibility = ?, notgoing_visibility = ?
             WHERE event_id = ?
             """,
-            (updated_name, updated_gi, updated_ni, updated_date, updated_limit, updated_waitlist_visibility, event_id),
+            (updated_name, updated_gi, updated_ni, updated_date, updated_limit, updated_waitlist_visibility, updated_notgoing_visibility, event_id),
         )
         conn.commit()
 
@@ -647,9 +702,46 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         return
 
     updated = []
-    for username in usernames:
-        track_user(chat_id, username, status)
-        updated.append(username)
+    unresolved = []
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        admins_cache = None
+        for username in usernames:
+            cursor.execute(
+                "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+                (chat_id, username),
+            )
+            existing = cursor.fetchone()
+            already_has_id = existing and existing[0] and str(existing[0]).lstrip("-").isdigit()
+
+            if already_has_id:
+                track_user(chat_id, username, status)
+            else:
+                # First time this exact username is being tracked (or it
+                # was tracked before without ever resolving a real
+                # user_id) - try to resolve one now via the admin list,
+                # same pattern /adduser uses, so /listusers can show a
+                # clickable mention instead of permanently falling back
+                # to plain text.
+                if admins_cache is None:
+                    try:
+                        admins_cache = await context.bot.get_chat_administrators(chat_id)
+                    except Exception:
+                        admins_cache = []
+                target_username = username.lstrip("@")
+                match = next(
+                    (a.user for a in admins_cache if a.user.username and a.user.username.lower() == target_username.lower()),
+                    None,
+                )
+                if match:
+                    track_user(
+                        chat_id, username, status, user_id=str(match.id),
+                        first_name=match.first_name, last_name=match.last_name,
+                    )
+                else:
+                    track_user(chat_id, username, status)
+                    unresolved.append(username)
+            updated.append(username)
 
     if len(updated) == 1:
         await update.message.reply_text(
@@ -660,6 +752,15 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in updated)
         await update.message.reply_text(
             f"⚙️ Status for {mentions} updated to `{status}`\\.",
+            parse_mode="MarkdownV2",
+        )
+
+    if unresolved:
+        unresolved_list = ", ".join(f"@{escape_markdown(u)}" for u in unresolved)
+        await update.message.reply_text(
+            f"⚠️ Could not resolve a real user\\_id for {unresolved_list} \\(not an admin here, and hasn't "
+            f"interacted with the bot yet\\) \\- they'll show as plain text \\(not clickable\\) in /listusers "
+            f"until they do\\.",
             parse_mode="MarkdownV2",
         )
 
@@ -1170,15 +1271,49 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
     if len(args) < 1:
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
-            text="❌ *Syntax error:* `/shareevent [target_alias/id] [mode_optional]`",
+            text="❌ *Syntax error:* `/shareevent [target_alias/id] [-mgl visible|hidden|onlycount] "
+                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount]`",
             parse_mode="MarkdownV2",
         )
         return
 
-    target_input = args[0].strip()
+    mgl_flags = {"-mgl", "-maingoinglist"}
+    sngl_flags = {"-sngl", "-sharenotgoing"}
+    swl_flags = {"-swl", "-sharewaitlist"}
+    visibility_words = ("visible", "hidden", "onlycount")
+
+    target_input = None
     mode = "-onlycount"
-    if len(args) > 1 and args[1].strip().lower() in MODE_MAP:
-        mode = MODE_MAP[args[1].strip().lower()]
+    share_notgoing_viz = None
+    share_waitlist_viz = None
+
+    tokens = args[:]
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in mgl_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in visibility_words:
+            mode = f"-{tokens[i + 1].strip().lower()}"
+            i += 2
+        elif token in sngl_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in visibility_words:
+            share_notgoing_viz = tokens[i + 1].strip().lower()
+            i += 2
+        elif token in swl_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in visibility_words:
+            share_waitlist_viz = tokens[i + 1].strip().lower()
+            i += 2
+        elif target_input is None:
+            target_input = token.strip()
+            i += 1
+        else:
+            i += 1
+
+    if target_input is None:
+        await context.bot.send_message(
+            chat_id=main_hub_chat_id,
+            text="❌ *Syntax error:* `/shareevent [target_alias/id] [-mgl visible|hidden|onlycount] "
+                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount]`",
+            parse_mode="MarkdownV2",
+        )
+        return
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -1370,10 +1505,10 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO event_shares
-                    (event_id, chat_id, message_id, share_mode, chat_type)
-                VALUES (?, ?, ?, ?, ?)
+                    (event_id, chat_id, message_id, share_mode, chat_type, share_notgoing_visibility, share_waitlist_visibility)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (event_id, str(target_chat_api), str(sent.message_id), mode, chat_type_flag),
+                (event_id, str(target_chat_api), str(sent.message_id), mode, chat_type_flag, share_notgoing_viz, share_waitlist_viz),
             )
             conn.commit()
         target_display_name = target_input if alias_row else (target_chat_obj.title or str(target_chat_api))
@@ -1583,6 +1718,55 @@ async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = f"*Waitlist* \\({count}\\):\n" + text_lines
+    await update.message.reply_text(text, parse_mode="MarkdownV2")
+
+
+@register_hub_command("stats")
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+    """
+    Shows event activity stats for THIS hub group: how many events have
+    ever been created, how many were closed (Save & Close Event), and the
+    total/average headcount (going + guests) across every closed event.
+    PRO-gated (the "stats" feature) - a quick usage snapshot, not tied to
+    any single event.
+    """
+    chat_id = await resolve_hub_chat_id(update, context, "stats", override_chat_id)
+    if chat_id is None:
+        return
+
+    if not await require_premium(update, "Event stats", chat_id=chat_id):
+        return
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM events WHERE chat_id = ?", (chat_id,))
+        events_amount = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM events WHERE chat_id = ? AND event_status = 2", (chat_id,))
+        events_closed = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT going_data, counters_data FROM events WHERE chat_id = ? AND event_status = 2",
+            (chat_id,),
+        )
+        closed_rows = cursor.fetchall()
+
+    total_members = 0
+    for going_data_raw, counters_data_raw in closed_rows:
+        going_count = len(json.loads(going_data_raw or "[]"))
+        guest_count = sum(json.loads(counters_data_raw or "{}").values())
+        total_members += going_count + guest_count
+
+    average_members = round(total_members / events_closed, 1) if events_closed > 0 else 0
+    average_members_text = str(average_members).replace(".", "\\.")
+
+    text = (
+        f"{ICON_STATS} *Event Stats*\n\n"
+        f"Events amount: {events_amount}\n"
+        f"Events closed: {events_closed}\n"
+        f"Total members amount: {total_members}\n"
+        f"Average members amount: {average_members_text}"
+    )
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 

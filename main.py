@@ -20,11 +20,13 @@ from handlers import (
     addmonitor, removemonitor, listmonitors,
     button_handler,
     global_text_router,
+    stats_command,
 )
 from subscription import (
     setsub, setsheet, status_command, allgroups_command, allgroups_page_callback_handler,
     allchannels_command, allchannels_page_callback_handler, updatefeature,
     _push_control_sheet_main, _push_control_sheet_channels, _push_control_sheet_botconfig,
+    _push_control_sheet_chats_log,
 )
 from utils import now2ddmmyy
 
@@ -131,14 +133,16 @@ async def _sync_control_sheet_on_startup(application):
     groups_ok    = await _push_control_sheet_main()
     channels_ok  = await _push_control_sheet_channels()
     subconfig_ok = await _push_control_sheet_botconfig()
-    if groups_ok and channels_ok and subconfig_ok:
-        logger.info("Control Sheet synced at startup (GROUPS + CHANNELS + BOTCONFIG).")
+    chats_log_ok = await _push_control_sheet_chats_log()
+    if groups_ok and channels_ok and subconfig_ok and chats_log_ok:
+        logger.info("Control Sheet synced at startup (GROUPS + CHANNELS + BOTCONFIG + chats_log).")
     else:
         logger.error(
             f"Control Sheet startup sync incomplete - GROUPS: {'ok' if groups_ok else 'FAILED'}, "
             f"CHANNELS: {'ok' if channels_ok else 'FAILED'}, "
-            f"BOTCONFIG: {'ok' if subconfig_ok else 'FAILED'}. Check CONTROL_SHEET_ID, sharing "
-            f"permissions, and that all three tabs exist with the exact names 'GROUPS', 'CHANNELS', and 'BOTCONFIG'."
+            f"BOTCONFIG: {'ok' if subconfig_ok else 'FAILED'}, "
+            f"chats_log: {'ok' if chats_log_ok else 'FAILED'}. Check CONTROL_SHEET_ID, sharing "
+            f"permissions, and that all four tabs exist with the exact names 'GROUPS', 'CHANNELS', 'BOTCONFIG', and 'chats_log'."
         )
 
 
@@ -186,6 +190,7 @@ async def on_my_chat_member_update(update, context):
     try:
         await _push_control_sheet_main()
         await _push_control_sheet_channels()
+        await _push_control_sheet_chats_log()
     except Exception as e:
         logger.error(f"Control Sheet sync after bot membership change failed: {e}")
 
@@ -294,6 +299,7 @@ def main():
     app.add_handler(CommandHandler("updatefeature", updatefeature))
     app.add_handler(CommandHandler("setsheet", setsheet))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("allgroups", allgroups_command))
     app.add_handler(CommandHandler("allchannels", allchannels_command))
 

@@ -139,20 +139,28 @@ def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
     waitlist_line = "/waitlist \\- Show the Waitlist for the latest event \\(hub sees everyone with `from <chat>`, a child chat sees only its own\\)\n" if has_event_limit else ""
     text = (
         "📖 *Main Commands*\n\n"
-        "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Create a new event\n"
+        "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]"
+        "\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]\\[\\-ngl visible\\|hidden\\|onlycount\\] \\- Create a new event\n"
         "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
         "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "\\-limit N \\[visible\\|hidden\\|onlycount\\] \\- caps going\\+guests across the whole event; once full, new Going clicks join the Waitlist instead\\. Requires a higher tier\\.\n"
+        "\\-limit N \\- caps going\\+guests across the whole event; once full, new Going clicks join the Waitlist instead\\. Requires a higher tier\\.\n"
+        "\\-wl \\| \\-waitlist visible\\|hidden\\|onlycount \\- Waitlist visibility in the post \\(independent of \\-limit, can be set/changed on its own\\)\n"
         "    visible \\- hub's post shows everyone across every chat; a child chat's post shows only its own\n"
         "    hidden \\(default\\) \\- nothing shown in the post, admin\\-only via /waitlist\n"
         "    onlycount \\- shows just the total count, no names\n"
+        "\\-ngl \\| \\-notgoinglist visible\\|hidden\\|onlycount \\- Not Going list visibility in the post \\(same 3 modes, ungated at every tier\\)\n"
+        "    visible \\(default\\) \\- shown as before\n"
+        "    hidden \\- section removed from the post entirely\n"
+        "    onlycount \\- shows just the total count, no names\n"
         f"{waitlist_line}"
-        "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N \\[visible\\|hidden\\|onlycount\\]\\] \\- Edit the active event \\(same flags as /newevent\\)\n"
+        "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]"
+        "\\[\\-ngl visible\\|hidden\\|onlycount\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n"
     )
     if pro:
         text += "/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet \\(Users/Events/Actions/EventUsers/UserPresenceLog tabs\\)\n"
         text += "sheetid\\|sheeturl \\- either the raw spreadsheet ID, or a full Google Sheets URL \\(the ID is extracted automatically\\)\n"
+        text += "/stats \\- Event activity stats for this group \\(events created, closed, total/average headcount\\)\n"
     text += "\n📚 *More Info*"
     return text
 
@@ -240,12 +248,14 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ),
         "help_distribution": (
             "📢 *Distribution Control*\n\n"
-            "/shareevent \\[target\\_alias/chatid\\] \\[\\-v\\|\\-h\\|\\-oc\\] \\- Share active event\n\n"
-            "Modes:\n"
-            "  • \\-v \\| \\-visible: Show full event in child chat\n"
-            "  • \\-h \\| \\-hidden: Hide event, only show going/notgoing counts\n"
-            "  • \\-oc \\| \\-onlycount: Show only total going count\n\n"
-            "Defaults to \\-oc if no mode is given\\.\n\n"
+            "/shareevent \\[target\\_alias/chatid\\] \\[\\-mgl visible\\|hidden\\|onlycount\\] "
+            "\\[\\-sngl visible\\|hidden\\|onlycount\\] \\[\\-swl visible\\|hidden\\|onlycount\\] \\- Share active event\n\n"
+            "\\-mgl \\| \\-maingoinglist \\- Going list visibility in this specific share \\(defaults to onlycount\\):\n"
+            "  • visible: Show full going list in child chat\n"
+            "  • hidden: Hide event, only show going/notgoing counts\n"
+            "  • onlycount \\(default\\): Show only total going count\n\n"
+            "\\-sngl \\| \\-sharenotgoing \\- Not Going list visibility override for this share \\(if omitted, inherits the event's own \\-ngl setting\\)\n"
+            "\\-swl \\| \\-sharewaitlist \\- Waitlist visibility override for this share \\(if omitted, inherits the event's own \\-wl setting\\)\n\n"
             f"{shareevent_limit_line}"
         ),
         "help_monitoring": (

@@ -725,7 +725,7 @@ class TestShareevent:
         user = make_user(user_id=1, username="admin")
         upd  = make_update(chat=chat, user=user)
         ctx  = self._admin_context()
-        ctx.args = ["-200", "-v"]
+        ctx.args = ["-200", "-mgl", "visible"]
 
         await handlers.shareevent(upd, ctx)
 
@@ -1251,7 +1251,7 @@ class TestGoingFromLabel:
         insert_event(db_path, event_id="ev1", chat_id="-100123")
         conn = sqlite3.connect(db_path)
         conn.execute(
-            "INSERT INTO event_shares VALUES (NULL,'ev1','-200','42','-visible','group')"
+            "INSERT INTO event_shares (share_id, event_id, chat_id, message_id, share_mode, chat_type) VALUES (NULL,'ev1','-200','42','-visible','group')"
         )
         conn.execute(
             "INSERT INTO event_users VALUES ('ev1','-200','999','anreon','going',3)"
@@ -2087,7 +2087,7 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         """
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO event_shares VALUES (NULL,'ev1','-200','42','-visible','group')")
+        conn.execute("INSERT INTO event_shares (share_id, event_id, chat_id, message_id, share_mode, chat_type) VALUES (NULL,'ev1','-200','42','-visible','group')")
         conn.commit()
         conn.close()
         insert_event_user(db_path, event_id="ev1", chat_id="-200", user_id="9",
@@ -2280,7 +2280,7 @@ class TestSharedLabelAndIcon:
     async def test_shared_label_uses_new_icon_and_short_text(self, db_path):
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO event_shares VALUES (NULL,'ev1','-200','42','-visible','group')")
+        conn.execute("INSERT INTO event_shares (share_id, event_id, chat_id, message_id, share_mode, chat_type) VALUES (NULL,'ev1','-200','42','-visible','group')")
         conn.commit()
         conn.close()
 
@@ -2323,7 +2323,7 @@ class TestGuestsFoldedIntoGoingList:
     async def test_guest_line_present_in_child_view(self, db_path):
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO event_shares VALUES (NULL,'ev1','-200','42','-visible','group')")
+        conn.execute("INSERT INTO event_shares (share_id, event_id, chat_id, message_id, share_mode, chat_type) VALUES (NULL,'ev1','-200','42','-visible','group')")
         conn.commit()
         conn.close()
         insert_event_user(db_path, event_id="ev1", chat_id="-200", user_id="9",
@@ -3987,7 +3987,7 @@ class TestNeweventEditeventLimitFlag:
         chat = make_chat(chat_id=-100123, chat_type="supergroup")
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
-        ctx = make_context(args=["Party", "-limit", "20", "visible"])
+        ctx = make_context(args=["Party", "-limit", "20", "-wl", "visible"])
 
         await handlers.newevent(upd, ctx)
 
@@ -4000,7 +4000,7 @@ class TestNeweventEditeventLimitFlag:
         chat = make_chat(chat_id=-100123, chat_type="supergroup")
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
-        ctx = make_context(args=["Party", "-limit", "22", "onlycount"])
+        ctx = make_context(args=["Party", "-limit", "22", "-wl", "onlycount"])
 
         await handlers.newevent(upd, ctx)
 
@@ -4013,7 +4013,7 @@ class TestNeweventEditeventLimitFlag:
         chat = make_chat(chat_id=-100123, chat_type="supergroup")
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
-        ctx = make_context(args=["Party", "-limit", "30", "hidden"])
+        ctx = make_context(args=["Party", "-limit", "30", "-wl", "hidden"])
 
         await handlers.newevent(upd, ctx)
 
@@ -4099,7 +4099,7 @@ class TestNeweventEditeventLimitFlag:
         chat = make_chat(chat_id=-100123, chat_type="supergroup")
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
-        ctx = make_context(args=["-limit", "25", "visible"])
+        ctx = make_context(args=["-limit", "25", "-wl", "visible"])
 
         await handlers.editevent(upd, ctx)
 
@@ -5834,7 +5834,7 @@ class TestEditeventVisibilityAndLimitChanges:
         admin_user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=admin_user, message=msg)
-        ctx = make_context(bot=bot, args=["-limit", "3", "visible"])
+        ctx = make_context(bot=bot, args=["-limit", "3", "-wl", "visible"])
 
         with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
              patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
@@ -5866,7 +5866,7 @@ class TestEditeventVisibilityAndLimitChanges:
         admin_user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=admin_user, message=msg)
-        ctx = make_context(bot=bot, args=["-limit", "2", "onlycount"])  # same limit, viz change only
+        ctx = make_context(bot=bot, args=["-limit", "2", "-wl", "onlycount"])  # same limit, viz change only
 
         with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
              patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
@@ -6195,6 +6195,47 @@ class TestDistributionHelpShowsLiveShareLimit:
         assert "Currently unlimited" in text
         assert "limit 0" not in text
 
+    async def test_limit_is_relative_to_whichever_chat_help_is_called_in(self, db_path):
+        """Limits are computed relative to the chat /help is directly
+        called in - matching how the real /shareevent enforcement itself
+        works (resolve_hub_chat_id never resolves a child chat up to its
+        owning hub, just uses chat.id directly). A child chat owned by a
+        PRO hub has no subscription row of its own, so calling /help
+        FROM the child shows FREE-tier limits, while calling it from the
+        hub itself shows unlimited."""
+        insert_premium(db_path, chat_id="-100")
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200','-100','child')")
+        conn.commit()
+
+        def render(chat_id):
+            chat = make_chat(chat_id=chat_id, chat_type="supergroup")
+            user = make_user(user_id=1)
+            msg = make_message(chat=chat)
+            query = MagicMock()
+            query.data = "help_distribution"
+            query.message = msg
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd = make_update(chat=chat, user=user, message=msg)
+            upd.callback_query = query
+            ctx = make_context()
+            return upd, ctx, query
+
+        upd_hub, ctx_hub, query_hub = render(-100)
+
+        async def _run(upd, ctx, query):
+            await help_system.help_callback_handler(upd, ctx)
+            return query.edit_message_text.call_args.args[0]
+
+        text_hub = await _run(upd_hub, ctx_hub, query_hub)
+        assert "Currently unlimited" in text_hub
+
+        upd_child, ctx_child, query_child = render(-200)
+        text_child = await _run(upd_child, ctx_child, query_child)
+        assert "limit 3, remaining 3" in text_child
+
+
 class TestEnrichedFeatureFlagsDescriptions:
     """newevent/editevent/user_management's feature_flags.description were
     noticeably thinner than what /help already documents for the same
@@ -6210,3 +6251,625 @@ class TestEnrichedFeatureFlagsDescriptions:
         desc = rows["user_management"][4]
         assert "/adduser" in desc
         assert "/notify" in desc
+
+
+class TestUpdateuserResolvesRealUserIdWhenPossible:
+    """Real bug found from user-reported screenshots: /updateuser called
+    track_user() without any user_id at all when tracking someone for
+    the first time, permanently creating an unlinkable row (no clickable
+    mention ever possible in /listusers or Not Going lists) - unlike
+    /adduser, which always attempts real resolution first. Now tries the
+    same get_chat_administrators-based resolution /adduser already uses,
+    with an honest warning when resolution genuinely isn't possible."""
+
+    async def test_admin_username_gets_resolved_to_real_id(self, db_path):
+        bot = make_bot()
+        admin_match = MagicMock()
+        admin_match.user.username = "serhiy"
+        admin_match.user.id = 555
+        admin_match.user.first_name = "Serhiy"
+        admin_match.user.last_name = "Kovalenko"
+        bot.get_chat_administrators = AsyncMock(return_value=[admin_match])
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["Serhiy", "-a"])
+
+        await handlers.updateuser(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT user_id, first_name, last_name FROM main_group_users WHERE chat_id='-1' AND username='Serhiy'"
+        ).fetchone()
+        assert row == ("555", "Serhiy", "Kovalenko")
+
+    async def test_unresolvable_username_gives_honest_warning(self, db_path):
+        bot = make_bot()
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["Enes", "-a"])
+
+        await handlers.updateuser(upd, ctx)
+
+        replies = [c.args[0] for c in msg.reply_text.call_args_list]
+        assert any("Could not resolve" in r for r in replies)
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT user_id, status FROM main_group_users WHERE chat_id='-1' AND username='Enes'").fetchone()
+        assert row == (None, "active")
+
+    async def test_existing_valid_user_id_is_never_overwritten(self, db_path):
+        """A username that ALREADY has a real user_id on file must keep
+        it - /updateuser shouldn't re-resolve or touch it."""
+        db.track_user("-1", "Serhiy", "active", user_id="999", first_name="Serhiy", last_name="Original")
+        bot = make_bot()
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["Serhiy", "-p"])
+
+        await handlers.updateuser(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT user_id, status, last_name FROM main_group_users WHERE chat_id='-1' AND username='Serhiy'"
+        ).fetchone()
+        assert row == ("999", "passive", "Original")
+        # get_chat_administrators should never even be called - already resolved
+        bot.get_chat_administrators.assert_not_called()
+
+
+class TestSetsubRejectsChannelTargets:
+    """Real bug found and fixed: /setsub already fetched the live chat
+    object (for chat_name display) but completely ignored chat_obj.type,
+    blindly inserting ANY target chat_id into all_groups even if it was
+    actually a channel - creating a spurious, wrong all_groups row
+    (showing up in the Control Sheet's Groups tab instead of Channels).
+    Channels don't have an independent subscription concept in this
+    system (all_channels' schema has no type/subscription columns at
+    all, matching how child groups also never get independent
+    subscriptions) - so /setsub against a channel target is now
+    explicitly rejected instead of silently creating a wrong row."""
+
+    async def test_channel_target_rejected_no_wrong_row_created(self, db_path):
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="channel", title="My Channel", username=None))
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        owner = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=owner, message=msg)
+        ctx = make_context(bot=bot, args=["-500", "on", "30"])
+
+        with patch("subscription.OWNER_USER_IDS", [1]):
+            await subscription.setsub(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "is a channel, not a group" in text
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT * FROM all_groups WHERE chat_id='-500'").fetchone()
+        assert row is None
+
+    async def test_real_group_target_still_works(self, db_path):
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Real Group", username=None))
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        owner = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=owner, message=msg)
+        ctx = make_context(bot=bot, args=["-600", "on", "30"])
+
+        with patch("subscription.OWNER_USER_IDS", [1]), \
+             patch("subscription._push_control_sheet_main", new_callable=AsyncMock):
+            await subscription.setsub(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Subscription *on*" in text
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT chat_id, type FROM all_groups WHERE chat_id='-600'").fetchone()
+        assert row == ("-600", "PRO")
+
+    async def test_get_chat_failure_falls_back_to_treating_as_group(self, db_path):
+        """If get_chat itself fails (e.g. bot isn't in that chat), we
+        can't determine channel-vs-group at all - falls back to the
+        pre-existing behavior (treat as group) rather than blocking a
+        legitimate group subscription just because the name lookup
+        failed for some unrelated reason."""
+        bot = make_bot()
+        bot.get_chat = AsyncMock(side_effect=Exception("Chat not found"))
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        owner = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=owner, message=msg)
+        ctx = make_context(bot=bot, args=["-700", "on", "30"])
+
+        with patch("subscription.OWNER_USER_IDS", [1]), \
+             patch("subscription._push_control_sheet_main", new_callable=AsyncMock):
+            await subscription.setsub(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "is a channel, not a group" not in text
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT chat_id FROM all_groups WHERE chat_id='-700'").fetchone()
+        assert row is not None
+
+
+class TestNotgoingVisibilityFlags:
+    """New -ngl/-notgoinglist flag (visible/hidden/onlycount) for
+    /newevent and /editevent, decoupled from -limit's own -w/-waitlist
+    flag. Ungated - available at every tier, matching Not Going's
+    always-been-visible-to-everyone prior behavior."""
+
+    async def test_newevent_ngl_hidden(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-ngl", "hidden"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT notgoing_visibility FROM events WHERE name='Party'").fetchone()
+        assert row == ("hidden",)
+
+    async def test_newevent_without_ngl_defaults_visible(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT notgoing_visibility FROM events WHERE name='Party'").fetchone()
+        assert row == ("visible",)
+
+    async def test_editevent_ngl_independent_of_limit(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, notgoing_visibility)
+               VALUES ('ev1','-100123','1','Party','👍','❌',0,'[]','[]','{}','[]','visible')"""
+        )
+        conn.commit()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-ngl", "onlycount"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.editevent(upd, ctx)
+
+        row = conn.execute("SELECT notgoing_visibility, total_limit FROM events WHERE event_id='ev1'").fetchone()
+        assert row == ("onlycount", None)
+
+    async def test_post_render_respects_ngl_hidden_no_extra_blank_lines(self, db_path):
+        """Real bug found and fixed: when both notgoing AND waitlist are
+        hidden, the section separator produced doubled blank lines
+        (4 newlines instead of 2) before the TOTAL line."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, notgoing_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,?,'{}','[]','hidden')""",
+            (json.dumps(["alice (1)"]), json.dumps(["bob"])),
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        text = bot.edit_message_text.call_args_list[0].kwargs["text"]
+        assert "Not Going" not in text
+        assert "\n\n\n" not in text  # no doubled blank line
+
+    async def test_post_render_ngl_onlycount_shows_count_not_names(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, notgoing_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]',?,'{}','[]','onlycount')""",
+            (json.dumps(["bob", "carol"]),),
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        text = bot.edit_message_text.call_args_list[0].kwargs["text"]
+        assert "Not Going:* 2" in text
+        assert "bob" not in text
+        assert "carol" not in text
+
+
+class TestChildChatNotgoingDisplay:
+    """Item 3+6: Not Going list now displays in shareevent'd (child)
+    posts too, with per-share override support (share_notgoing_visibility
+    in event_shares) - if not overridden, inherits the event's own
+    notgoing_visibility default."""
+
+    async def test_share_override_visible_despite_event_default_hidden(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, notgoing_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]','hidden')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type, share_notgoing_visibility) "
+            "VALUES ('ev1','-200','2','-visible','group','visible')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','5','dave','notgoing',0)"
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        child_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -200)
+        text = child_call.kwargs["text"]
+        assert "Not Going" in text
+        assert "dave" in text
+
+    async def test_no_override_inherits_event_default(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, notgoing_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]','hidden')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-300','3','-visible','group')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-300','6','erin','notgoing',0)"
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        child_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -300)
+        text = child_call.kwargs["text"]
+        assert "Not Going" not in text
+
+    async def test_share_waitlist_override_also_works(self, db_path):
+        """share_waitlist_visibility override behaves the same way -
+        previously the child ALWAYS used the event's own waitlist
+        setting unconditionally, ignoring any per-share override."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_visibility)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',5,?,'hidden')""",
+            (json.dumps([{"chat_id": "-200", "chat_name": None, "username": "frank", "user_id": "7", "timestamp": "t1"}]),),
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type, share_waitlist_visibility) "
+            "VALUES ('ev1','-200','2','-visible','group','visible')"
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        child_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -200)
+        text = child_call.kwargs["text"]
+        assert "Waitlist" in text
+        assert "frank" in text
+
+
+class TestShareeventNewFlagSyntax:
+    """Item 6: /shareevent's old positional -visible/-hidden/-onlycount
+    mode moved behind an explicit -mgl/-maingoinglist flag, plus two new
+    flags -sngl/-sharenotgoing and -swl/-sharewaitlist (same visibility
+    vocabulary), storing per-share overrides in event_shares."""
+
+    async def test_all_three_flags_together(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200", "-mgl", "visible", "-sngl", "onlycount", "-swl", "hidden"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute(
+            "SELECT share_mode, share_notgoing_visibility, share_waitlist_visibility FROM event_shares WHERE chat_id='-200'"
+        ).fetchone()
+        assert row == ("-visible", "onlycount", "hidden")
+
+    async def test_long_form_flag_names_also_work(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[
+            "-200", "-maingoinglist", "hidden", "-sharenotgoing", "visible", "-sharewaitlist", "onlycount",
+        ])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute(
+            "SELECT share_mode, share_notgoing_visibility, share_waitlist_visibility FROM event_shares WHERE chat_id='-200'"
+        ).fetchone()
+        assert row == ("-hidden", "visible", "onlycount")
+
+    async def test_no_flags_defaults_preserved(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-300"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute(
+            "SELECT share_mode, share_notgoing_visibility, share_waitlist_visibility FROM event_shares WHERE chat_id='-300'"
+        ).fetchone()
+        assert row == ("-onlycount", None, None)
+
+    async def test_target_can_appear_after_flags(self, db_path):
+        """Target extraction is order-independent - the first non-flag
+        token is treated as the target, regardless of position."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-mgl", "visible", "-400"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute(
+            "SELECT share_mode FROM event_shares WHERE chat_id='-400'"
+        ).fetchone()
+        assert row == ("-visible",)
+
+
+class TestStatsCommand:
+    """Item 7: new /stats command, gated on the "stats" PRO feature, shows
+    event activity stats for the calling hub: total events ever created,
+    how many were closed, and total/average headcount (going + guests)
+    across every closed event."""
+
+    async def test_free_hub_rejected(self, db_path):
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=[])
+
+        await handlers.stats_command(upd, ctx)
+
+        assert "PRO" in msg.reply_text.call_args.args[0]
+
+    async def test_pro_hub_computes_correct_stats(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-1','1','Open Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev2','-1','2','Closed 1','👍','❌',2,?,'[]',?,'[]')""",
+            (json.dumps(["a (1)", "b (2)", "c (3)"]), json.dumps({"a": 2})),
+        )
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev3','-1','3','Closed 2','👍','❌',2,?,'[]','{}','[]')""",
+            (json.dumps(["d (4)"]),),
+        )
+        conn.commit()
+
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=[])
+
+        await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Events amount: 3" in text
+        assert "Events closed: 2" in text
+        assert "Total members amount: 6" in text
+        assert "Average members amount: 3\\.0" in text
+
+    async def test_no_closed_events_avoids_division_by_zero(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-1','1','Open Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=[])
+
+        await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Events amount: 1" in text
+        assert "Events closed: 0" in text
+        assert "Total members amount: 0" in text
+        assert "Average members amount: 0" in text
+
+    async def test_no_events_at_all(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=[])
+
+        await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Events amount: 0" in text
+        assert "Events closed: 0" in text
+
+
+class TestHelpUpdatedForNewFlagsAndStats:
+    """Item 8: /help updated to reflect all the flag redesign from items
+    4-6 (-w/-waitlist, -ngl/-notgoinglist, -mgl/-sngl/-swl on shareevent)
+    and the new /stats command."""
+
+    async def test_main_help_shows_new_newevent_syntax(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "\\-wl" in text
+        assert "\\-waitlist" in text
+        assert "\\-ngl" in text
+        assert "\\-notgoinglist" in text
+        # Old combined syntax must be gone
+        assert "\\-limit N \\[visible" not in text
+
+    async def test_stats_shown_only_on_pro_hub(self, db_path):
+        chat_free = make_chat(chat_id=-100123)
+        msg_free = make_message(chat=chat_free)
+        upd_free = make_update(chat=chat_free, message=msg_free)
+        ctx_free = make_context()
+        await handlers.help_command(upd_free, ctx_free)
+        assert "/stats" not in msg_free.reply_text.call_args.args[0]
+
+        insert_premium(db_path, chat_id="-100124")
+        chat_pro = make_chat(chat_id=-100124)
+        msg_pro = make_message(chat=chat_pro)
+        upd_pro = make_update(chat=chat_pro, message=msg_pro)
+        ctx_pro = make_context()
+        await handlers.help_command(upd_pro, ctx_pro)
+        assert "/stats" in msg_pro.reply_text.call_args.args[0]
+
+    async def test_distribution_section_shows_new_shareevent_flags(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_distribution"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "\\-mgl" in text
+        assert "\\-sngl" in text
+        assert "\\-swl" in text
+        assert "\\-v\\|" not in text  # old shorthand syntax gone

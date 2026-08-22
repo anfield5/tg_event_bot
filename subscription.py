@@ -19,7 +19,7 @@ from db import get_connection, get_feature_flags, update_feature_flag, _NO_CHANG
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels,
-    open_spreadsheet, get_service_account_email,
+    sync_control_sheet_chats_log, open_spreadsheet, get_service_account_email,
 )
 
 SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"  # ISO-ish, chosen so string comparison
@@ -130,6 +130,19 @@ async def _push_control_sheet_channels() -> bool:
     return await sync_control_sheet_channels(rows)
 
 
+async def _push_control_sheet_chats_log() -> bool:
+    """
+    Reads all of all_chats_bot_log (the historical add/remove trail - see
+    register_chat_removed) and pushes it to the Control Sheet's
+    'chats_log' tab.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, date_bot_add, date_bot_removed FROM all_chats_bot_log")
+        rows = cursor.fetchall()
+    return await sync_control_sheet_chats_log(rows)
+
+
 async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Owner-only. The simplest possible manual subscription control - no
@@ -175,11 +188,22 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # so it shows something more useful than a bare numeric chat_id. Not
     # fatal if this fails (e.g. bot isn't in that chat) - falls back to None.
     chat_name = None
+    is_channel_target = False
     try:
         chat_obj  = await context.bot.get_chat(int(target_chat_id))
         chat_name = chat_obj.title or chat_obj.username
+        is_channel_target = chat_obj.type == "channel"
     except Exception as e:
         logger.error(f"setsub: could not fetch chat name for {target_chat_id}: {e}")
+
+    if is_channel_target:
+        await update.message.reply_text(
+            f"❌ `{escape_markdown(target_chat_id)}` is a channel, not a group\\. Channels don't have an "
+            f"independent subscription in this system \\(same as child groups\\) \\- only hubs \\(groups\\) "
+            f"can be granted PRO via /setsub\\. This wasn't written anywhere\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
 
     with get_connection() as conn:
         cursor = conn.cursor()

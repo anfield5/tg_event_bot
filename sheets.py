@@ -332,6 +332,44 @@ async def sync_control_sheet_channels(rows: list) -> bool:
         return False
 
 
+async def sync_control_sheet_chats_log(rows: list) -> bool:
+    """
+    Overwrites the "chats_log" tab of the Control Sheet with the current
+    contents of all_chats_bot_log - the historical trail of every time the
+    bot was added to and later removed from a group/channel (all_groups/
+    all_channels only ever reflect PRESENT chats; this is the append-only
+    history). Same one-way push, write-first-then-trim pattern as
+    sync_control_sheet_main/sync_control_sheet_channels.
+
+    rows: list of (chat_id, date_bot_add, date_bot_removed) tuples.
+    Returns True on success, False on failure.
+    """
+    if not CONTROL_SHEET_ID:
+        logger.error("sync_control_sheet_chats_log: CONTROL_SHEET_ID is not configured.")
+        return False
+    try:
+        ss = await open_spreadsheet(CONTROL_SHEET_ID)
+        ws = await ss.worksheet("chats_log")
+        header = ["CHAT_ID", "DATE_BOT_ADD", "DATE_BOT_REMOVED"]
+        body   = [[str(v) if v is not None else "" for v in row] for row in rows]
+        grid   = [header] + body
+
+        try:
+            existing_row_count = len(await ws.get_all_values())
+        except Exception:
+            existing_row_count = 0
+
+        await ws.update("A1", grid)
+
+        if existing_row_count > len(grid):
+            await ws.batch_clear([f"A{len(grid) + 1}:Z{existing_row_count}"])
+
+        return True
+    except Exception as e:
+        logger.error(f"Google Sheets Control/chats_log sync failed: {repr(e)}")
+        return False
+
+
 _TIER_ORDER = {"FREE": 0, "PRO": 1, "ADMIN": 2}
 
 
