@@ -6903,3 +6903,240 @@ class TestValidateWaitlistVisibilityFlagHelper:
         result = await handlers._validate_waitlist_visibility_flag(msg, "-1", "onlycount")
         assert result == "onlycount"
         msg.reply_text.assert_not_called()
+
+
+class TestRefreshusersRetroactivelyResolvesStaleEntries:
+    """Real gap found from user screenshots: people who were tracked
+    (via /adduser, /updateuser, or an earlier code path) with only a
+    username and no real user_id remained permanently unlinkable forever
+    - /refreshusers used to just delete them outright. Now attempts the
+    same admin-list-based resolution /updateuser already uses BEFORE
+    removing, healing stale rows for anyone who's since become an admin.
+    Genuine non-admin members still can't be resolved (a fundamental
+    Telegram Bot API limitation - no endpoint exists to look up an
+    arbitrary username), so they're still removed if resolution fails."""
+
+    async def test_resolves_via_admin_list_before_removing(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-1','Serhiy','active')")
+        conn.commit()
+
+        bot = make_bot()
+        admin_match = MagicMock()
+        admin_match.user.username = "Serhiy"
+        admin_match.user.id = 555
+        admin_match.user.first_name = "Serhiy"
+        admin_match.user.last_name = "Real"
+        admin_match.user.is_bot = False
+        bot.get_chat_administrators = AsyncMock(return_value=[admin_match])
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await handlers.refreshusers(upd, ctx)
+
+        text = msg.reply_text.call_args_list[0].args[0]
+        assert "Resolved to a real, clickable user" in text
+        row = conn.execute("SELECT user_id, first_name, last_name FROM main_group_users WHERE chat_id='-1' AND username='Serhiy'").fetchone()
+        assert row == ("555", "Serhiy", "Real")
+
+    async def test_still_removed_if_resolution_also_fails(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-1','Enes','active')")
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await handlers.refreshusers(upd, ctx)
+
+        row = conn.execute("SELECT * FROM main_group_users WHERE chat_id='-1' AND username='Enes'").fetchone()
+        assert row is None
+
+
+
+class TestClickabilityFlag:
+    """Item 3: new -clc/-clickability flag (on/off) for /newevent,
+    /editevent, /shareevent - controls whether names in the event post
+    are clickable mentions or plain text. Default 'on' (matching every
+    event's behavior prior to this flag existing). event_shares'
+    share_clickability provides a per-share override, same pattern as
+    -sngl/-swl."""
+
+    async def test_newevent_clc_off(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-clc", "off"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT clickability FROM events WHERE name='Party'").fetchone()
+        assert row == ("off",)
+
+    async def test_newevent_without_clc_defaults_on(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT clickability FROM events WHERE name='Party'").fetchone()
+        assert row == ("on",)
+
+    async def test_editevent_clickability_independent_of_other_flags(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, clickability)
+               VALUES ('ev1','-100123','1','Party','👍','❌',0,'[]','[]','{}','[]','on')"""
+        )
+        conn.commit()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-clickability", "off"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.editevent(upd, ctx)
+
+        row = conn.execute("SELECT clickability, total_limit FROM events WHERE event_id='ev1'").fetchone()
+        assert row == ("off", None)
+
+    async def test_shareevent_clc_stored_per_share(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200", "-clc", "off"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute("SELECT share_clickability FROM event_shares WHERE chat_id='-200'").fetchone()
+        assert row == ("off",)
+
+    async def test_post_renders_plain_text_when_clickability_off(self, db_path):
+        db.track_user("-100", "alice", "active", user_id="1", first_name="Alice", last_name="A")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, clickability)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]','off')""",
+            (json.dumps(["alice (1)"]),),
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        text = bot.edit_message_text.call_args_list[0].kwargs["text"]
+        assert "Alice A" in text
+        assert "tg://user" not in text
+
+    async def test_per_share_override_beats_event_default(self, db_path):
+        """A share with its OWN clickability override must use that
+        override, not the event's own setting - even in the opposite
+        direction (event off, share on)."""
+        db.track_user("-200", "bob", "active", user_id="2", first_name="Bob", last_name="B")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, clickability)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]','off')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type, share_clickability) "
+            "VALUES ('ev1','-200','2','-visible','group','on')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','2','bob','going',0)"
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        child_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -200)
+        text = child_call.kwargs["text"]
+        assert "[Bob B](tg://user?id=2)" in text
+
+
+class TestHelpMentionsClickabilityFlag:
+    """Item 3, help update: /help reflects the new -clc/-clickability
+    flag across /newevent, /editevent, and /shareevent."""
+
+    async def test_main_help_shows_clc_syntax(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "\\-clc" in text
+        assert "\\-clickability" in text
+
+    async def test_distribution_section_shows_clc_syntax(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_distribution"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "\\-clc" in text
+        assert "\\-clickability" in text

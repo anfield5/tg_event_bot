@@ -97,7 +97,7 @@ async def schedule_view_refresh(context: ContextTypes.DEFAULT_TYPE, event_id: st
             await update_all_shared_views(context, event_id)
 
 
-def _mention_link(chat_id: str, username: str, user_id=None) -> str:
+def _mention_link(chat_id: str, username: str, user_id=None, clickable: bool = True) -> str:
     """
     Builds a clickable MarkdownV2 mention - [First Last](tg://user?id=...) -
     using the stored first_name/last_name for this user_id if we have it on
@@ -112,6 +112,11 @@ def _mention_link(chat_id: str, username: str, user_id=None) -> str:
     hand (e.g. entries in the Not Going list, which - unlike Going - don't
     carry a "(user_id)" suffix) - in that case it's looked up from
     main_group_users by (chat_id, username).
+
+    `clickable=False` (the -clc/-clickability flag, default True) forces
+    plain, non-linked text even when a valid user_id IS available - the
+    display name is still resolved the same way (First Last if on file),
+    just without the tg://user?id=... link wrapper.
     """
     if user_id is None:
         with get_connection() as conn:
@@ -127,6 +132,8 @@ def _mention_link(chat_id: str, username: str, user_id=None) -> str:
         return escape_markdown(username)
 
     display = get_display_name(str(chat_id), str(user_id), username)
+    if not clickable:
+        return escape_markdown(display)
     return f"[{escape_markdown(display)}](tg://user?id={user_id})"
 
 
@@ -145,7 +152,7 @@ def _promotion_announcement_text(chat_id: str, username: str, user_id, is_guest:
     return f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
 
 
-def _render_waitlist_local(waitlist: list, chat_id: str) -> tuple:
+def _render_waitlist_local(waitlist: list, chat_id: str, clickable: bool = True) -> tuple:
     """
     Filters an event's waitlist_data down to entries added from THIS
     specific chat_id only, no "from" labels (since every entry shown is
@@ -161,11 +168,14 @@ def _render_waitlist_local(waitlist: list, chat_id: str) -> tuple:
     guest lines (ICON_GUEST, "N, from: <owner>") - not the person-waiting
     format, since a guest slot isn't a separate person waiting.
 
+    `clickable` mirrors the -clc/-clickability flag - False renders every
+    name as plain text instead of a clickable mention.
+
     Returns (count, text_lines).
     """
     entries = [e for e in waitlist if str(e.get("chat_id")) == str(chat_id)]
     person_lines = [
-        f"{ICON_STANDBY} {_mention_link(chat_id, e['username'], e['user_id'])}"
+        f"{ICON_STANDBY} {_mention_link(chat_id, e['username'], e['user_id'], clickable)}"
         for e in entries if not e.get("is_guest")
     ]
     guest_counts = {}
@@ -174,14 +184,14 @@ def _render_waitlist_local(waitlist: list, chat_id: str) -> tuple:
             key = (e["user_id"], e["username"])
             guest_counts[key] = guest_counts.get(key, 0) + 1
     guest_lines = [
-        f"{ICON_GUEST} {count}, from: {_mention_link(chat_id, uname, uid)}"
+        f"{ICON_GUEST} {count}, from: {_mention_link(chat_id, uname, uid, clickable)}"
         for (uid, uname), count in guest_counts.items()
     ]
     lines = person_lines + guest_lines
     return len(entries), "\n".join(lines)
 
 
-async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: ContextTypes.DEFAULT_TYPE) -> tuple:
+async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: ContextTypes.DEFAULT_TYPE, clickable: bool = True) -> tuple:
     """
     Every entry across every chat the event was shared to, with a "from
     <chat_name>" suffix for anything that ISN'T local to main_chat_id.
@@ -195,6 +205,9 @@ async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: Conte
     Guest-slot entries are grouped by (owner, chat) - matching
     _render_waitlist_local's own grouping - and rendered with the going-
     list's guest-line format instead of the person-waiting format.
+
+    `clickable` mirrors the -clc/-clickability flag - False renders every
+    name as plain text instead of a clickable mention.
 
     Returns (count, text_lines).
     """
@@ -216,7 +229,7 @@ async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: Conte
             key = (e["user_id"], e["username"], e["chat_id"])
             guest_counts[key] = guest_counts.get(key, 0) + 1
             continue
-        mention = f"{ICON_STANDBY} {_mention_link(e['chat_id'], e['username'], e['user_id'])}"
+        mention = f"{ICON_STANDBY} {_mention_link(e['chat_id'], e['username'], e['user_id'], clickable)}"
         if str(e.get("chat_id")) != str(main_chat_id):
             chat_title = await _title(e["chat_id"])
             mention += f" from {escape_markdown(chat_title)}"
@@ -224,7 +237,7 @@ async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: Conte
 
     guest_lines = []
     for (uid, uname, cid), count in guest_counts.items():
-        line = f"{ICON_GUEST} {count}, from: {_mention_link(cid, uname, uid)}"
+        line = f"{ICON_GUEST} {count}, from: {_mention_link(cid, uname, uid, clickable)}"
         if str(cid) != str(main_chat_id):
             chat_title = await _title(cid)
             line += f" \\({escape_markdown(chat_title)}\\)"
@@ -275,7 +288,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             """
             SELECT chat_id, message_id, name, going_icon, notgoing_icon,
                    event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                   feature_snapshot, total_limit, waitlist_data, waitlist_visibility, notgoing_visibility
+                   feature_snapshot, total_limit, waitlist_data, waitlist_visibility, notgoing_visibility, clickability
             FROM events WHERE event_id = ?
             """,
             (event_id,),
@@ -286,7 +299,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
          event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-         feature_snapshot_raw, total_limit, waitlist_data_raw, waitlist_visibility, notgoing_visibility) = master
+         feature_snapshot_raw, total_limit, waitlist_data_raw, waitlist_visibility, notgoing_visibility, clickability) = master
 
         try:
             feature_snapshot = json.loads(feature_snapshot_raw) if feature_snapshot_raw else {}
@@ -302,7 +315,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         master_waitlist  = dedupe_waitlist(json.loads(waitlist_data_raw or "[]"))
 
         cursor.execute(
-            "SELECT chat_id, message_id, share_mode, share_notgoing_visibility, share_waitlist_visibility FROM event_shares WHERE event_id = ?",
+            "SELECT chat_id, message_id, share_mode, share_notgoing_visibility, share_waitlist_visibility, share_clickability FROM event_shares WHERE event_id = ?",
             (event_id,),
         )
         shares = cursor.fetchall()
@@ -312,7 +325,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         # that loop also makes Telegram API calls (get_chat), which
         # shouldn't happen while holding a DB connection open.
         per_share_users = {}
-        for s_chat_id, _, _, _, _ in shares:
+        for s_chat_id, _, _, _, _, _ in shares:
             cursor.execute(
                 "SELECT username, status, guests, user_id FROM event_users "
                 "WHERE event_id = ? AND chat_id = ?",
@@ -324,20 +337,21 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     total_child_going       = 0
     child_addons_for_master = []
 
-    for s_chat_id, _, _, _, _ in shares:
+    for s_chat_id, _, _, _, _, share_clc in shares:
         users      = per_share_users[str(s_chat_id)]
         users_list = []
         notgoing_list = []
         chat_sum   = 0
+        effective_clickable = (share_clc if share_clc else clickability) == "on"
         for username, status, guests, u_id in users:
             if status == "going":
-                users_list.append(f"{going_icon} {_mention_link(s_chat_id, username, u_id)}")
+                users_list.append(f"{going_icon} {_mention_link(s_chat_id, username, u_id, effective_clickable)}")
                 chat_sum += 1
             if guests > 0:
-                users_list.append(f"{ICON_GUEST} {guests}, from: {_mention_link(s_chat_id, username, u_id)}")
+                users_list.append(f"{ICON_GUEST} {guests}, from: {_mention_link(s_chat_id, username, u_id, effective_clickable)}")
                 chat_sum += guests
             if status == "notgoing":
-                notgoing_list.append(f"{notgoing_icon} {_mention_link(s_chat_id, username, u_id)}")
+                notgoing_list.append(f"{notgoing_icon} {_mention_link(s_chat_id, username, u_id, effective_clickable)}")
 
         child_data[str(s_chat_id)] = {
             "users_text":      "\n".join(users_list),
@@ -371,8 +385,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     current_post_total  = total_master_going
     global_total        = current_post_total + total_child_going
 
+    master_clickable = clickability == "on"
+
     going_names_list = [
-        f"{going_icon} {_mention_link(main_chat_id, u.split(' (')[0], u.split('(')[-1].rstrip(')') if '(' in u else None)}"
+        f"{going_icon} {_mention_link(main_chat_id, u.split(' (')[0], u.split('(')[-1].rstrip(')') if '(' in u else None, master_clickable)}"
         for u in master_going
     ]
 
@@ -383,17 +399,17 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         u_name = entry.split(" (")[0]
         u_id   = entry.split("(")[-1].rstrip(")") if "(" in entry else None
         if master_counters.get(u_name, 0) > 0:
-            guest_lines.append(f"{ICON_GUEST} {master_counters[u_name]}, from: {_mention_link(main_chat_id, u_name, u_id)}")
+            guest_lines.append(f"{ICON_GUEST} {master_counters[u_name]}, from: {_mention_link(main_chat_id, u_name, u_id, master_clickable)}")
     # Also include guests from users who are not going (kicked users with guests)
     for k, count in master_counters.items():
         if k not in {u.split(" (")[0] for u in master_going} and count > 0:
-            guest_lines.append(f"{ICON_GUEST} {count}, from: {_mention_link(main_chat_id, k)}")
+            guest_lines.append(f"{ICON_GUEST} {count}, from: {_mention_link(main_chat_id, k, None, master_clickable)}")
 
     going_list_text = "\n".join(going_names_list + guest_lines)
 
     if notgoing_visibility == "visible":
         not_going_list_text = (
-            "\n".join(f"{notgoing_icon} {_mention_link(main_chat_id, u)}" for u in master_not_going)
+            "\n".join(f"{notgoing_icon} {_mention_link(main_chat_id, u, None, master_clickable)}" for u in master_not_going)
             if master_not_going else ""
         )
         notgoing_section = f"\n\n*Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
@@ -408,7 +424,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     title_line  = f"{ICON_CANCEL_EVENT} *CANCELED* ~{escape_markdown(name)}~" if event_status == -1 else f"*{escape_markdown(name)}*"
 
     if waitlist_visibility == "visible":
-        wl_count, wl_text = await _render_waitlist_all(master_waitlist, main_chat_id, context)
+        wl_count, wl_text = await _render_waitlist_all(master_waitlist, main_chat_id, context, master_clickable)
         waitlist_section = f"\n\n*Waitlist* \\({wl_count}\\):\n{wl_text}"
     elif waitlist_visibility == "onlycount":
         wl_count = _render_waitlist_count(master_waitlist)
@@ -488,13 +504,14 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         f"{ICON_CANCEL_EVENT} *CANCELED* ~{escape_markdown(name)}~"
         if event_status == -1 else f"*{escape_markdown(name)}*"
     )
-    for s_chat_id, _, _, _, _ in shares:
+    for s_chat_id, _, _, _, _, _ in shares:
         await _get_title(s_chat_id)
 
-    async def _render_and_edit_child(s_chat_id, s_msg_id, mode, share_notgoing_viz=None, share_waitlist_viz=None):
+    async def _render_and_edit_child(s_chat_id, s_msg_id, mode, share_notgoing_viz=None, share_waitlist_viz=None, share_clickability=None):
         c_info = child_data.get(str(s_chat_id), {"users_text": "", "count": 0, "notgoing_text": "", "notgoing_count": 0})
         effective_notgoing_viz = share_notgoing_viz if share_notgoing_viz else notgoing_visibility
         effective_waitlist_viz = share_waitlist_viz if share_waitlist_viz else waitlist_visibility
+        effective_clickable = (share_clickability if share_clickability else clickability) == "on"
 
         if mode == "-visible":
             child_text = (
@@ -502,7 +519,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 f"{date_line} \n"
                 f"*Going from {escaped_main_title}* \\({current_post_total}\\):\n{going_list_text}\n\n"
             )
-            for other_id, _, _, _, _ in shares:
+            for other_id, _, _, _, _, _ in shares:
                 if str(other_id) != str(s_chat_id):
                     o_title = title_cache.get(str(other_id), "Group")
                     o_info  = child_data.get(str(other_id), {"users_text": "", "count": 0})
@@ -518,7 +535,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                 f"{date_line} \n"
                 f"*Going from {escaped_main_title}:* {current_post_total}\n\n"
             )
-            for other_id, _, _, _, _ in shares:
+            for other_id, _, _, _, _, _ in shares:
                 if str(other_id) != str(s_chat_id):
                     o_title = title_cache.get(str(other_id), "Group")
                     o_info  = child_data.get(str(other_id), {"count": 0})
@@ -539,7 +556,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             child_notgoing_section = ""
 
         if effective_waitlist_viz == "visible":
-            wl_count, wl_text = _render_waitlist_local(master_waitlist, s_chat_id)
+            wl_count, wl_text = _render_waitlist_local(master_waitlist, s_chat_id, effective_clickable)
             child_waitlist_section = f"*Waitlist* \\({wl_count}\\):\n{wl_text}\n\n"
         elif effective_waitlist_viz == "onlycount":
             wl_count = _render_waitlist_count(master_waitlist)
@@ -583,8 +600,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         # this is just an extra safety net around the gather itself).
         await asyncio.gather(
             *[
-                _render_and_edit_child(s_chat_id, s_msg_id, mode, share_ngl, share_wl)
-                for s_chat_id, s_msg_id, mode, share_ngl, share_wl in shares
+                _render_and_edit_child(s_chat_id, s_msg_id, mode, share_ngl, share_wl, share_clc)
+                for s_chat_id, s_msg_id, mode, share_ngl, share_wl, share_clc in shares
             ],
             return_exceptions=True,
         )

@@ -227,3 +227,55 @@ class TestStatsCommandRegistration:
         source = open("main.py", encoding="utf-8").read()
         import_block = source[source.index("from handlers import"):source.index("from subscription import")]
         assert "stats_command" in import_block
+
+
+class TestOnChatMemberUpdateCapturesRealName:
+    """Real gap found: on_chat_member_update (auto-tracking someone
+    joining/leaving) passed a real user_id but never first_name/last_name
+    to track_user(), even though the user object always has this data
+    readily available - meaning newly-joined members would show as their
+    plain username instead of 'First Last' everywhere they're mentioned,
+    until they happened to trigger some OTHER, more complete track_user()
+    call."""
+
+    async def test_join_captures_first_and_last_name(self, db_path):
+        result = MagicMock()
+        result.chat.id = -1
+        new_member = MagicMock()
+        new_member.status = "member"
+        user = MagicMock()
+        user.id = 777
+        user.username = "newperson"
+        user.first_name = "New"
+        user.last_name = "Person"
+        new_member.user = user
+        result.new_chat_member = new_member
+        upd = MagicMock()
+        upd.chat_member = result
+
+        await main.on_chat_member_update(upd, MagicMock())
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT user_id, first_name, last_name FROM main_group_users WHERE chat_id='-1'").fetchone()
+        assert row == ("777", "New", "Person")
+
+    async def test_leave_also_captures_name(self, db_path):
+        result = MagicMock()
+        result.chat.id = -1
+        new_member = MagicMock()
+        new_member.status = "left"
+        user = MagicMock()
+        user.id = 888
+        user.username = "leaverperson"
+        user.first_name = "Leaver"
+        user.last_name = "Person"
+        new_member.user = user
+        result.new_chat_member = new_member
+        upd = MagicMock()
+        upd.chat_member = result
+
+        await main.on_chat_member_update(upd, MagicMock())
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT user_id, first_name, last_name, status FROM main_group_users WHERE chat_id='-1'").fetchone()
+        assert row == ("888", "Leaver", "Person", "passive")

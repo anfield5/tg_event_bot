@@ -319,6 +319,7 @@ def init_db(db_path: str = DB_PATH):
             waitlist_open INTEGER DEFAULT 0,
             waitlist_visibility TEXT DEFAULT 'hidden',
             notgoing_visibility TEXT DEFAULT 'visible',
+            clickability TEXT DEFAULT 'on',
             created_by_user_id TEXT DEFAULT NULL
         )
     """)
@@ -359,6 +360,7 @@ def init_db(db_path: str = DB_PATH):
             chat_type TEXT,       -- 'group' or 'channel'
             share_notgoing_visibility TEXT DEFAULT NULL,  -- -sngl override; NULL = inherit event's notgoing_visibility
             share_waitlist_visibility TEXT DEFAULT NULL,  -- -swl override; NULL = inherit event's waitlist_visibility
+            share_clickability TEXT DEFAULT NULL,  -- -clc override; NULL = inherit event's clickability
             UNIQUE(event_id, chat_id)
         )
     """)
@@ -570,6 +572,14 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE events ADD COLUMN notgoing_visibility TEXT DEFAULT 'visible'")
         cursor.execute("UPDATE events SET notgoing_visibility = 'visible' WHERE notgoing_visibility IS NULL")
 
+    # 0a9b. Add `clickability` (-clc/-clickability flag on /newevent,
+    # /editevent, /shareevent) - default 'on' since every name has always
+    # been a clickable mention before this flag existed, so pre-existing
+    # rows get 'on' explicitly.
+    if "clickability" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN clickability TEXT DEFAULT 'on'")
+        cursor.execute("UPDATE events SET clickability = 'on' WHERE clickability IS NULL")
+
     # 0a9. Add event_shares' per-share notgoing/waitlist visibility
     # override columns (-sngl/-swl flags on /shareevent) - pre-existing
     # shares get NULL, meaning "inherit the event's own setting",
@@ -581,6 +591,8 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE event_shares ADD COLUMN share_notgoing_visibility TEXT DEFAULT NULL")
     if "share_waitlist_visibility" not in event_shares_cols:
         cursor.execute("ALTER TABLE event_shares ADD COLUMN share_waitlist_visibility TEXT DEFAULT NULL")
+    if "share_clickability" not in event_shares_cols:
+        cursor.execute("ALTER TABLE event_shares ADD COLUMN share_clickability TEXT DEFAULT NULL")
 
     # 0b. Add `chat_type`/`chat_name` to sub_chats if it exists from an
     # earlier version of this same migration that predates them.

@@ -495,22 +495,36 @@ class TestParseShareeventArgs:
 
     def test_all_three_flags_together(self):
         result = parse_shareevent_args(["-200", "-mgl", "visible", "-sngl", "onlycount", "-swl", "hidden"])
-        assert result == ("-200", "-visible", "onlycount", "hidden")
+        assert result == ("-200", "-visible", "onlycount", "hidden", None)
 
     def test_no_flags_defaults(self):
         result = parse_shareevent_args(["-300"])
-        assert result == ("-300", "-onlycount", None, None)
+        assert result == ("-300", "-onlycount", None, None, None)
 
     def test_target_order_independent(self):
         result = parse_shareevent_args(["-mgl", "hidden", "-400"])
-        assert result == ("-400", "-hidden", None, None)
+        assert result == ("-400", "-hidden", None, None, None)
 
     def test_empty_args_returns_none_target(self):
         result = parse_shareevent_args([])
-        assert result == (None, "-onlycount", None, None)
+        assert result == (None, "-onlycount", None, None, None)
 
     def test_long_form_flag_names(self):
         result = parse_shareevent_args([
             "-500", "-maingoinglist", "onlycount", "-sharenotgoing", "visible", "-sharewaitlist", "hidden",
         ])
-        assert result == ("-500", "-onlycount", "visible", "hidden")
+        assert result == ("-500", "-onlycount", "visible", "hidden", None)
+
+    def test_clc_flag_off(self):
+        result = parse_shareevent_args(["-200", "-clc", "off"])
+        assert result == ("-200", "-onlycount", None, None, "off")
+
+    def test_clickability_long_form_on(self):
+        result = parse_shareevent_args(["-200", "-clickability", "on"])
+        assert result == ("-200", "-onlycount", None, None, "on")
+
+    def test_all_four_flags_together(self):
+        result = parse_shareevent_args([
+            "-200", "-mgl", "visible", "-sngl", "onlycount", "-swl", "hidden", "-clc", "off",
+        ])
+        assert result == ("-200", "-visible", "onlycount", "hidden", "off")

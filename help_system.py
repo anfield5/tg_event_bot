@@ -140,7 +140,7 @@ def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
     text = (
         "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]"
-        "\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]\\[\\-ngl visible\\|hidden\\|onlycount\\] \\- Create a new event\n"
+        "\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Create a new event\n"
         "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
         "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
         "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
@@ -153,9 +153,12 @@ def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
         "    visible \\(default\\) \\- shown as before\n"
         "    hidden \\- section removed from the post entirely\n"
         "    onlycount \\- shows just the total count, no names\n"
+        "\\-clc \\| \\-clickability on\\|off \\- whether names in the post are clickable mentions, ungated at every tier\n"
+        "    on \\(default\\) \\- every name is a clickable mention\n"
+        "    off \\- every name is plain, non\\-linked text\n"
         f"{waitlist_line}"
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]"
-        "\\[\\-ngl visible\\|hidden\\|onlycount\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n"
+        "\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n"
     )
     if pro:
         text += "/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet \\(Users/Events/Actions/EventUsers/UserPresenceLog tabs\\)\n"
@@ -249,13 +252,14 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         "help_distribution": (
             "📢 *Distribution Control*\n\n"
             "/shareevent \\[target\\_alias/chatid\\] \\[\\-mgl visible\\|hidden\\|onlycount\\] "
-            "\\[\\-sngl visible\\|hidden\\|onlycount\\] \\[\\-swl visible\\|hidden\\|onlycount\\] \\- Share active event\n\n"
+            "\\[\\-sngl visible\\|hidden\\|onlycount\\] \\[\\-swl visible\\|hidden\\|onlycount\\] \\[\\-clc on\\|off\\] \\- Share active event\n\n"
             "\\-mgl \\| \\-maingoinglist \\- Going list visibility in this specific share \\(defaults to onlycount\\):\n"
             "  • visible: Show full going list in child chat\n"
             "  • hidden: Hide event, only show going/notgoing counts\n"
             "  • onlycount \\(default\\): Show only total going count\n\n"
             "\\-sngl \\| \\-sharenotgoing \\- Not Going list visibility override for this share \\(if omitted, inherits the event's own \\-ngl setting\\)\n"
-            "\\-swl \\| \\-sharewaitlist \\- Waitlist visibility override for this share \\(if omitted, inherits the event's own \\-wl setting\\)\n\n"
+            "\\-swl \\| \\-sharewaitlist \\- Waitlist visibility override for this share \\(if omitted, inherits the event's own \\-wl setting\\)\n"
+            "\\-clc \\| \\-clickability on\\|off \\- Name clickability override for this share \\(if omitted, inherits the event's own \\-clc setting\\)\n\n"
             f"{shareevent_limit_line}"
         ),
         "help_monitoring": (

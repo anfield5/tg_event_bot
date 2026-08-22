@@ -144,10 +144,18 @@ def parse_event_args(args: list):
             -ngl hidden
             -notgoinglist onlycount
 
+    -clc / -clickability on|off – whether names in the post are
+        clickable mentions (tg://user?id=...) or plain, non-linked text:
+          on  (default) – every name in the post is a clickable mention.
+          off – every name in the post is plain text, not clickable.
+        Examples:
+            -clc off
+            -clickability on
+
     Returns: (event_name, going_icon, notgoing_icon, event_date_raw, total_limit_raw,
-              waitlist_visibility_raw, notgoing_visibility_raw)
+              waitlist_visibility_raw, notgoing_visibility_raw, clickability_raw)
     event_date_raw/total_limit_raw are the raw token(s); validation happens in the caller.
-    waitlist_visibility_raw/notgoing_visibility_raw are None if the flag wasn't given.
+    waitlist_visibility_raw/notgoing_visibility_raw/clickability_raw are None if the flag wasn't given.
     """
     going_icon    = None
     notgoing_icon = None
@@ -155,6 +163,7 @@ def parse_event_args(args: list):
     total_limit   = None
     waitlist_visibility_raw = None
     notgoing_visibility_raw = None
+    clickability_raw = None
 
     gi_flags   = {"-gi", "-goingicon"}
     ni_flags   = {"-ni", "-notgoingicon"}
@@ -162,7 +171,9 @@ def parse_event_args(args: list):
     limit_flags = {"-limit"}
     waitlist_flags = {"-wl", "-waitlist"}
     notgoinglist_flags = {"-ngl", "-notgoinglist"}
+    clickability_flags = {"-clc", "-clickability"}
     visibility_words = ("visible", "hidden", "onlycount")
+    clickability_words = ("on", "off")
 
     tokens       = args[:]
     clean_tokens = []
@@ -201,12 +212,16 @@ def parse_event_args(args: list):
             notgoing_visibility_raw = tokens[i + 1].strip().lower()
             i += 2
 
+        elif token in clickability_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in clickability_words:
+            clickability_raw = tokens[i + 1].strip().lower()
+            i += 2
+
         else:
             clean_tokens.append(token)
             i += 1
 
     event_name = " ".join(clean_tokens) if clean_tokens else None
-    return event_name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility_raw, notgoing_visibility_raw
+    return event_name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility_raw, notgoing_visibility_raw, clickability_raw
 
 
 def parse_user_args(args: list) -> list:
@@ -264,7 +279,7 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         )
         return
 
-    event_name_raw, g_icon, n_icon, date_raw, limit_raw, waitlist_viz_raw, notgoing_viz_raw = parse_event_args(args)
+    event_name_raw, g_icon, n_icon, date_raw, limit_raw, waitlist_viz_raw, notgoing_viz_raw, clickability_raw = parse_event_args(args)
     going_icon    = g_icon if g_icon else DEFAULT_GOING_ICON
     notgoing_icon = n_icon if n_icon else DEFAULT_NOTGOING_ICON
 
@@ -305,6 +320,9 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     # the ability to hide/summarize it, available at every tier.
     notgoing_visibility_value = notgoing_viz_raw if notgoing_viz_raw is not None else "visible"
 
+    # -clc/-clickability is ungated too, same reasoning as -ngl.
+    clickability_value = clickability_raw if clickability_raw is not None else "on"
+
     event_id = str(uuid4())[:8]
 
     verification_enabled = has_feature(chat_id, "verification")
@@ -329,11 +347,11 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 """
                 INSERT INTO events
                     (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, notgoing_visibility, created_by_user_id)
-                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?, ?)
+                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, notgoing_visibility, clickability, created_by_user_id)
+                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (event_id, chat_id, str(message.message_id),
-                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value, notgoing_visibility_value,
+                 event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value, notgoing_visibility_value, clickability_value,
                  str(update.effective_user.id)),
             )
             conn.commit()
@@ -415,7 +433,7 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT event_id, name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility, notgoing_visibility
+            SELECT event_id, name, going_icon, notgoing_icon, event_date, total_limit, waitlist_visibility, notgoing_visibility, clickability
             FROM events
             WHERE chat_id = ? AND event_status IN (0, 1)
             ORDER BY ROWID DESC LIMIT 1
@@ -429,8 +447,8 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             )
             return
 
-        event_id, current_name, current_gi, current_ni, current_date, current_limit, current_waitlist_visibility, current_notgoing_visibility = row
-        new_name, new_gi, new_ni, date_raw, limit_raw, waitlist_viz_raw, notgoing_viz_raw = parse_event_args(args)
+        event_id, current_name, current_gi, current_ni, current_date, current_limit, current_waitlist_visibility, current_notgoing_visibility, current_clickability = row
+        new_name, new_gi, new_ni, date_raw, limit_raw, waitlist_viz_raw, notgoing_viz_raw, clickability_raw = parse_event_args(args)
 
         updated_name = new_name   if new_name   else current_name
         updated_gi   = new_gi     if new_gi     else current_gi
@@ -453,6 +471,7 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         updated_limit = current_limit
         updated_waitlist_visibility = current_waitlist_visibility
         updated_notgoing_visibility = current_notgoing_visibility
+        updated_clickability = current_clickability
         promotions_to_announce = []  # [(chat_id, username, user_id, is_guest), ...] - sent after commit
 
         # -w/-waitlist can now be set independently of -limit in the SAME
@@ -468,6 +487,10 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         # -ngl/-notgoinglist is ungated, same as newevent.
         if notgoing_viz_raw is not None:
             updated_notgoing_visibility = notgoing_viz_raw
+
+        # -clc/-clickability is ungated too, same reasoning.
+        if clickability_raw is not None:
+            updated_clickability = clickability_raw
 
         if limit_raw is not None:
             validated = await _validate_limit_flag(update.message, chat_id, limit_raw)
@@ -562,10 +585,10 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         cursor.execute(
             """
             UPDATE events
-            SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?, total_limit = ?, waitlist_visibility = ?, notgoing_visibility = ?
+            SET name = ?, going_icon = ?, notgoing_icon = ?, event_date = ?, total_limit = ?, waitlist_visibility = ?, notgoing_visibility = ?, clickability = ?
             WHERE event_id = ?
             """,
-            (updated_name, updated_gi, updated_ni, updated_date, updated_limit, updated_waitlist_visibility, updated_notgoing_visibility, event_id),
+            (updated_name, updated_gi, updated_ni, updated_date, updated_limit, updated_waitlist_visibility, updated_notgoing_visibility, updated_clickability, event_id),
         )
         conn.commit()
 
@@ -1019,18 +1042,41 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         )
         rows = cursor.fetchall()
 
+        # Fetched once up front - reused both for resolving unresolved
+        # entries below (giving a stale username-only row a real chance
+        # at healing instead of unconditional removal) and for "add
+        # missing admins" further down, avoiding a duplicate API call.
+        try:
+            admins = await context.bot.get_chat_administrators(chat_id)
+        except Exception as e:
+            logger.error(f"refreshusers: could not fetch admin list: {e}")
+            admins = []
+
         # ── 1. Remove confirmed-departed/invalid/unverifiable users ──────────
         removed        = []
+        resolved       = []  # usernames that were unresolved but just got a real user_id via the admin list
         still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
 
         for username, user_id, status in rows:
             if not user_id:
-                # No stored user_id at all - can never be membership-checked
-                # (getChatMember requires a numeric ID, not a @username), so
-                # there's no way to confirm they're still here. Remove
-                # outright rather than keeping stale/unverifiable rows
-                # around forever.
-                removed.append(username)
+                # No stored user_id at all - try resolving one now via
+                # the admin list (same as /updateuser's own resolution),
+                # in case this person has since become an admin. Only
+                # remove outright if that ALSO fails - there's still no
+                # way to verify membership without a numeric ID.
+                target_username = username.lstrip("@")
+                match = next(
+                    (a.user for a in admins if a.user.username and a.user.username.lower() == target_username.lower()),
+                    None,
+                )
+                if match:
+                    track_user(
+                        chat_id, username, status, user_id=str(match.id),
+                        first_name=match.first_name, last_name=match.last_name,
+                    )
+                    resolved.append(username)
+                else:
+                    removed.append(username)
                 continue
             try:
                 m = await context.bot.get_chat_member(
@@ -1068,7 +1114,6 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         # ── 2. Add missing chat administrators as 'active' ──────────────────────
         added = []
         try:
-            admins = await context.bot.get_chat_administrators(chat_id)
             cursor.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (chat_id,))
             already_tracked = {r[0] for r in cursor.fetchall()}
 
@@ -1083,7 +1128,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
                     added.append(uname)
                 still_present.append((str(u.id), uname, u.first_name, u.last_name))
         except Exception as e:
-            logger.error(f"refreshusers: could not fetch chat administrators: {e}")
+            logger.error(f"refreshusers: error while processing admin list: {e}")
 
     # Dedupe still_present by user_id (an admin who was already tracked
     # would otherwise appear twice - once from step 1, once from step 2).
@@ -1094,6 +1139,9 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
     }.values())
 
     lines = []
+    if resolved:
+        mentions = ", ".join(f"@{escape_markdown(u)}" for u in resolved)
+        lines.append(f"🔗 Resolved to a real, clickable user \\(found in the admin list\\): {mentions}")
     if removed:
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in removed)
         lines.append(f"{ICON_CLEAN} Removed \\(left, invalid, or unverifiable\\): {mentions}")
@@ -1289,12 +1337,15 @@ def parse_shareevent_args(args: list):
     -swl / -sharewaitlist visible|hidden|onlycount – Waitlist visibility
         override for this share; None if omitted (inherits the event's
         own -wl setting).
+    -clc / -clickability on|off – whether names are clickable mentions
+        in this specific share's post; None if omitted (inherits the
+        event's own -clc setting).
 
-    The first token that isn't consumed by one of the 3 flags above is
+    The first token that isn't consumed by one of the flags above is
     the target (alias or chat_id) - order-independent, so flags can
     appear before or after it.
 
-    Returns: (target_input, mode, share_notgoing_viz, share_waitlist_viz)
+    Returns: (target_input, mode, share_notgoing_viz, share_waitlist_viz, share_clickability)
     target_input is None if no target token was found at all (the
     caller's job to reject that as a syntax error). mode is always one
     of "-visible"/"-hidden"/"-onlycount" (never None).
@@ -1302,12 +1353,15 @@ def parse_shareevent_args(args: list):
     mgl_flags = {"-mgl", "-maingoinglist"}
     sngl_flags = {"-sngl", "-sharenotgoing"}
     swl_flags = {"-swl", "-sharewaitlist"}
+    clc_flags = {"-clc", "-clickability"}
     visibility_words = ("visible", "hidden", "onlycount")
+    clickability_words = ("on", "off")
 
     target_input = None
     mode = "-onlycount"
     share_notgoing_viz = None
     share_waitlist_viz = None
+    share_clickability = None
 
     tokens = args[:]
     i = 0
@@ -1322,13 +1376,16 @@ def parse_shareevent_args(args: list):
         elif token in swl_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in visibility_words:
             share_waitlist_viz = tokens[i + 1].strip().lower()
             i += 2
+        elif token in clc_flags and i + 1 < len(tokens) and tokens[i + 1].strip().lower() in clickability_words:
+            share_clickability = tokens[i + 1].strip().lower()
+            i += 2
         elif target_input is None:
             target_input = token.strip()
             i += 1
         else:
             i += 1
 
-    return target_input, mode, share_notgoing_viz, share_waitlist_viz
+    return target_input, mode, share_notgoing_viz, share_waitlist_viz, share_clickability
 
 
 async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
@@ -1346,18 +1403,18 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
             text="❌ *Syntax error:* `/shareevent [target_alias/id] [-mgl visible|hidden|onlycount] "
-                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount]`",
+                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount] [-clc on|off]`",
             parse_mode="MarkdownV2",
         )
         return
 
-    target_input, mode, share_notgoing_viz, share_waitlist_viz = parse_shareevent_args(args)
+    target_input, mode, share_notgoing_viz, share_waitlist_viz, share_clickability = parse_shareevent_args(args)
 
     if target_input is None:
         await context.bot.send_message(
             chat_id=main_hub_chat_id,
             text="❌ *Syntax error:* `/shareevent [target_alias/id] [-mgl visible|hidden|onlycount] "
-                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount]`",
+                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount] [-clc on|off]`",
             parse_mode="MarkdownV2",
         )
         return
@@ -1552,10 +1609,10 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO event_shares
-                    (event_id, chat_id, message_id, share_mode, chat_type, share_notgoing_visibility, share_waitlist_visibility)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (event_id, chat_id, message_id, share_mode, chat_type, share_notgoing_visibility, share_waitlist_visibility, share_clickability)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (event_id, str(target_chat_api), str(sent.message_id), mode, chat_type_flag, share_notgoing_viz, share_waitlist_viz),
+                (event_id, str(target_chat_api), str(sent.message_id), mode, chat_type_flag, share_notgoing_viz, share_waitlist_viz, share_clickability),
             )
             conn.commit()
         target_display_name = target_input if alias_row else (target_chat_obj.title or str(target_chat_api))

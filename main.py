@@ -110,13 +110,15 @@ async def on_chat_member_update(update, context):
     if new_member.status in ["member", "administrator", "creator", "restricted"]:
         # User joined or was added
         username = user.username or user.first_name or f"user{user.id}"
-        track_user(chat_id, username, "active", user_id=str(user.id))
+        track_user(chat_id, username, "active", user_id=str(user.id),
+                   first_name=user.first_name, last_name=user.last_name)
         logger.info(f"Auto-tracked new member @{username} in chat {chat_id}")
 
     elif new_member.status in ["left", "kicked"]:
         # User left or was removed
         username = user.username or user.first_name or f"user{user.id}"
-        track_user(chat_id, username, "passive", user_id=str(user.id))
+        track_user(chat_id, username, "passive", user_id=str(user.id),
+                   first_name=user.first_name, last_name=user.last_name)
         logger.info(f"Marked @{username} as passive (left/kicked) in chat {chat_id}")
         # UserPresenceLog will be updated by sync_users_sheet when status changes to LEFT
 
