@@ -1508,8 +1508,9 @@ class TestRefreshusers:
     async def test_appends_new_member_to_users_sheet(self, db_path):
         """
         A chat administrator not yet present in the Users tab must get a
-        new row: USER_ID, USER_NAME, CHAT_ID, STATUS="MEMBER", a live
-        DATE_start timestamp, blank DATE_end, blank ARCHIVED_USER_NAME.
+        new row: USER_ID, FIRST_NAME, LAST_NAME, USER_NAME, CHAT_ID,
+        STATUS="MEMBER", a live DATE_start timestamp, blank DATE_end,
+        blank ARCHIVED_USER_NAME.
         """
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
@@ -1530,9 +1531,13 @@ class TestRefreshusers:
         ws = fake_ss.worksheets["Users"]
         assert len(ws.appended_rows) == 1
         row = ws.appended_rows[0]
-        assert row[0:4] == ["555", "newadmin", "-100123", "MEMBER"]
-        assert row[4], "DATE_start must be set to a live timestamp"
-        assert row[5:7] == ["", ""]  # DATE_end, ARCHIVED_USER_NAME both blank
+        assert row[0] == "555"        # USER_ID
+        assert row[1] == "New"        # FIRST_NAME
+        assert row[3] == "newadmin"   # USER_NAME
+        assert row[4] == "-100123"    # CHAT_ID
+        assert row[5] == "MEMBER"     # STATUS
+        assert row[6], "DATE_start must be set to a live timestamp"
+        assert row[7:9] == ["", ""]   # DATE_end, ARCHIVED_USER_NAME both blank
         reply = msg.reply_text.call_args.args[0]
         assert "Users tab" in reply
 
@@ -1569,8 +1574,8 @@ class TestRefreshusers:
              patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
-        assert ws.cell_updates["B2"] == [["newname"]]
-        assert ws.cell_updates["G2"] == [["oldname"]]
+        assert ws.cell_updates["D2"] == [["newname"]]
+        assert ws.cell_updates["I2"] == [["oldname"]]
 
     async def test_appends_further_archived_names_with_comma(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -1601,7 +1606,7 @@ class TestRefreshusers:
              patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
-        assert ws.cell_updates["G2"] == [["firstname,secondname"]]
+        assert ws.cell_updates["I2"] == [["firstname,secondname"]]
 
     async def test_marks_departed_user_as_left_in_sheet(self, db_path):
         """A Users-sheet row for this CHAT_ID whose person is confirmed gone must get STATUS=Left."""
@@ -1631,7 +1636,7 @@ class TestRefreshusers:
              patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
             await handlers.refreshusers(upd, ctx)
 
-        assert ws.cell_updates["D2"] == [["LEFT"]]
+        assert ws.cell_updates["F2"] == [["LEFT"]]
 
     async def test_does_not_touch_rows_from_other_places(self, db_path):
         """A Users-sheet row belonging to a DIFFERENT CHAT_ID must never be touched by this chat's refresh."""

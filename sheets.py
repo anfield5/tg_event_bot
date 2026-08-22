@@ -110,8 +110,8 @@ async def sync_users_sheet(chat_id, current_members: list):
     accepted for backward compatibility - first_name/last_name just won't
     be written for those entries.
 
-    Columns: USER_ID, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end,
-    ARCHIVED_USER_NAME, FIRST_NAME, LAST_NAME.
+    Columns: USER_ID, FIRST_NAME, LAST_NAME, USER_NAME, CHAT_ID, STATUS,
+    DATE_start, DATE_end, ARCHIVED_USER_NAME.
     A row is uniquely identified by (USER_ID, CHAT_ID) - the same person can
     have separate rows for separate places/groups managed by this bot.
 
@@ -163,24 +163,24 @@ async def sync_users_sheet(chat_id, current_members: list):
                 if old_name and old_name != username:
                     archived     = str(rec.get("ARCHIVED_USER_NAME", "")).strip()
                     new_archived = f"{archived},{old_name}" if archived else old_name
-                    await ws.update(f"B{idx}", [[username]])
-                    await ws.update(f"G{idx}", [[new_archived]])
+                    await ws.update(f"D{idx}", [[username]])
+                    await ws.update(f"I{idx}", [[new_archived]])
                 
                 if status == "left":
                     # LEFT -> MEMBER: update status, clear DATE_end, update DATE_start
-                    await ws.update(f"D{idx}", [["MEMBER"]])
-                    await ws.update(f"E{idx}", [[now2ddmmyy()]])
-                    await ws.update(f"F{idx}", [[""]])
+                    await ws.update(f"F{idx}", [["MEMBER"]])
+                    await ws.update(f"G{idx}", [[now2ddmmyy()]])
+                    await ws.update(f"H{idx}", [[""]])
                 # If status is already MEMBER, do nothing
 
                 if first_name:
-                    await ws.update(f"H{idx}", [[first_name]])
+                    await ws.update(f"B{idx}", [[first_name]])
                 if last_name:
-                    await ws.update(f"I{idx}", [[last_name]])
+                    await ws.update(f"C{idx}", [[last_name]])
             else:
                 # New user: add with MEMBER status
-                await ws.append_row([str(user_id), username, str(chat_id), "MEMBER", now2ddmmyy(), "",
-                                      "", first_name or "", last_name or ""])
+                await ws.append_row([str(user_id), first_name or "", last_name or "", username, str(chat_id),
+                                      "MEMBER", now2ddmmyy(), "", ""])
 
         # Handle users who left the group
         for key, (idx, rec) in index.items():
@@ -190,8 +190,8 @@ async def sync_users_sheet(chat_id, current_members: list):
                 if status == "member":
                     # MEMBER -> LEFT: update status, set DATE_end, add to UserPresenceLog
                     date_start = str(rec.get("DATE_start", "")).strip()
-                    await ws.update(f"D{idx}", [["LEFT"]])
-                    await ws.update(f"F{idx}", [[now2ddmmyy()]])
+                    await ws.update(f"F{idx}", [["LEFT"]])
+                    await ws.update(f"H{idx}", [[now2ddmmyy()]])
                     # Add to UserPresenceLog only if not already logged
                     await log_user_presence_if_not_exists(chat_id, uid, place, date_start, now2ddmmyy())
                 # If status is already LEFT, do nothing
