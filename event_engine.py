@@ -445,11 +445,46 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     with get_connection() as conn2:
         cursor2 = conn2.cursor()
         cursor2.execute(
-            "SELECT username, guests, status FROM event_users "
+            "SELECT username, guests, status, user_id, chat_id FROM event_users "
             "WHERE event_id = ? AND (guests > 0 OR status IN ('going', 'kicked'))",
             (event_id,),
         )
-        all_child_going_for_buttons = cursor2.fetchall()
+        all_child_going_for_buttons_raw = cursor2.fetchall()
+
+    # Verification-mode participant buttons show a resolved "First Last"
+    # name (matching the message text's own _mention_link format)
+    # instead of the bare username - keyboard.py stays DB-free by design,
+    # so this dict is built here and passed in ready-made.
+    display_names = {}
+    if event_status == 1:
+        with get_connection() as conn3:
+            cursor3 = conn3.cursor()
+
+            def _resolve(uname, uid_hint=None, resolve_chat_id=None):
+                resolve_chat_id = resolve_chat_id or main_chat_id
+                uid = uid_hint
+                if not uid or not str(uid).lstrip("-").isdigit():
+                    cursor3.execute(
+                        "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+                        (str(resolve_chat_id), uname),
+                    )
+                    row = cursor3.fetchone()
+                    uid = row[0] if row else None
+                if uid and str(uid).lstrip("-").isdigit():
+                    display_names[uname] = get_display_name(str(resolve_chat_id), str(uid), uname)
+
+            for entry in master_going:
+                u_name = entry.split(" (")[0]
+                u_id   = entry.split("(")[-1].rstrip(")") if "(" in entry else None
+                _resolve(u_name, u_id)
+            for u_name in master_kicked:
+                _resolve(u_name)
+            for u_name in master_counters:
+                _resolve(u_name)
+            for ch_username, _, _, ch_user_id, ch_chat_id in all_child_going_for_buttons_raw:
+                _resolve(ch_username, ch_user_id, resolve_chat_id=ch_chat_id)
+
+    all_child_going_for_buttons = [(u, g, s) for u, g, s, _, _ in all_child_going_for_buttons_raw]
 
     is_full = total_limit is not None and global_total >= total_limit
 
@@ -462,6 +497,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         verification_enabled=verification_enabled,
         add_extra_member_enabled=add_extra_member_enabled,
         is_full=is_full,
+        display_names=display_names,
     )
 
     try:

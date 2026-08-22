@@ -106,6 +106,10 @@ def _seed_feature_flags(cursor):
         ("stats", "/stats (event activity stats for this group)", "PRO", None,
          "Shows how many events this hub has created, how many were closed, and total/average headcount "
          "across every closed event - a quick snapshot of the bot's usage in this specific group."),
+        ("clickability", "-clc/-clickability flag on /newevent, /editevent, /shareevent", "PRO", None,
+         "Whether names in the event post are clickable mentions (tg://user?id=...) or plain, non-linked "
+         "text. When gated off, the flag is rejected with a clear error instead of being silently ignored; "
+         "every event defaults to clickable (on) regardless of tier."),
     ]
     seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(

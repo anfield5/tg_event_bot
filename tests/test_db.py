@@ -530,11 +530,11 @@ class TestFeatureFlags:
     overwritten by a second init_db() call.
     """
 
-    def test_seeds_fifteen_flags_on_fresh_db(self, tmp_path):
+    def test_seeds_sixteen_flags_on_fresh_db(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         rows = get_feature_flags(db_path=path)
-        assert len(rows) == 15
+        assert len(rows) == 16
 
     def test_free_pro_admin_tiers_all_present(self, tmp_path):
         path = str(tmp_path / "t.db")

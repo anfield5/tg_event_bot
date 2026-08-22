@@ -178,8 +178,8 @@ class TestNewevent:
     async def test_sends_open_state_keyboard_not_verification(self, db_path):
         """
         Regression test: the keyboard sent alongside a freshly created event
-        must be the OPEN state (Going/Not Going/ADD/Remove/Verify&Close/
-        Cancel Event) - NOT the verification-mode-only keyboard (Add Extra
+        must be the OPEN state (Going/Not Going/ADD/Remove/Verify/
+        Cancel) - NOT the verification-mode-only keyboard (Add Extra
         Player/Save & Close Event). A stale hardcoded event_status value at
         the call site once caused every new event to display with the wrong
         (verification-only) buttons despite event_status=0 being stored
@@ -202,8 +202,8 @@ class TestNewevent:
         assert any("Not Going" in t for t in texts), "open-state Not Going button missing"
         assert any("ADD" in t for t in texts), "open-state ADD button missing"
         assert any("Remove" in t for t in texts), "open-state Remove button missing"
-        assert any("Verify&Close" in t for t in texts), "Verify&Close button missing"
-        assert any("Cancel Event" in t for t in texts), "Cancel Event button missing"
+        assert any("Verify" in t for t in texts), "Verify button missing"
+        assert any("Cancel" in t for t in texts), "Cancel button missing"
 
         # And NOT the verification-only keyboard
         assert not any("Save & Close Event" in t for t in texts), \
@@ -6974,6 +6974,7 @@ class TestClickabilityFlag:
     -sngl/-swl."""
 
     async def test_newevent_clc_off(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
         chat = make_chat(chat_id=-100123, chat_type="supergroup")
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
@@ -6986,6 +6987,19 @@ class TestClickabilityFlag:
         conn = sqlite3.connect(db_path)
         row = conn.execute("SELECT clickability FROM events WHERE name='Party'").fetchone()
         assert row == ("off",)
+
+    async def test_newevent_clc_rejected_on_free_hub(self, db_path):
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["Party", "-clc", "off"])
+
+        await handlers.newevent(upd, ctx)
+
+        assert "requires a higher tier" in msg.reply_text.call_args.args[0]
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT * FROM events WHERE name='Party'").fetchone()
+        assert row is None
 
     async def test_newevent_without_clc_defaults_on(self, db_path):
         chat = make_chat(chat_id=-100123, chat_type="supergroup")
@@ -7002,6 +7016,7 @@ class TestClickabilityFlag:
         assert row == ("on",)
 
     async def test_editevent_clickability_independent_of_other_flags(self, db_path):
+        insert_premium(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
@@ -7022,6 +7037,7 @@ class TestClickabilityFlag:
         assert row == ("off", None)
 
     async def test_shareevent_clc_stored_per_share(self, db_path):
+        insert_premium(db_path, chat_id="-100")
         conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
@@ -7069,6 +7085,74 @@ class TestClickabilityFlag:
         text = bot.edit_message_text.call_args_list[0].kwargs["text"]
         assert "Alice A" in text
         assert "tg://user" not in text
+
+    async def test_editevent_clc_rejected_on_free_hub(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, clickability)
+               VALUES ('ev1','-100123','1','Party','👍','❌',0,'[]','[]','{}','[]','on')"""
+        )
+        conn.commit()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-clc", "off"])
+
+        await handlers.editevent(upd, ctx)
+
+        assert "requires a higher tier" in msg.reply_text.call_args.args[0]
+        row = conn.execute("SELECT clickability FROM events WHERE event_id='ev1'").fetchone()
+        assert row == ("on",)  # unchanged
+
+    async def test_shareevent_clc_rejected_on_free_hub(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200", "-clc", "off"])
+
+        await handlers.shareevent(upd, ctx)
+
+        sent = bot.send_message.call_args
+        assert "requires a higher tier" in sent.kwargs.get("text", "")
+        row = conn.execute("SELECT * FROM event_shares WHERE chat_id='-200'").fetchone()
+        assert row is None  # share was never created
+
+    async def test_shareevent_without_clc_still_works_on_free_hub(self, db_path):
+        """Not passing -clc at all must not be gated - only USING the
+        flag requires the tier."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute("SELECT share_clickability FROM event_shares WHERE chat_id='-200'").fetchone()
+        assert row == (None,)
 
     async def test_per_share_override_beats_event_default(self, db_path):
         """A share with its OWN clickability override must use that
@@ -7140,3 +7224,203 @@ class TestHelpMentionsClickabilityFlag:
         text = query.edit_message_text.call_args.args[0]
         assert "\\-clc" in text
         assert "\\-clickability" in text
+
+
+class TestVerificationModeShowsRealNames:
+    """Item 2: verification-mode keyboard buttons (kick/return list) now
+    show a resolved 'First Last' name instead of the bare username,
+    matching the message text's own _mention_link format. keyboard.py
+    stays DB-free by design - event_engine.py builds a display_names
+    dict and passes it in ready-made.
+
+    Real bug found and fixed while implementing this: child-chat
+    participants were resolved against main_chat_id (the hub) instead
+    of their OWN chat_id - since first_name/last_name are stored per
+    chat in main_group_users, this meant a child participant's real
+    name could never be found, always falling back to their username."""
+
+    async def test_master_going_participant_shows_real_name(self, db_path):
+        db.track_user("-100", "alice", "active", user_id="1", first_name="Alice", last_name="Petrenko")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,?,'[]','{}','[]')""",
+            (json.dumps(["alice (1)"]),),
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        master_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        kb = master_call.kwargs["reply_markup"]
+        button_texts = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("Alice Petrenko" in t for t in button_texts)
+        assert not any(t == "👤 alice" for t in button_texts)
+
+    async def test_child_participant_resolved_against_own_chat_not_hub(self, db_path):
+        """The real bug: child participants must resolve against THEIR
+        OWN chat_id, not main_chat_id."""
+        db.track_user("-200", "bob", "active", user_id="2", first_name="Bob", last_name="Ivanov")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','2','bob','going',0)"
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        master_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        kb = master_call.kwargs["reply_markup"]
+        button_texts = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("Bob Ivanov" in t for t in button_texts)
+        assert not any(t == "📢 bob" for t in button_texts)
+
+    async def test_unresolvable_username_falls_back_gracefully(self, db_path):
+        """No user_id anywhere on file - keyboard falls back to the
+        plain username, same as before this feature existed."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,?,'[]','{}','[]')""",
+            (json.dumps(["ghostuser (999)"]),),
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        master_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        kb = master_call.kwargs["reply_markup"]
+        button_texts = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("ghostuser" in t for t in button_texts)
+
+
+class TestHelpReflectsClickabilityGating:
+    """Item 4: /help correctly reflects clickability's new gated status
+    (item 3) - "Requires a higher tier" for -clc specifically, while
+    -ngl (a genuinely different, still-ungated flag) correctly keeps
+    saying "ungated at every tier". A prior check was a false alarm:
+    the phrase legitimately belongs to -ngl's own description, not a
+    leftover from -clc."""
+
+    async def test_main_help_clc_line_says_gated_not_ungated(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        clc_line = next(l for l in text.split("\n") if l.startswith("\\-clc \\|"))
+        assert "Requires a higher tier" in clc_line
+        assert "ungated" not in clc_line
+
+    async def test_main_help_ngl_line_still_says_ungated(self, db_path):
+        """-ngl was never gated by item 3 - must still correctly claim so."""
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        ngl_line = next(l for l in text.split("\n") if l.startswith("\\-ngl \\|"))
+        assert "ungated" in ngl_line
+
+    async def test_distribution_section_clc_line_says_gated(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_distribution"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        clc_line = next(l for l in text.split("\n") if l.startswith("\\-clc \\|"))
+        assert "Requires a higher tier" in clc_line
+
+
+class TestHelpAuditFindings:
+    """Full /help audit against every registered command and flag
+    (main.py's CommandHandler list, parse_event_args/
+    parse_shareevent_args' flag sets). Found and fixed one real gap:
+    /refreshusersall was a real, standalone command (no args, PRO-gated
+    via 'monitoring', covers hub + every monitored child) but only ever
+    appeared in passing within help_monitoring's prose ("...can be
+    synced with /refreshusersall"), never with its own explicit
+    description line - unlike /refreshusers, which does get one in
+    help_users. Everything else audited (owner-only section via
+    /help -a, /waitlist, /setsheet, /stats, every newevent/editevent/
+    shareevent flag) was already correctly documented."""
+
+    async def test_refreshusersall_has_its_own_help_line(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_monitoring"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "/refreshusersall \\- Sync user list" in text
+
+    async def test_owner_help_documents_all_four_owner_commands(self, db_path):
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            chat = make_chat(chat_id=-1)
+            user = make_user(user_id=1)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(args=["-a"])
+
+            await help_system.help_command(upd, ctx)
+
+            text = msg.reply_text.call_args.args[0]
+            for cmd in ["/setsub", "/allgroups", "/allchannels", "/updatefeature"]:
+                assert cmd in text

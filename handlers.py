@@ -320,8 +320,18 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     # the ability to hide/summarize it, available at every tier.
     notgoing_visibility_value = notgoing_viz_raw if notgoing_viz_raw is not None else "visible"
 
-    # -clc/-clickability is ungated too, same reasoning as -ngl.
-    clickability_value = clickability_raw if clickability_raw is not None else "on"
+    # -clc/-clickability is now a gated feature (item 3) - was ungated
+    # before, matching -ngl's own reasoning, but is now tier-restricted
+    # like -limit/-wl.
+    clickability_value = "on"
+    if clickability_raw is not None:
+        if not has_feature(chat_id, "clickability"):
+            await message.reply_text(
+                f"{ICON_WARNING} `\\-clc`/`\\-clickability` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+        clickability_value = clickability_raw
 
     event_id = str(uuid4())[:8]
 
@@ -488,8 +498,14 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         if notgoing_viz_raw is not None:
             updated_notgoing_visibility = notgoing_viz_raw
 
-        # -clc/-clickability is ungated too, same reasoning.
+        # -clc/-clickability is now a gated feature (item 3).
         if clickability_raw is not None:
+            if not has_feature(chat_id, "clickability"):
+                await update.message.reply_text(
+                    f"{ICON_WARNING} `\\-clc`/`\\-clickability` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
             updated_clickability = clickability_raw
 
         if limit_raw is not None:
@@ -1415,6 +1431,15 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             chat_id=main_hub_chat_id,
             text="❌ *Syntax error:* `/shareevent [target_alias/id] [-mgl visible|hidden|onlycount] "
                  "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount] [-clc on|off]`",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    # -clc/-clickability is now a gated feature (item 3).
+    if share_clickability is not None and not has_feature(main_hub_chat_id, "clickability"):
+        await context.bot.send_message(
+            chat_id=main_hub_chat_id,
+            text=f"{ICON_WARNING} `\\-clc`/`\\-clickability` requires a higher tier\\. Contact the bot owner to upgrade\\.",
             parse_mode="MarkdownV2",
         )
         return

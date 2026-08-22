@@ -153,7 +153,7 @@ def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
         "    visible \\(default\\) \\- shown as before\n"
         "    hidden \\- section removed from the post entirely\n"
         "    onlycount \\- shows just the total count, no names\n"
-        "\\-clc \\| \\-clickability on\\|off \\- whether names in the post are clickable mentions, ungated at every tier\n"
+        "\\-clc \\| \\-clickability on\\|off \\- whether names in the post are clickable mentions\\. Requires a higher tier\\.\n"
         "    on \\(default\\) \\- every name is a clickable mention\n"
         "    off \\- every name is plain, non\\-linked text\n"
         f"{waitlist_line}"
@@ -259,14 +259,16 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "  • onlycount \\(default\\): Show only total going count\n\n"
             "\\-sngl \\| \\-sharenotgoing \\- Not Going list visibility override for this share \\(if omitted, inherits the event's own \\-ngl setting\\)\n"
             "\\-swl \\| \\-sharewaitlist \\- Waitlist visibility override for this share \\(if omitted, inherits the event's own \\-wl setting\\)\n"
-            "\\-clc \\| \\-clickability on\\|off \\- Name clickability override for this share \\(if omitted, inherits the event's own \\-clc setting\\)\n\n"
+            "\\-clc \\| \\-clickability on\\|off \\- Name clickability override for this share \\(if omitted, inherits the event's own \\-clc setting\\)\\. Requires a higher tier\\.\n\n"
             f"{shareevent_limit_line}"
         ),
         "help_monitoring": (
             "🔍 *Monitoring*\n\n"
             "/addmonitor \\[chat\\_id\\] \\- Add group/channel to monitor list\n"
             "/removemonitor \\[chat\\_id\\] \\- Remove from monitor list\n"
-            "/listmonitors \\- Show all monitored groups/channels\n\n"
+            "/listmonitors \\- Show all monitored groups/channels\n"
+            "/refreshusersall \\- Sync user list for THIS group PLUS every monitored child under it in one go "
+            "\\(heavier/slower than plain /refreshusers, since it touches every monitored chat\\)\n\n"
             "Monitored chats are tracked for user presence and can be synced with /refreshusersall"
         ),
         "help_dm_access": (
@@ -284,15 +286,15 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"🗳 *Event Lifecycle Buttons*\n\n"
             f"  • Going / Not Going \\- vote, available to everyone\n"
             f"  • ADD / Remove \\- adjust your own guest count, available to everyone\n"
-            f"  • {ICON_VERIFICATION} Verify&Close \\- admin only, locks voting and opens roster review\n"
-            f"  • {ICON_CANCEL_EVENT} Cancel Event \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
+            f"  • {ICON_VERIFICATION} Verify \\- admin only, locks voting and opens roster review\n"
+            f"  • {ICON_CANCEL_EVENT} Cancel \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
             f"  • \\- / \\+ \\- admin only, adjust guest count\n"
             f"  • \\{ICON_ADD} Add Extra Member \\- admin only, add by username\n"
             f"  • {ICON_SAVE} Save & Close Event \\- admin only, finalize and export to EventUsers\n\n"
-            f"Verify&Close and Add Extra Member are both locked in per\\-event at "
+            f"Verify and Add Extra Member are both locked in per\\-event at "
             f"creation time \\- changing either via /updatefeature never affects an "
-            f"event already running\\. If Verify&Close is disabled for a hub, the "
+            f"event already running\\. If Verify is disabled for a hub, the "
             f"OPEN\\-state button closes the event directly instead of entering review\\."
         ),
     }

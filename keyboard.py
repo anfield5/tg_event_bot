@@ -29,6 +29,7 @@ def create_event_keyboard(
     verification_enabled: bool = True,
     add_extra_member_enabled: bool = True,
     is_full: bool = False,
+    display_names: dict = None,
 ) -> InlineKeyboardMarkup:
     """
     Generates dynamic inline keyboards.
@@ -47,12 +48,19 @@ def create_event_keyboard(
                     orange/rust tone by default; there's no way to force a
                     different or more saturated orange beyond that.
 
+    display_names: optional {username: "First Last"} map for the
+    verification-mode participant rows (event_status == 1) - shows the
+    real name instead of the bare username when available. This module
+    stays DB-free by design (see the module docstring), so the CALLER
+    resolves names (via db.get_display_name) and passes the finished
+    map in; a username missing from the map just falls back to itself.
+
     verification_enabled / add_extra_member_enabled: read from the event's
     OWN stored feature_snapshot (see db.events.feature_snapshot), NOT the
     hub's current live tier - an event keeps whatever rules applied when it
     was created, even if the hub's tier or feature_flags change later.
     verification_enabled=False changes the OPEN-state button to
-    "Save&Close" (callback "directclose_") instead of "Verify&Close"
+    "Save&Close" (callback "directclose_") instead of "Verify"
     (callback "close_") - skipping the review step entirely, since there's
     nothing to gate it into. add_extra_member_enabled=False simply omits
     the "Add Extra Member" button during verification, rather than showing
@@ -79,13 +87,13 @@ def create_event_keyboard(
         ])
         if not is_child:
             close_button = (
-                InlineKeyboardButton(f"{ICON_VERIFICATION} Verify&Close", callback_data=f"close_{event_id}")
+                InlineKeyboardButton(f"{ICON_VERIFICATION} Verify", callback_data=f"close_{event_id}")
                 if verification_enabled else
                 InlineKeyboardButton(f"{ICON_SAVE} Save&Close", callback_data=f"directclose_{event_id}")
             )
             buttons.append([
                 close_button,
-                InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel Event", callback_data=f"cancel_{event_id}"),
+                InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel", callback_data=f"cancel_{event_id}"),
             ])
 
     elif event_status == 1 and not is_child:
@@ -94,6 +102,7 @@ def create_event_keyboard(
         counters          = counters or {}
         child_users_rows  = child_users_rows or []
         kicked_users      = kicked_users or set()
+        display_names     = display_names or {}
 
         going_usernames     = {entry.split(" (")[0] for entry in going_list}
         all_relevant_users  = going_usernames | kicked_users | set(counters.keys())
@@ -102,15 +111,16 @@ def create_event_keyboard(
             guest_count = counters.get(username, 0)
             is_going    = username in going_usernames
             is_kicked   = username in kicked_users
+            display     = display_names.get(username, username)
 
             if is_going:
                 buttons.append([
-                    InlineKeyboardButton(f"{ICON_PERSON} {username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_PERSON} {display}", callback_data="noop"),
                     InlineKeyboardButton(f"{ICON_KICK} Kick",          callback_data=f"kick_{event_id}:{username}"),
                 ])
             elif is_kicked:
                 buttons.append([
-                    InlineKeyboardButton(f"{ICON_PERSON} {username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_PERSON} {display}", callback_data="noop"),
                     InlineKeyboardButton(f"{ICON_RETURN} Return",      callback_data=f"return_{event_id}:{username}"),
                 ])
             else:
@@ -123,7 +133,7 @@ def create_event_keyboard(
             # Row B: guest count + ➖ + ➕ (➖ before ➕; these glyphs render
             # orange by default in most emoji fonts - see docstring above)
             # Show "2G from username" format for clarity
-            guest_label = f"{guest_count}G: {username}" if guest_count > 0 else "0G"
+            guest_label = f"{guest_count}G: {display}" if guest_count > 0 else "0G"
             buttons.append([
                 InlineKeyboardButton(guest_label,  callback_data="noop"),
                 InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:{username}"),
@@ -132,24 +142,25 @@ def create_event_keyboard(
 
         # ── Child-chat participants ────────────────────────────────────────
         for ch_username, ch_guests, ch_status in child_users_rows:
-            is_going  = ch_status == "going"
-            is_kicked = ch_status == "kicked"
+            is_going    = ch_status == "going"
+            is_kicked   = ch_status == "kicked"
+            ch_display  = display_names.get(ch_username, ch_username)
 
             if is_going:
                 buttons.append([
-                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_display}", callback_data="noop"),
                     InlineKeyboardButton(f"{ICON_KICK} Kick",                     callback_data=f"kick_{event_id}:ch-{ch_username}"),
                 ])
             elif is_kicked:
                 buttons.append([
-                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_username}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_display}", callback_data="noop"),
                     InlineKeyboardButton(f"{ICON_RETURN} Return",                 callback_data=f"return_{event_id}:ch-{ch_username}"),
                 ])
             else:
                 if ch_guests <= 0:
                     continue
 
-            guest_label = f"{ch_guests}G: {ch_username}" if ch_guests > 0 else "0G"
+            guest_label = f"{ch_guests}G: {ch_display}" if ch_guests > 0 else "0G"
             buttons.append([
                 InlineKeyboardButton(guest_label,  callback_data="noop"),
                 InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:ch-{ch_username}"),

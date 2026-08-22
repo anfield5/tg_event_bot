@@ -201,10 +201,10 @@ class TestCreateEventKeyboard:
         assert any("Remove" in t for t in texts)
 
     def test_open_event_master_has_verification_button(self):
-        # Non-child view must show a "Verify&Close" button
+        # Non-child view must show a "Verify" button
         kb    = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
         flat  = [btn for row in kb.inline_keyboard for btn in row]
-        assert any("Verify&Close" in b.text for b in flat)
+        assert any("Verify" in b.text for b in flat)
 
     def test_open_event_master_has_cancel_event_button(self):
         kb    = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
@@ -212,19 +212,19 @@ class TestCreateEventKeyboard:
         assert any(b.callback_data == f"cancel_{self.EVENT_ID}" for b in flat)
 
     def test_verify_and_cancel_share_a_row_verify_first(self):
-        # Verify&Close and Cancel Event sit on the SAME row - Verify&Close
-        # on the left, Cancel Event on the right.
+        # Verify and Cancel sit on the SAME row - Verify
+        # on the left, Cancel on the right.
         kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=False)
-        row  = next(r for r in kb.inline_keyboard if any("Verify&Close" in b.text for b in r))
+        row  = next(r for r in kb.inline_keyboard if any("Verify" in b.text for b in r))
         assert len(row) == 2
-        assert "Verify&Close" in row[0].text
+        assert "Verify" in row[0].text
         assert row[1].callback_data == f"cancel_{self.EVENT_ID}"
 
     def test_open_event_child_has_no_verification_button(self):
         # Child views must NOT show the close/verification button
         kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True)
         flat = [btn for row in kb.inline_keyboard for btn in row]
-        assert not any("Verify&Close" in b.text for b in flat)
+        assert not any("Verify" in b.text for b in flat)
 
     def test_open_event_child_has_no_cancel_event_button(self):
         kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN, is_child=True)
@@ -445,7 +445,7 @@ class TestCreateEventKeyboardFeatureSnapshot:
             is_child=False, verification_enabled=False,
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
-        assert not any("Verify&Close" in b.text for b in flat)
+        assert not any("Verify" in b.text for b in flat)
         assert any("Save&Close" in b.text for b in flat)
 
     def test_verification_disabled_uses_directclose_callback(self):
@@ -463,7 +463,7 @@ class TestCreateEventKeyboardFeatureSnapshot:
             is_child=False, verification_enabled=True,
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
-        close_btn = next(b for b in flat if "Verify&Close" in b.text)
+        close_btn = next(b for b in flat if "Verify" in b.text)
         assert close_btn.callback_data == f"close_{self.EVENT_ID}"
 
     def test_add_extra_member_disabled_hides_the_button(self):
