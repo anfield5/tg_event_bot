@@ -73,6 +73,29 @@ async def _validate_limit_flag(message, chat_id: str, limit_raw: str):
     return int(limit_raw)
 
 
+async def _validate_waitlist_visibility_flag(message, chat_id: str, waitlist_viz_raw: str):
+    """
+    Validates -wl/-waitlist's gate (same event_limit feature as -limit,
+    since it's the same underlying waitlist mechanic - can now be set
+    independently of -limit in the same command). Shared by newevent and
+    editevent, which had identical validation logic duplicated inline
+    before this extraction.
+
+    Returns the raw value unchanged on success (already validated to be
+    one of visible/hidden/onlycount by parse_event_args' own lookahead
+    matching, so no further parsing needed here). Returns None if a
+    reply was already sent to the user (the caller should `return`
+    immediately in that case, without proceeding any further).
+    """
+    if not has_feature(chat_id, "event_limit"):
+        await message.reply_text(
+            f"{ICON_WARNING} `\\-wl`/`\\-waitlist` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+            parse_mode="MarkdownV2",
+        )
+        return None
+    return waitlist_viz_raw
+
+
 def parse_event_args(args: list):
     """
     Parses arguments for /newevent and /editevent.
@@ -272,13 +295,10 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     # (e.g. set now, raise the actual -limit later via /editevent).
     waitlist_visibility_value = "hidden"
     if waitlist_viz_raw is not None:
-        if not has_feature(chat_id, "event_limit"):
-            await message.reply_text(
-                f"{ICON_WARNING} `\\-wl`/`\\-waitlist` requires a higher tier\\. Contact the bot owner to upgrade\\.",
-                parse_mode="MarkdownV2",
-            )
+        validated_viz = await _validate_waitlist_visibility_flag(message, chat_id, waitlist_viz_raw)
+        if validated_viz is None:
             return
-        waitlist_visibility_value = waitlist_viz_raw
+        waitlist_visibility_value = validated_viz
 
     # -ngl/-notgoinglist is ungated - the Not Going list has always been
     # visible to everyone with no tier restriction, this flag just adds
@@ -440,13 +460,10 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         # right after -limit's number) - still requires event_limit,
         # since it's the same underlying waitlist mechanic.
         if waitlist_viz_raw is not None:
-            if not has_feature(chat_id, "event_limit"):
-                await update.message.reply_text(
-                    f"{ICON_WARNING} `\\-wl`/`\\-waitlist` requires a higher tier\\. Contact the bot owner to upgrade\\.",
-                    parse_mode="MarkdownV2",
-                )
+            validated_viz = await _validate_waitlist_visibility_flag(update.message, chat_id, waitlist_viz_raw)
+            if validated_viz is None:
                 return
-            updated_waitlist_visibility = waitlist_viz_raw
+            updated_waitlist_visibility = validated_viz
 
         # -ngl/-notgoinglist is ungated, same as newevent.
         if notgoing_viz_raw is not None:
@@ -1257,26 +1274,31 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
 # ---------------------------------------------------------------------------
 
 @register_hub_command("shareevent")
-async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+def parse_shareevent_args(args: list):
     """
-    Forwards a synced sub-view of the active event to a child group/channel.
-    All error messages route back to the main hub group.
+    Parses arguments for /shareevent.
+
+    Supported flags
+    ───────────────
+    -mgl / -maingoinglist visible|hidden|onlycount – Going list visibility
+        for this specific share (defaults to onlycount, matching the
+        pre-existing default before this flag was introduced).
+    -sngl / -sharenotgoing visible|hidden|onlycount – Not Going list
+        visibility override for this share; None if omitted (inherits
+        the event's own -ngl setting).
+    -swl / -sharewaitlist visible|hidden|onlycount – Waitlist visibility
+        override for this share; None if omitted (inherits the event's
+        own -wl setting).
+
+    The first token that isn't consumed by one of the 3 flags above is
+    the target (alias or chat_id) - order-independent, so flags can
+    appear before or after it.
+
+    Returns: (target_input, mode, share_notgoing_viz, share_waitlist_viz)
+    target_input is None if no target token was found at all (the
+    caller's job to reject that as a syntax error). mode is always one
+    of "-visible"/"-hidden"/"-onlycount" (never None).
     """
-    main_hub_chat_id = await resolve_hub_chat_id(update, context, "shareevent", override_chat_id)
-    if main_hub_chat_id is None:
-        return
-    user_id          = update.effective_user.id
-    args             = context.args
-
-    if len(args) < 1:
-        await context.bot.send_message(
-            chat_id=main_hub_chat_id,
-            text="❌ *Syntax error:* `/shareevent [target_alias/id] [-mgl visible|hidden|onlycount] "
-                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount]`",
-            parse_mode="MarkdownV2",
-        )
-        return
-
     mgl_flags = {"-mgl", "-maingoinglist"}
     sngl_flags = {"-sngl", "-sharenotgoing"}
     swl_flags = {"-swl", "-sharewaitlist"}
@@ -1305,6 +1327,31 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             i += 1
         else:
             i += 1
+
+    return target_input, mode, share_notgoing_viz, share_waitlist_viz
+
+
+async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+    """
+    Forwards a synced sub-view of the active event to a child group/channel.
+    All error messages route back to the main hub group.
+    """
+    main_hub_chat_id = await resolve_hub_chat_id(update, context, "shareevent", override_chat_id)
+    if main_hub_chat_id is None:
+        return
+    user_id          = update.effective_user.id
+    args             = context.args
+
+    if len(args) < 1:
+        await context.bot.send_message(
+            chat_id=main_hub_chat_id,
+            text="❌ *Syntax error:* `/shareevent [target_alias/id] [-mgl visible|hidden|onlycount] "
+                 "[-sngl visible|hidden|onlycount] [-swl visible|hidden|onlycount]`",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    target_input, mode, share_notgoing_viz, share_waitlist_viz = parse_shareevent_args(args)
 
     if target_input is None:
         await context.bot.send_message(

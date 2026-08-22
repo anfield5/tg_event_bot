@@ -1292,6 +1292,9 @@ class TestGoingFromLabel:
 # ── /refreshusers ─────────────────────────────────────────────────────────────
 
 class TestRefreshusers:
+    """/refreshusers - syncs the main hub's own tracked user list against
+    live Telegram membership and the bound Google Sheet (if any). Admin-
+    only; verifies presence via get_chat_member for every tracked user."""
 
     async def test_non_admin_is_rejected(self, db_path):
         bot              = make_bot()
@@ -3969,9 +3972,14 @@ class TestCreateEventKeyboardStandby:
 
 
 class TestNeweventEditeventLimitFlag:
-    """-limit N [visible|hidden] on newevent/editevent - combined single
-    flag (not a separate -reserve keyword), gated behind the event_limit
-    feature (PRO by default)."""
+    """-limit N's own number/gating/syntax on newevent AND editevent
+    (including basic -limit+-wl combinations for visibility-value
+    coverage). Waitlist visibility itself is a separate -wl flag since
+    the -w/-wl redesign (see TestValidateWaitlistVisibilityFlagHelper
+    for its own dedicated gating tests). Distinct from
+    TestEditeventVisibilityAndLimitChanges below, which specifically
+    covers editevent's promotion-from-Waitlist logic when the limit is
+    raised with people already queued - not covered here."""
 
     @pytest.fixture(autouse=True)
     def _patch_sheets(self):
@@ -6873,3 +6881,25 @@ class TestHelpUpdatedForNewFlagsAndStats:
         assert "\\-sngl" in text
         assert "\\-swl" in text
         assert "\\-v\\|" not in text  # old shorthand syntax gone
+
+
+class TestValidateWaitlistVisibilityFlagHelper:
+    """Refactor: extracted -wl/-waitlist's gating logic (previously
+    identical code duplicated inline in both newevent and editevent)
+    into a shared helper, mirroring _validate_limit_flag's own
+    established pattern right above it."""
+
+    async def test_free_hub_rejected_with_message(self, db_path):
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        result = await handlers._validate_waitlist_visibility_flag(msg, "-1", "visible")
+        assert result is None
+        assert "requires a higher tier" in msg.reply_text.call_args.args[0]
+
+    async def test_pro_hub_returns_value_unchanged(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        result = await handlers._validate_waitlist_visibility_flag(msg, "-1", "onlycount")
+        assert result == "onlycount"
+        msg.reply_text.assert_not_called()

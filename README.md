@@ -69,9 +69,10 @@ Key relationships:
   feature's `min_tier` - any tier above is unlimited by construction,
   so there's no way to misconfigure a higher tier as more restricted
   than a lower one.
-- `command_log` (every command run, incl. DMs) and `all_chats_bot_log`
-  (add/remove history) are DB-only - neither has a Sheets counterpart, so
-  they're omitted from the diagram above.
+- `command_log` (every command run, incl. DMs) is DB-only - it has no
+  Sheets counterpart, so it's omitted from the diagram above.
+  `all_chats_bot_log` (add/remove history) IS mirrored to the Control
+  Sheet's `chats_log` tab - see the column reference below.
 
 **Full column reference:**
 
@@ -83,6 +84,7 @@ owner-only, always kept in sync regardless of tier):
 | `GROUPS` | CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD | mirrors `all_groups`, on every `/setsub` |
 | `CHANNELS` | CHAT_ID, CHAT_NAME, VISIBILITY, DATE_BOT_ADD | mirrors `all_channels` |
 | `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION | mirrors `feature_flags`, on every `/updatefeature` |
+| `chats_log` | CHAT_ID, DATE_BOT_ADD, DATE_BOT_REMOVED | mirrors `all_chats_bot_log` - the historical add/remove trail, pushed immediately whenever the bot is removed from a group/channel |
 
 **Per-hub Sheet** (bound via `/setsheet`, PRO-only - a FREE hub writes
 nothing to Sheets at all):

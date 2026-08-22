@@ -10,7 +10,7 @@ No mocking needed here; these functions have zero side-effects.
 """
 
 import pytest
-from handlers import parse_event_args, parse_user_args, create_event_keyboard
+from handlers import parse_event_args, parse_user_args, create_event_keyboard, parse_shareevent_args
 from telegram import InlineKeyboardMarkup
 
 
@@ -485,3 +485,32 @@ class TestCreateEventKeyboardFeatureSnapshot:
         )
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert any("Add Extra Member" in b.text for b in flat)
+
+
+class TestParseShareeventArgs:
+    """Refactor: extracted from shareevent()'s own body (previously
+    inline, matching parse_event_args' established pattern for
+    newevent/editevent) - independently testable, and shortens
+    shareevent() itself."""
+
+    def test_all_three_flags_together(self):
+        result = parse_shareevent_args(["-200", "-mgl", "visible", "-sngl", "onlycount", "-swl", "hidden"])
+        assert result == ("-200", "-visible", "onlycount", "hidden")
+
+    def test_no_flags_defaults(self):
+        result = parse_shareevent_args(["-300"])
+        assert result == ("-300", "-onlycount", None, None)
+
+    def test_target_order_independent(self):
+        result = parse_shareevent_args(["-mgl", "hidden", "-400"])
+        assert result == ("-400", "-hidden", None, None)
+
+    def test_empty_args_returns_none_target(self):
+        result = parse_shareevent_args([])
+        assert result == (None, "-onlycount", None, None)
+
+    def test_long_form_flag_names(self):
+        result = parse_shareevent_args([
+            "-500", "-maingoinglist", "onlycount", "-sharenotgoing", "visible", "-sharewaitlist", "hidden",
+        ])
+        assert result == ("-500", "-onlycount", "visible", "hidden")
