@@ -207,6 +207,31 @@ class TestMigrationChatUsersRename:
         assert rows == [("alice", "active")]
 
 
+class TestMigrationDateBotRemovedRename:
+    """all_chats_bot_log's 'date_bot_removed' column must be renamed to
+    'date_bot_remove', preserving data."""
+
+    def test_renames_and_preserves_data(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE all_chats_bot_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                date_bot_add TEXT DEFAULT NULL,
+                date_bot_removed TEXT DEFAULT NULL
+            )
+        """)
+        run_sql(path, "INSERT INTO all_chats_bot_log (chat_id, date_bot_add, date_bot_removed) VALUES ('-1','01.01.2026','05.01.2026')")
+
+        init_db(db_path=path)
+
+        cols = [r[1] for r in fetch_all(path, "PRAGMA table_info(all_chats_bot_log)")]
+        assert "date_bot_remove" in cols
+        assert "date_bot_removed" not in cols
+        rows = fetch_all(path, "SELECT chat_id, date_bot_add, date_bot_remove FROM all_chats_bot_log")
+        assert rows == [("-1", "01.01.2026", "05.01.2026")]
+
+
 class TestMigrationChatSettingsRename:
     """
     Legacy 'chat_settings' (sheet_name) must become 'all_groups' (sheet_id +
@@ -845,7 +870,7 @@ class TestRegisterChatRemoved:
         conn = sqlite3.connect(path)
         assert conn.execute("SELECT COUNT(*) FROM all_groups WHERE chat_id='-1'").fetchone()[0] == 0
         log_row = conn.execute(
-            "SELECT chat_id, date_bot_add, date_bot_removed FROM all_chats_bot_log WHERE chat_id='-1'"
+            "SELECT chat_id, date_bot_add, date_bot_remove FROM all_chats_bot_log WHERE chat_id='-1'"
         ).fetchone()
         assert log_row == ("-1", "2026-01-01 00:00:00", "2026-01-03 00:00:00")
 

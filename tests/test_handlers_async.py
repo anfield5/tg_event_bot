@@ -10,6 +10,7 @@ test functions don't need the @pytest.mark.asyncio decorator.
 
 import json
 import sqlite3
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,6 +25,7 @@ import subscription
 import aliases
 import help_system
 import db
+import hub_resolver
 import config
 
 
@@ -178,7 +180,7 @@ class TestNewevent:
     async def test_sends_open_state_keyboard_not_verification(self, db_path):
         """
         Regression test: the keyboard sent alongside a freshly created event
-        must be the OPEN state (Going/Not Going/ADD/Remove/Verify/
+        must be the OPEN state (Going/Not Going/ADD/Drop/ALL/Verify/
         Cancel) - NOT the verification-mode-only keyboard (Add Extra
         Player/Save & Close Event). A stale hardcoded event_status value at
         the call site once caused every new event to display with the wrong
@@ -201,7 +203,8 @@ class TestNewevent:
         assert any("Going" in t for t in texts), "open-state Going button missing"
         assert any("Not Going" in t for t in texts), "open-state Not Going button missing"
         assert any("ADD" in t for t in texts), "open-state ADD button missing"
-        assert any("Remove" in t for t in texts), "open-state Remove button missing"
+        assert any("Drop" in t for t in texts), "open-state Drop button missing"
+        assert any("ALL" in t for t in texts), "open-state ALL button missing"
         assert any("Verify" in t for t in texts), "Verify button missing"
         assert any("Cancel" in t for t in texts), "Cancel button missing"
 
@@ -975,7 +978,7 @@ class TestPremiumGating:
         ctx  = make_context(args=["-200"])
         bot_member = MagicMock(status="administrator")
         ctx.bot.get_chat_member = AsyncMock(return_value=bot_member)
-        ctx.bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Downtown"))
+        ctx.bot.get_chat = AsyncMock(return_value=MagicMock(id=-200, type="supergroup", title="Downtown"))
 
         await handlers.addmonitor(upd, ctx)
 
@@ -1884,7 +1887,7 @@ class TestButtonHandlerMasterHub:
     async def test_notgoing_preserves_existing_guest_count(self, db_path):
         """
         Regression test: clicking Not Going must NOT reset a person's guest
-        count to zero - guests only change via Add Guest / Sub Guest.
+        count to zero - guests only change via Add Guest / Drop.
         """
         insert_event(
             db_path, event_id="ev1", chat_id=MAIN_CHAT,
@@ -1999,7 +2002,7 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
     Regression tests for bug #1: in child chats, clicking Add Guest used to
     auto-mark the clicker as "going" (forcing status='going'), and clicking
     Not Going afterwards then wiped out their guest count. Neither of those
-    things happens in the main hub: there, Add/Sub Guest only ever touch the
+    things happens in the main hub: there, Add/Drop only ever touch the
     guest counter and are completely independent of whether the person
     themselves is going/not going/undeclared. Child chats must behave the
     same way.
@@ -2046,7 +2049,7 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         assert guests == 1, "the guest added before Not Going must survive"
 
     async def test_sub_guest_in_child_chat_never_removes_going_status(self, db_path):
-        """Mirrors the main hub: Sub Guest only ever decrements guests, never touches going/not-going."""
+        """Mirrors the main hub: Drop only ever decrements guests, never touches going/not-going."""
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
         insert_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1",
                            username="alice", status="going", guests=1)
@@ -2063,7 +2066,7 @@ class TestButtonHandlerChildGuestLogicMatchesMasterHub:
         row = get_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1")
         assert row is not None
         status, guests = row
-        assert status == "going", "Sub Guest reaching 0 must not remove the person's going status"
+        assert status == "going", "Drop reaching 0 must not remove the person's going status"
         assert guests == 0
 
     async def test_sub_guest_with_zero_guests_is_a_noop(self, db_path):
@@ -5029,10 +5032,10 @@ class TestChildChatClickTracksUserForSheetsSync:
         assert any(m[1] == "newperson" for m in child_call[1])
 
 
-class TestSubGuestTriggersWaitlistPromotion:
-    """Decrementing a guest count (Sub Guest / '-' button) also frees a
-    capacity slot, same as someone clicking Not Going - anyone waiting
-    for that chat should be automatically promoted."""
+class TestDropGuestTriggersWaitlistPromotion:
+    """Decrementing a guest count (Drop button, callback_data 'sub_') also
+    frees a capacity slot, same as someone clicking Not Going - anyone
+    waiting for that chat should be automatically promoted."""
 
     async def _click(self, action, chat_id, uid, username):
         query = _make_fake_button_query(f"{action}_ev1", chat_id, uid, username)
@@ -6672,7 +6675,7 @@ class TestShareeventNewFlagSyntax:
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
         ctx = make_context(bot=bot, args=[
-            "-200", "-maingoinglist", "hidden", "-sharenotgoing", "visible", "-sharewaitlist", "onlycount",
+            "-200", "-maingoinglist", "hidden", "-sharenotgoinglist", "visible", "-sharewaitlist", "onlycount",
         ])
 
         await handlers.shareevent(upd, ctx)
@@ -6853,18 +6856,30 @@ class TestHelpUpdatedForNewFlagsAndStats:
     async def test_stats_shown_only_on_pro_hub(self, db_path):
         chat_free = make_chat(chat_id=-100123)
         msg_free = make_message(chat=chat_free)
+        query_free = MagicMock()
+        query_free.data = "help_utility"
+        query_free.message = msg_free
+        query_free.answer = AsyncMock()
+        query_free.edit_message_text = AsyncMock()
         upd_free = make_update(chat=chat_free, message=msg_free)
+        upd_free.callback_query = query_free
         ctx_free = make_context()
-        await handlers.help_command(upd_free, ctx_free)
-        assert "/stats" not in msg_free.reply_text.call_args.args[0]
+        await help_system.help_callback_handler(upd_free, ctx_free)
+        assert "/stats" not in query_free.edit_message_text.call_args.args[0]
 
         insert_premium(db_path, chat_id="-100124")
         chat_pro = make_chat(chat_id=-100124)
         msg_pro = make_message(chat=chat_pro)
+        query_pro = MagicMock()
+        query_pro.data = "help_utility"
+        query_pro.message = msg_pro
+        query_pro.answer = AsyncMock()
+        query_pro.edit_message_text = AsyncMock()
         upd_pro = make_update(chat=chat_pro, message=msg_pro)
+        upd_pro.callback_query = query_pro
         ctx_pro = make_context()
-        await handlers.help_command(upd_pro, ctx_pro)
-        assert "/stats" in msg_pro.reply_text.call_args.args[0]
+        await help_system.help_callback_handler(upd_pro, ctx_pro)
+        assert "/stats" in query_pro.edit_message_text.call_args.args[0]
 
     async def test_distribution_section_shows_new_shareevent_flags(self, db_path):
         chat = make_chat(chat_id=-1)
@@ -6907,6 +6922,28 @@ class TestValidateWaitlistVisibilityFlagHelper:
         msg = make_message(chat=chat)
         result = await handlers._validate_waitlist_visibility_flag(msg, "-1", "onlycount")
         assert result == "onlycount"
+        msg.reply_text.assert_not_called()
+
+
+class TestValidateClickabilityFlagHelper:
+    """Refactor: extracted -clc/-clickability's gating logic (identical
+    code duplicated inline in both newevent and editevent since -clc
+    became a gated feature, item 3) into a shared helper, mirroring
+    _validate_waitlist_visibility_flag's exact pattern."""
+
+    async def test_free_hub_rejected_with_message(self, db_path):
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        result = await handlers._validate_clickability_flag(msg, "-1", "off")
+        assert result is None
+        assert "requires a higher tier" in msg.reply_text.call_args.args[0]
+
+    async def test_pro_hub_returns_value_unchanged(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        result = await handlers._validate_clickability_flag(msg, "-1", "off")
+        assert result == "off"
         msg.reply_text.assert_not_called()
 
 
@@ -7429,3 +7466,291 @@ class TestHelpAuditFindings:
             text = msg.reply_text.call_args.args[0]
             for cmd in ["/setsub", "/allgroups", "/allchannels", "/updatefeature"]:
                 assert cmd in text
+
+
+class TestHelpDefensiveCheckMatchesButtonRendering:
+    """Real bug found from a user screenshot: the Aliases button
+    correctly rendered UNLOCKED (no PRO badge) after an admin lowered
+    "aliases" to FREE via /updatefeature, but clicking it still showed
+    "This section is PRO-only" - the defensive re-check in
+    help_callback_handler hardcoded a blunt is_premium() (PRO/FREE
+    split only), completely unaware of any per-feature min_tier
+    override made via /updatefeature, while the button's own rendering
+    correctly used has_feature() (which DOES respect the override).
+    Fixed by making the defensive check use the exact same
+    has_feature()-based logic as the button rendering, via the same
+    _BUTTON_FEATURE_MAP - keeping both permanently in sync."""
+
+    async def test_lowered_feature_tier_no_longer_falsely_blocked(self, db_path):
+        db.update_feature_flag("aliases", "FREE", db_path=db_path)
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+        await help_system.help_command(upd, ctx)
+        keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        aliases_btn = next(b for row in keyboard.inline_keyboard for b in row if "Aliases" in b.text)
+        assert "PRO" not in aliases_btn.text  # button correctly shows unlocked
+        assert aliases_btn.callback_data == "help_alias"
+
+        msg2 = make_message(chat=chat)
+        query = MagicMock()
+        query.data = aliases_btn.callback_data
+        query.message = msg2
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd2 = make_update(chat=chat, user=user, message=msg2)
+        upd2.callback_query = query
+        ctx2 = make_context()
+
+        await help_system.help_callback_handler(upd2, ctx2)
+
+        assert query.edit_message_text.called, "Click must succeed - the hub genuinely has this feature"
+
+    @pytest.mark.parametrize("section,feature_key", [
+        ("help_alias", "aliases"),
+        ("help_monitoring", "monitoring"),
+        ("help_dm_access", "dm_access"),
+    ])
+    async def test_genuine_free_hub_still_correctly_blocked(self, db_path, section, feature_key):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = section
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        query.answer.assert_called_once_with("This section is PRO-only.", show_alert=True)
+        assert not query.edit_message_text.called
+
+
+class TestShareeventRegistryDecorator:
+    """CRITICAL regression test: @register_hub_command("shareevent") was
+    found accidentally left on parse_shareevent_args (a plain helper
+    function with an incompatible signature) instead of the actual
+    shareevent command handler - a leftover mistake from an earlier
+    session's extraction of parse_shareevent_args out of shareevent's
+    own body. This broke /shareevent specifically when invoked from a
+    DM (the group-picker replay flow looks up
+    HUB_COMMAND_REGISTRY["shareevent"] and would have gotten the wrong
+    function). Direct in-group /shareevent was unaffected (routed via
+    the separate CommandHandler registration in main.py), which is
+    exactly why 500+ passing tests never caught this - none of them
+    exercise the DM-replay registry lookup path."""
+
+    def test_registry_holds_the_real_async_shareevent_function(self):
+        registered = hub_resolver.HUB_COMMAND_REGISTRY.get("shareevent")
+        assert registered is handlers.shareevent
+        assert asyncio.iscoroutinefunction(registered)
+
+    def test_registry_does_not_hold_the_parser_helper(self):
+        registered = hub_resolver.HUB_COMMAND_REGISTRY.get("shareevent")
+        assert registered is not handlers.parse_shareevent_args
+
+
+class TestAddmonitorStoresResolvedChatId:
+    """Real bug found and fixed: /addmonitor stored the RAW user-typed
+    target_chat_id (could be a @username, especially common for channels
+    with public usernames) instead of the RESOLVED numeric chat_info.id
+    from the live get_chat() call that was already being made. Any
+    downstream int(chat_id) call - most notably /refreshusersall's
+    per-monitor processing loop - would crash on the non-numeric stored
+    value, silently caught and skipped, meaning a channel added via
+    @username would never get anyone added by /refreshusersall."""
+
+    async def test_username_input_stores_resolved_numeric_id(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat = AsyncMock(return_value=MagicMock(id=-1009876543210, title="My Channel", type="channel"))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["@mychannel"])
+
+        await monitors.addmonitor(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT chat_id FROM sub_chats WHERE owner_chat_id='-100'").fetchone()
+        assert row == ("-1009876543210",)
+        int(row[0])  # must not raise - confirms refreshusersall's int() call would succeed
+
+    async def test_numeric_input_still_works_normally(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat = AsyncMock(return_value=MagicMock(id=-200, title="Downtown", type="supergroup"))
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await monitors.addmonitor(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT chat_id FROM sub_chats WHERE owner_chat_id='-100'").fetchone()
+        assert row == ("-200",)
+
+
+class TestDropallGuests:
+    """Items 7+8: 'Remove' button renamed to 'Drop', with a new 'ALL'
+    button next to it that drops ALL of the clicking user's own guests
+    at once (callback_data 'dropall_'), rather than one at a time via
+    'sub'. Since this can free MULTIPLE capacity slots simultaneously
+    (not just one), it must promote once per freed slot and send an
+    announcement for EACH promoted person, not just the first."""
+
+    async def _click(self, action, chat_id, uid, username):
+        query = _make_fake_button_query(f"{action}_ev1", chat_id, uid, username)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+        return query, ctx
+
+    async def test_dropall_master_zeros_guests_and_promotes_all_waiting(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]',?,'[]',4,?)""",
+            (
+                json.dumps(["alice (1)"]),
+                json.dumps({"alice": 3}),
+                json.dumps([
+                    {"chat_id": "-100", "chat_name": None, "username": "bob", "user_id": "2", "timestamp": "t1"},
+                    {"chat_id": "-100", "chat_name": None, "username": "carol", "user_id": "3", "timestamp": "t2"},
+                ]),
+            ),
+        )
+        conn.commit()
+
+        _, ctx = await self._click("dropall", "-100", 1, "alice")
+
+        row = conn.execute("SELECT counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        counters = json.loads(row[0])
+        waitlist = json.loads(row[1])
+        assert counters.get("alice", 0) == 0
+        assert waitlist == []
+        assert ctx.bot.send_message.call_count == 2  # both bob and carol get announced
+
+    async def test_dropall_child_zeros_guests_and_promotes_all_waiting(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]',3,?)""",
+            (
+                json.dumps([
+                    {"chat_id": "-200", "chat_name": None, "username": "dave", "user_id": "20", "timestamp": "t1"},
+                ]),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','2','-visible','group')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','10','erin','going',2)"
+        )
+        conn.commit()
+
+        _, ctx = await self._click("dropall", "-200", 10, "erin")
+
+        row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND user_id='10'").fetchone()
+        assert row == (0,)
+        row2 = conn.execute("SELECT event_id FROM events WHERE event_id='ev1'").fetchone()
+        wl_data = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert json.loads(wl_data) == []
+        assert ctx.bot.send_message.call_count >= 1  # dave gets promoted and announced
+
+    async def test_dropall_no_guests_is_a_noop(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]')""",
+            (json.dumps(["alice (1)"]),),
+        )
+        conn.commit()
+
+        _, ctx = await self._click("dropall", "-100", 1, "alice")
+
+        row = conn.execute("SELECT counters_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(row[0]) == {}
+        ctx.bot.send_message.assert_not_called()
+
+
+class TestSendPromotionAnnouncementsHelper:
+    """Refactor: extracted from button_handler's own body - the exact
+    same announcement-sending loop (main waitlist_promotion +
+    extra_promotions) was copy-pasted identically in both the
+    child-chat return path and the master-path return, introduced when
+    dropall was added (items 7+8)."""
+
+    async def test_sends_main_promotion_only(self, db_path):
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+
+        await event_engine._send_promotion_announcements(
+            ctx, ("-100", "alice", "1", False), []
+        )
+
+        ctx.bot.send_message.assert_called_once()
+        assert ctx.bot.send_message.call_args.kwargs["chat_id"] == -100
+
+    async def test_sends_main_plus_extras_in_order(self, db_path):
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+
+        await event_engine._send_promotion_announcements(
+            ctx,
+            ("-100", "alice", "1", False),
+            [("-100", "bob", "2", False), ("-100", "carol", "3", True)],
+        )
+
+        assert ctx.bot.send_message.call_count == 3
+
+    async def test_no_promotions_sends_nothing(self, db_path):
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+
+        await event_engine._send_promotion_announcements(ctx, None, [])
+
+        ctx.bot.send_message.assert_not_called()
+
+    async def test_send_failure_for_one_does_not_block_the_rest(self, db_path):
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock(side_effect=[Exception("rate limited"), None])
+
+        await event_engine._send_promotion_announcements(
+            ctx, ("-100", "alice", "1", False), [("-100", "bob", "2", False)]
+        )
+
+        assert ctx.bot.send_message.call_count == 2

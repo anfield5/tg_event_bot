@@ -96,6 +96,26 @@ async def _validate_waitlist_visibility_flag(message, chat_id: str, waitlist_viz
     return waitlist_viz_raw
 
 
+async def _validate_clickability_flag(message, chat_id: str, clickability_raw: str):
+    """
+    Validates -clc/-clickability's gate (the "clickability" feature).
+    Shared by newevent and editevent, which had identical validation
+    logic duplicated inline before this extraction (introduced when
+    -clc was made a gated feature, item 3).
+
+    Returns the raw value unchanged on success. Returns None if a reply
+    was already sent to the user (the caller should `return` immediately
+    in that case).
+    """
+    if not has_feature(chat_id, "clickability"):
+        await message.reply_text(
+            f"{ICON_WARNING} `\\-clc`/`\\-clickability` requires a higher tier\\. Contact the bot owner to upgrade\\.",
+            parse_mode="MarkdownV2",
+        )
+        return None
+    return clickability_raw
+
+
 def parse_event_args(args: list):
     """
     Parses arguments for /newevent and /editevent.
@@ -325,13 +345,10 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     # like -limit/-wl.
     clickability_value = "on"
     if clickability_raw is not None:
-        if not has_feature(chat_id, "clickability"):
-            await message.reply_text(
-                f"{ICON_WARNING} `\\-clc`/`\\-clickability` requires a higher tier\\. Contact the bot owner to upgrade\\.",
-                parse_mode="MarkdownV2",
-            )
+        validated_clc = await _validate_clickability_flag(message, chat_id, clickability_raw)
+        if validated_clc is None:
             return
-        clickability_value = clickability_raw
+        clickability_value = validated_clc
 
     event_id = str(uuid4())[:8]
 
@@ -500,13 +517,10 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
 
         # -clc/-clickability is now a gated feature (item 3).
         if clickability_raw is not None:
-            if not has_feature(chat_id, "clickability"):
-                await update.message.reply_text(
-                    f"{ICON_WARNING} `\\-clc`/`\\-clickability` requires a higher tier\\. Contact the bot owner to upgrade\\.",
-                    parse_mode="MarkdownV2",
-                )
+            validated_clc = await _validate_clickability_flag(update.message, chat_id, clickability_raw)
+            if validated_clc is None:
                 return
-            updated_clickability = clickability_raw
+            updated_clickability = validated_clc
 
         if limit_raw is not None:
             validated = await _validate_limit_flag(update.message, chat_id, limit_raw)
@@ -1337,7 +1351,6 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
 # Event sharing
 # ---------------------------------------------------------------------------
 
-@register_hub_command("shareevent")
 def parse_shareevent_args(args: list):
     """
     Parses arguments for /shareevent.
@@ -1347,7 +1360,7 @@ def parse_shareevent_args(args: list):
     -mgl / -maingoinglist visible|hidden|onlycount – Going list visibility
         for this specific share (defaults to onlycount, matching the
         pre-existing default before this flag was introduced).
-    -sngl / -sharenotgoing visible|hidden|onlycount – Not Going list
+    -sngl / -sharenotgoinglist visible|hidden|onlycount – Not Going list
         visibility override for this share; None if omitted (inherits
         the event's own -ngl setting).
     -swl / -sharewaitlist visible|hidden|onlycount – Waitlist visibility
@@ -1367,7 +1380,7 @@ def parse_shareevent_args(args: list):
     of "-visible"/"-hidden"/"-onlycount" (never None).
     """
     mgl_flags = {"-mgl", "-maingoinglist"}
-    sngl_flags = {"-sngl", "-sharenotgoing"}
+    sngl_flags = {"-sngl", "-sharenotgoinglist"}
     swl_flags = {"-swl", "-sharewaitlist"}
     clc_flags = {"-clc", "-clickability"}
     visibility_words = ("visible", "hidden", "onlycount")
@@ -1404,6 +1417,7 @@ def parse_shareevent_args(args: list):
     return target_input, mode, share_notgoing_viz, share_waitlist_viz, share_clickability
 
 
+@register_hub_command("shareevent")
 async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Forwards a synced sub-view of the active event to a child group/channel.
@@ -1875,16 +1889,31 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
         events_closed = cursor.fetchone()[0]
 
         cursor.execute(
-            "SELECT going_data, counters_data FROM events WHERE chat_id = ? AND event_status = 2",
+            "SELECT event_id, going_data, counters_data FROM events WHERE chat_id = ? AND event_status = 2",
             (chat_id,),
         )
         closed_rows = cursor.fetchall()
 
-    total_members = 0
-    for going_data_raw, counters_data_raw in closed_rows:
-        going_count = len(json.loads(going_data_raw or "[]"))
-        guest_count = sum(json.loads(counters_data_raw or "{}").values())
-        total_members += going_count + guest_count
+        # Matches the EXACT same total_going formula used when writing the
+        # "Amount" column in the Events sheet at save/close time (see
+        # event_engine.py's save pipeline) - master going+guests PLUS every
+        # child-chat share's own going+guests, not just the master hub's
+        # own numbers, so this number always agrees with what's actually
+        # recorded in the sheet.
+        total_members = 0
+        for event_id, going_data_raw, counters_data_raw in closed_rows:
+            going_count = len(json.loads(going_data_raw or "[]"))
+            guest_count = sum(json.loads(counters_data_raw or "{}").values())
+
+            cursor.execute(
+                "SELECT status, guests FROM event_users WHERE event_id = ?",
+                (event_id,),
+            )
+            child_rows = cursor.fetchall()
+            child_going_count  = sum(1 for status, guests in child_rows if status == "going")
+            child_guests_total = sum(guests for status, guests in child_rows)
+
+            total_members += going_count + guest_count + child_going_count + child_guests_total
 
     average_members = round(total_members / events_closed, 1) if events_closed > 0 else 0
     average_members_text = str(average_members).replace(".", "\\.")

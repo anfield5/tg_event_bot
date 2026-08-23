@@ -138,7 +138,7 @@ async def _push_control_sheet_chats_log() -> bool:
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, date_bot_add, date_bot_removed FROM all_chats_bot_log")
+        cursor.execute("SELECT chat_id, date_bot_add, date_bot_remove FROM all_chats_bot_log")
         rows = cursor.fetchall()
     return await sync_control_sheet_chats_log(rows)
 

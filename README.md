@@ -84,7 +84,7 @@ owner-only, always kept in sync regardless of tier):
 | `GROUPS` | CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD | mirrors `all_groups`, on every `/setsub` |
 | `CHANNELS` | CHAT_ID, CHAT_NAME, VISIBILITY, DATE_BOT_ADD | mirrors `all_channels` |
 | `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION | mirrors `feature_flags`, on every `/updatefeature` |
-| `chats_log` | CHAT_ID, DATE_BOT_ADD, DATE_BOT_REMOVED | mirrors `all_chats_bot_log` - the historical add/remove trail, pushed immediately whenever the bot is removed from a group/channel |
+| `chats_log` | CHAT_ID, DATE_BOT_ADD, DATE_BOT_REMOVE | mirrors `all_chats_bot_log` - the historical add/remove trail, pushed immediately whenever the bot is removed from a group/channel |
 
 **Per-hub Sheet** (bound via `/setsheet`, PRO-only - a FREE hub writes
 nothing to Sheets at all):

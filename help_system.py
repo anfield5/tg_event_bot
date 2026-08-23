@@ -125,7 +125,7 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
+def _build_main_help_text(has_event_limit: bool = False) -> str:
     """
     The one and only source of the main /help text - both help_command
     (direct /help) and help_back_handler (the "Back" button from a detail
@@ -160,10 +160,6 @@ def _build_main_help_text(pro: bool, has_event_limit: bool = False) -> str:
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]"
         "\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n"
     )
-    if pro:
-        text += "/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet \\(Users/Events/Actions/EventUsers/UserPresenceLog tabs\\)\n"
-        text += "sheetid\\|sheeturl \\- either the raw spreadsheet ID, or a full Google Sheets URL \\(the ID is extracted automatically\\)\n"
-        text += "/stats \\- Event activity stats for this group \\(events created, closed, total/average headcount\\)\n"
     text += "\n📚 *More Info*"
     return text
 
@@ -191,9 +187,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id_for_help = await _help_target_chat_id(update, context)
-    pro = is_premium(chat_id_for_help)
     has_event_limit = has_feature(chat_id_for_help, "event_limit")
-    main_help = _build_main_help_text(pro, has_event_limit)
+    main_help = _build_main_help_text(has_event_limit)
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
@@ -202,13 +197,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
 
-    # Defensive: these two sections are premium-only. The free-tier keyboard
-    # never sends these callback_data values in the first place (it sends
-    # "upgrade_info" instead), but re-check here too in case the tier changed
-    # between the button being shown and being tapped.
-    if query.data in ("help_alias", "help_monitoring", "help_dm_access") and not is_premium(await _help_target_chat_id(update, context)):
-        await query.answer("This section is PRO-only.", show_alert=True)
-        return
+    # Defensive: re-check the SAME per-feature gate the button itself was
+    # rendered with (see _make_button/_BUTTON_FEATURE_MAP), in case the
+    # tier changed between the button being shown and being tapped -
+    # covers both a subscription expiring AND an admin changing a
+    # specific feature's own min_tier via /updatefeature (e.g. lowering
+    # "aliases" to FREE) independently of the hub's overall PRO status.
+    # Deliberately NOT a blunt is_premium() check - that would ignore any
+    # per-feature override and could block access the hub genuinely has.
+    button_key_for_section = {
+        "help_alias": "aliases", "help_monitoring": "monitoring", "help_dm_access": "dm_access",
+    }.get(query.data)
+    if button_key_for_section:
+        chat_id_for_gate = await _help_target_chat_id(update, context)
+        section_features = _BUTTON_FEATURE_MAP.get(button_key_for_section, [])
+        if any(not has_feature(chat_id_for_gate, fk) for fk in section_features):
+            await query.answer("This section is PRO-only.", show_alert=True)
+            return
 
     await query.answer()
 
@@ -241,6 +246,18 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/switchgroup \\- \\(DM only\\) switch which group your commands target\n"
             "/userid \\- Show your own Telegram user ID\n"
             "/chatid \\- Show this chat's ID"
+            + (
+                "\n/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet "
+                "\\(Users/Events/Actions/EventUsers/UserPresenceLog tabs\\)\n"
+                "sheetid\\|sheeturl \\- either the raw spreadsheet ID, or a full Google Sheets URL "
+                "\\(the ID is extracted automatically\\)"
+                if has_feature(hub_chat_id_for_limits, "custom_sheet") else ""
+            )
+            + (
+                "\n/stats \\- Event activity stats for this group \\(events created, closed, "
+                "total/average headcount\\)"
+                if has_feature(hub_chat_id_for_limits, "stats") else ""
+            )
         ),
         "help_alias": (
             "⚙️ *Aliases*\n\n"
@@ -257,7 +274,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "  • visible: Show full going list in child chat\n"
             "  • hidden: Hide event, only show going/notgoing counts\n"
             "  • onlycount \\(default\\): Show only total going count\n\n"
-            "\\-sngl \\| \\-sharenotgoing \\- Not Going list visibility override for this share \\(if omitted, inherits the event's own \\-ngl setting\\)\n"
+            "\\-sngl \\| \\-sharenotgoinglist \\- Not Going list visibility override for this share \\(if omitted, inherits the event's own \\-ngl setting\\)\n"
             "\\-swl \\| \\-sharewaitlist \\- Waitlist visibility override for this share \\(if omitted, inherits the event's own \\-wl setting\\)\n"
             "\\-clc \\| \\-clickability on\\|off \\- Name clickability override for this share \\(if omitted, inherits the event's own \\-clc setting\\)\\. Requires a higher tier\\.\n\n"
             f"{shareevent_limit_line}"
@@ -285,7 +302,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         "help_lifecycle": (
             f"🗳 *Event Lifecycle Buttons*\n\n"
             f"  • Going / Not Going \\- vote, available to everyone\n"
-            f"  • ADD / Remove \\- adjust your own guest count, available to everyone\n"
+            f"  • ADD / Drop \\- adjust your own guest count one at a time, available to everyone\n"
+            f"  • ALL \\- drop ALL of your own guests at once, available to everyone\n"
             f"  • {ICON_VERIFICATION} Verify \\- admin only, locks voting and opens roster review\n"
             f"  • {ICON_CANCEL_EVENT} Cancel \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin only, toggle person in/out of going list\n"
@@ -313,9 +331,8 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     chat_id_for_help = await _help_target_chat_id(update, context)
-    pro = is_premium(chat_id_for_help)
     has_event_limit = has_feature(chat_id_for_help, "event_limit")
-    main_help = _build_main_help_text(pro, has_event_limit)
+    main_help = _build_main_help_text(has_event_limit)
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)

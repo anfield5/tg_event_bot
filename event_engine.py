@@ -152,6 +152,31 @@ def _promotion_announcement_text(chat_id: str, username: str, user_id, is_guest:
     return f"{ICON_STANDBY} A spot opened up \\- {mention} has been moved from the Waitlist to Going\\!"
 
 
+async def _send_promotion_announcements(context, waitlist_promotion, extra_promotions):
+    """
+    Sends the "a spot opened up" announcement for `waitlist_promotion`
+    (a single (chat_id, username, user_id, is_guest) tuple or None) plus
+    one more for every entry in `extra_promotions` - the latter only
+    ever non-empty for actions that can free MULTIPLE slots at once
+    (dropall), since every OTHER promotion trigger (sub/notgoing/limit
+    raise) only ever frees one slot per click.
+
+    Previously this exact loop was copy-pasted in button_handler's
+    child-chat return path and its master-path return - both call this
+    now instead.
+    """
+    all_promotions = ([waitlist_promotion] if waitlist_promotion else []) + list(extra_promotions)
+    for promo_chat_id, promo_username, promo_user_id, promo_is_guest in all_promotions:
+        try:
+            await context.bot.send_message(
+                chat_id=int(promo_chat_id),
+                text=_promotion_announcement_text(promo_chat_id, promo_username, promo_user_id, promo_is_guest),
+                parse_mode="MarkdownV2",
+            )
+        except Exception as e:
+            logger.error(f"Waitlist promotion announcement failed for chat {promo_chat_id}: {e}")
+
+
 def _render_waitlist_local(waitlist: list, chat_id: str, clickable: bool = True) -> tuple:
     """
     Filters an event's waitlist_data down to entries added from THIS
@@ -857,6 +882,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return None
 
                 waitlist_promotion = None  # set below if a notgoing/sub click frees a slot
+                extra_promotions = []  # additional (chat_id, username, user_id, is_guest) tuples beyond
+                                        # waitlist_promotion - for actions like dropall that can free
+                                        # MULTIPLE slots at once and need more than one announcement
 
                 if event_status in (2, -1):
                     return
@@ -926,7 +954,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # ── Child-chat interaction ────────────────────────────────────
                 if is_click_in_child:
-                    if action not in ["going", "notgoing", "add", "sub"]:
+                    if action not in ["going", "notgoing", "add", "sub", "dropall"]:
                         try:
                             await query.answer(
                                 text="⛔️ This action is only available from the main event post.",
@@ -1021,7 +1049,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             data_changed = True
                     elif action == "sub":
                         # NOTE: In child chats, user must have status (going/notgoing)
-                        # Sub Guest only decrements guests, never removes the user
+                        # Drop only decrements guests, never removes the user
                         if current_guests > 0:
                             new_guests = current_guests - 1
                             cursor.execute(
@@ -1036,6 +1064,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             if promoted:
                                 p_username, p_user_id, p_is_guest = promoted
                                 waitlist_promotion = (click_chat_id, p_username, p_user_id, p_is_guest)
+                        else:
+                            return
+                    elif action == "dropall":
+                        # Drops ALL of the clicking user's own guests at once
+                        # (sets guests to 0), rather than one at a time via
+                        # "sub". Frees as many capacity slots as guests were
+                        # dropped - promotes once per freed slot, collecting
+                        # every promotion beyond the first into
+                        # extra_promotions so the caller can announce all of
+                        # them, not just one.
+                        if current_guests > 0:
+                            cursor.execute(
+                                "UPDATE event_users SET guests = 0 WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (event_id, click_chat_id, str(user_id)),
+                            )
+                            data_changed = True
+                            for _ in range(current_guests):
+                                promoted = _promote_child(click_chat_id)
+                                if not promoted:
+                                    break
+                                p_username, p_user_id, p_is_guest = promoted
+                                if waitlist_promotion is None:
+                                    waitlist_promotion = (click_chat_id, p_username, p_user_id, p_is_guest)
+                                else:
+                                    extra_promotions.append((click_chat_id, p_username, p_user_id, p_is_guest))
                         else:
                             return
 
@@ -1069,16 +1122,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             logger.error(f"Sheets child action log failed: {e}")
                         context.application.create_task(schedule_view_refresh(context, event_id))
 
-                    if waitlist_promotion:
-                        promo_chat_id, promo_username, promo_user_id, promo_is_guest = waitlist_promotion
-                        try:
-                            await context.bot.send_message(
-                                chat_id=int(promo_chat_id),
-                                text=_promotion_announcement_text(promo_chat_id, promo_username, promo_user_id, promo_is_guest),
-                                parse_mode="MarkdownV2",
-                            )
-                        except Exception as e:
-                            logger.error(f"Waitlist promotion announcement failed for chat {promo_chat_id}: {e}")
+                    await _send_promotion_announcements(context, waitlist_promotion, extra_promotions)
 
                     return
 
@@ -1192,6 +1236,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             if promoted:
                                 p_username, p_user_id, p_is_guest = promoted
                                 waitlist_promotion = (main_chat_id, p_username, p_user_id, p_is_guest)
+                        else:
+                            return
+                    elif action == "dropall":
+                        # Drops ALL of the clicking user's own guests at once
+                        # (see the child-chat version's own comment above for
+                        # the full rationale) - frees as many slots as guests
+                        # dropped, promoting once per freed slot.
+                        dropped = counters.get(username_raw, 0)
+                        if dropped > 0:
+                            if username_raw not in going_usernames:
+                                counters.pop(username_raw)
+                            else:
+                                counters[username_raw] = 0
+                            data_changed = True
+                            for _ in range(dropped):
+                                promoted = _promote_master()
+                                if not promoted:
+                                    break
+                                p_username, p_user_id, p_is_guest = promoted
+                                if waitlist_promotion is None:
+                                    waitlist_promotion = (main_chat_id, p_username, p_user_id, p_is_guest)
+                                else:
+                                    extra_promotions.append((main_chat_id, p_username, p_user_id, p_is_guest))
                         else:
                             return
                     elif action == "close":
@@ -1318,16 +1385,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             track_user(t_chat_id, t_username, "active", user_id=t_user_id,
                        first_name=t_first_name, last_name=t_last_name)
 
-        if waitlist_promotion:
-            promo_chat_id, promo_username, promo_user_id, promo_is_guest = waitlist_promotion
-            try:
-                await context.bot.send_message(
-                    chat_id=int(promo_chat_id),
-                    text=_promotion_announcement_text(promo_chat_id, promo_username, promo_user_id, promo_is_guest),
-                    parse_mode="MarkdownV2",
-                )
-            except Exception as e:
-                logger.error(f"Waitlist promotion announcement failed for chat {promo_chat_id}: {e}")
+        await _send_promotion_announcements(context, waitlist_promotion, extra_promotions)
 
         # Log action to Sheets
         if data_changed:

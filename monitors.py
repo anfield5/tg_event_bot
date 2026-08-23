@@ -106,6 +106,7 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             chat_info = await context.bot.get_chat(target_chat_id)
             chat_name = chat_info.title or "Unknown"
             chat_type = "channel" if chat_info.type == "channel" else "group"
+            resolved_chat_id = str(chat_info.id)
         except Exception:
             await update.message.reply_text(
                 "❌ Could not retrieve chat information\\.",
@@ -113,12 +114,17 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             )
             return
 
-        # Add to database
+        # Add to database - always the RESOLVED numeric chat_id, never the
+        # raw user-typed target_chat_id (which could be a @username,
+        # especially common for channels with public usernames). Storing
+        # a non-numeric value here would silently break every downstream
+        # int(chat_id) call, most notably /refreshusersall's per-monitor
+        # loop, which would then quietly skip that chat entirely.
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT id FROM sub_chats WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                (target_chat_id, main_chat_id),
+                (resolved_chat_id, main_chat_id),
             )
             existing = cursor.fetchone()
 
@@ -130,13 +136,13 @@ async def addmonitor(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
                 cursor.execute(
                     "UPDATE sub_chats SET is_monitored = 1, chat_type = ?, chat_name = ? "
                     "WHERE chat_id = ? AND (owner_chat_id = ? OR owner_chat_id IS NULL)",
-                    (chat_type, chat_name, target_chat_id, main_chat_id),
+                    (chat_type, chat_name, resolved_chat_id, main_chat_id),
                 )
             else:
                 cursor.execute(
                     "INSERT INTO sub_chats (chat_id, chat_type, chat_name, owner_chat_id, is_monitored) "
                     "VALUES (?, ?, ?, ?, 1)",
-                    (target_chat_id, chat_type, chat_name, main_chat_id),
+                    (resolved_chat_id, chat_type, chat_name, main_chat_id),
                 )
             conn.commit()
 

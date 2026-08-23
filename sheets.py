@@ -341,7 +341,7 @@ async def sync_control_sheet_chats_log(rows: list) -> bool:
     history). Same one-way push, write-first-then-trim pattern as
     sync_control_sheet_main/sync_control_sheet_channels.
 
-    rows: list of (chat_id, date_bot_add, date_bot_removed) tuples.
+    rows: list of (chat_id, date_bot_add, date_bot_remove) tuples.
     Returns True on success, False on failure.
     """
     if not CONTROL_SHEET_ID:
@@ -350,7 +350,7 @@ async def sync_control_sheet_chats_log(rows: list) -> bool:
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("chats_log")
-        header = ["CHAT_ID", "DATE_BOT_ADD", "DATE_BOT_REMOVED"]
+        header = ["CHAT_ID", "DATE_BOT_ADD", "DATE_BOT_REMOVE"]
         body   = [[str(v) if v is not None else "" for v in row] for row in rows]
         grid   = [header] + body
 

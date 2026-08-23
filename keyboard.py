@@ -83,7 +83,8 @@ def create_event_keyboard(
         ])
         buttons.append([
             InlineKeyboardButton(f"{ICON_ADD} ADD", callback_data=f"add_{event_id}"),
-            InlineKeyboardButton(f"{ICON_REMOVE} Remove", callback_data=f"sub_{event_id}"),
+            InlineKeyboardButton(f"{ICON_REMOVE} Drop", callback_data=f"sub_{event_id}"),
+            InlineKeyboardButton(f"{ICON_REMOVE} ALL", callback_data=f"dropall_{event_id}"),
         ])
         if not is_child:
             close_button = (

@@ -71,6 +71,10 @@ def _seed_feature_flags(cursor):
          "Whether a hub can cap an event's total headcount and configure Waitlist visibility "
          "with -limit N [visible|hidden|onlycount]. When gated off, the flag is rejected with "
          "a clear error instead of being silently ignored."),
+        ("clickability", "-clc/-clickability flag on /newevent, /editevent, /shareevent", "PRO", None,
+         "Whether names in the event post are clickable mentions (tg://user?id=...) or plain, non-linked "
+         "text. When gated off, the flag is rejected with a clear error instead of being silently ignored; "
+         "every event defaults to clickable (on) regardless of tier."),
         ("user_management", "User Management (/adduser, /listusers, /updateuser, /notify, /refreshusers)", "FREE", None,
          "Tracking, notifying, and syncing the roster of users for THIS group - available to every group "
          "regardless of tier. /adduser adds people manually, /listusers shows the tracked list, /updateuser "
@@ -106,10 +110,6 @@ def _seed_feature_flags(cursor):
         ("stats", "/stats (event activity stats for this group)", "PRO", None,
          "Shows how many events this hub has created, how many were closed, and total/average headcount "
          "across every closed event - a quick snapshot of the bot's usage in this specific group."),
-        ("clickability", "-clc/-clickability flag on /newevent, /editevent, /shareevent", "PRO", None,
-         "Whether names in the event post are clickable mentions (tg://user?id=...) or plain, non-linked "
-         "text. When gated off, the flag is rejected with a clear error instead of being silently ignored; "
-         "every event defaults to clickable (on) regardless of tier."),
     ]
     seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(
@@ -228,7 +228,7 @@ def init_db(db_path: str = DB_PATH):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id TEXT NOT NULL,
             date_bot_add TEXT DEFAULT NULL,
-            date_bot_removed TEXT DEFAULT NULL
+            date_bot_remove TEXT DEFAULT NULL
         )
     """)
 
@@ -598,6 +598,14 @@ def init_db(db_path: str = DB_PATH):
     if "share_clickability" not in event_shares_cols:
         cursor.execute("ALTER TABLE event_shares ADD COLUMN share_clickability TEXT DEFAULT NULL")
 
+    # 0a10. Rename all_chats_bot_log's date_bot_removed -> date_bot_remove
+    # for pre-existing DBs (matching the fresh-table CREATE statement
+    # above, which already uses the new name).
+    cursor.execute("PRAGMA table_info(all_chats_bot_log)")
+    bot_log_cols = [row[1] for row in cursor.fetchall()]
+    if "date_bot_removed" in bot_log_cols and "date_bot_remove" not in bot_log_cols:
+        cursor.execute("ALTER TABLE all_chats_bot_log RENAME COLUMN date_bot_removed TO date_bot_remove")
+
     # 0b. Add `chat_type`/`chat_name` to sub_chats if it exists from an
     # earlier version of this same migration that predates them.
     cursor.execute("PRAGMA table_info(sub_chats)")
@@ -791,12 +799,12 @@ def register_chat_added(chat_id: str, chat_name: str, chat_type: str, visibility
     conn.close()
 
 
-def register_chat_removed(chat_id: str, date_bot_removed: str, db_path: str = None):
+def register_chat_removed(chat_id: str, date_bot_remove: str, db_path: str = None):
     """
     Called the moment the bot is removed from (or leaves) a group/channel.
     Moves that chat's row out of all_groups/all_channels (wherever it was)
     and appends a record to all_chats_bot_log with both the original
-    date_bot_add and the new date_bot_removed - the presence registries
+    date_bot_add and the new date_bot_remove - the presence registries
     only ever reflect chats the bot is CURRENTLY in, the log is the
     historical trail.
     """
@@ -809,8 +817,8 @@ def register_chat_removed(chat_id: str, date_bot_removed: str, db_path: str = No
     row = cursor.fetchone()
     if row is not None:
         cursor.execute(
-            "INSERT INTO all_chats_bot_log (chat_id, date_bot_add, date_bot_removed) VALUES (?, ?, ?)",
-            (str(chat_id), row[0], date_bot_removed),
+            "INSERT INTO all_chats_bot_log (chat_id, date_bot_add, date_bot_remove) VALUES (?, ?, ?)",
+            (str(chat_id), row[0], date_bot_remove),
         )
         cursor.execute("DELETE FROM all_groups WHERE chat_id = ?", (str(chat_id),))
         conn.commit()
@@ -821,8 +829,8 @@ def register_chat_removed(chat_id: str, date_bot_removed: str, db_path: str = No
     row = cursor.fetchone()
     if row is not None:
         cursor.execute(
-            "INSERT INTO all_chats_bot_log (chat_id, date_bot_add, date_bot_removed) VALUES (?, ?, ?)",
-            (str(chat_id), row[0], date_bot_removed),
+            "INSERT INTO all_chats_bot_log (chat_id, date_bot_add, date_bot_remove) VALUES (?, ?, ?)",
+            (str(chat_id), row[0], date_bot_remove),
         )
         cursor.execute("DELETE FROM all_channels WHERE chat_id = ?", (str(chat_id),))
         conn.commit()

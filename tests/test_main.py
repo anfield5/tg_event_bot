@@ -13,7 +13,7 @@ add/remove lifecycle for both groups and channels, verifying:
     clears it from the Control Sheet (full overwrite + stale-row trim, not
     append-only, so a removed chat's row doesn't linger forever)
   - Removal logs to all_chats_bot_log with BOTH date_bot_add (copied from
-    the original row) and date_bot_removed (the moment of removal)
+    the original row) and date_bot_remove (the moment of removal)
 """
 import sys
 import sqlite3
@@ -105,11 +105,11 @@ class TestBotRemovedFromGroup:
         assert conn.execute("SELECT chat_id FROM all_groups WHERE chat_id='-100'").fetchone() is None
 
         log_row = conn.execute(
-            "SELECT chat_id, date_bot_add, date_bot_removed FROM all_chats_bot_log WHERE chat_id='-100'"
+            "SELECT chat_id, date_bot_add, date_bot_remove FROM all_chats_bot_log WHERE chat_id='-100'"
         ).fetchone()
         assert log_row is not None
         assert log_row[1] is not None  # date_bot_add carried over from the original row
-        assert log_row[2] is not None  # date_bot_removed set to the moment of removal
+        assert log_row[2] is not None  # date_bot_remove set to the moment of removal
 
         # The sheet push after removal must reflect the removal (chat no
         # longer present), not just append - proves full-overwrite sync.
@@ -152,7 +152,7 @@ class TestBotRemovedFromChannel:
         assert conn.execute("SELECT chat_id FROM all_channels WHERE chat_id='-200'").fetchone() is None
 
         log_row = conn.execute(
-            "SELECT chat_id, date_bot_add, date_bot_removed FROM all_chats_bot_log WHERE chat_id='-200'"
+            "SELECT chat_id, date_bot_add, date_bot_remove FROM all_chats_bot_log WHERE chat_id='-200'"
         ).fetchone()
         assert log_row is not None
         assert log_row[1] is not None
