@@ -1179,6 +1179,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     pass
                             else:
                                 going.append(f"{username_raw} ({user_id})")
+                        else:
+                            # Already in going_usernames - but if the EXISTING
+                            # entry has no resolvable user_id (e.g. a stale
+                            # "username (no_id_in_main_group)" placeholder left
+                            # over from Add Extra Member, before this person
+                            # ever personally interacted with the bot), a
+                            # genuine click like this one carries a real,
+                            # correct user_id straight from the click event -
+                            # heal the stale entry instead of silently
+                            # discarding this real ID by leaving the old
+                            # unresolvable one in place forever.
+                            existing_entry = next((u for u in going if u.split(" (")[0] == username_raw), None)
+                            if existing_entry:
+                                existing_id = existing_entry.split("(")[-1].rstrip(")") if "(" in existing_entry else None
+                                if not existing_id or not str(existing_id).lstrip("-").isdigit():
+                                    going = [u for u in going if u.split(" (")[0] != username_raw]
+                                    going.append(f"{username_raw} ({user_id})")
                         if not went_to_waitlist:
                             not_going.discard(username_raw)
                             # Store user_id for refreshusers

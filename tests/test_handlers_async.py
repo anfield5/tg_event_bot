@@ -7389,7 +7389,8 @@ class TestHelpReflectsClickabilityGating:
         assert "ungated" not in clc_line
 
     async def test_main_help_ngl_line_still_says_ungated(self, db_path):
-        """-ngl was never gated by item 3 - must still correctly claim so."""
+        """-ngl was never gated by item 3 - its own line must NOT claim
+        'Requires a higher tier' (unlike -wl and -clc, which both do)."""
         chat = make_chat(chat_id=-100123)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
@@ -7399,7 +7400,7 @@ class TestHelpReflectsClickabilityGating:
 
         text = msg.reply_text.call_args.args[0]
         ngl_line = next(l for l in text.split("\n") if l.startswith("\\-ngl \\|"))
-        assert "ungated" in ngl_line
+        assert "Requires a higher tier" not in ngl_line
 
     async def test_distribution_section_clc_line_says_gated(self, db_path):
         chat = make_chat(chat_id=-1)
@@ -7754,3 +7755,193 @@ class TestSendPromotionAnnouncementsHelper:
         )
 
         assert ctx.bot.send_message.call_count == 2
+
+
+class TestHelpFlagsGroupedByVocabulary:
+    """Item 1: -wl and -ngl share the same visible|hidden|onlycount
+    vocabulary - instead of repeating the same 3-line breakdown under
+    each flag separately, the main help text now describes each flag's
+    own purpose in one line, then explains what visible/onlycount/hidden
+    mean ONCE in a shared block, plus a single consolidated defaults
+    summary at the bottom."""
+
+    async def test_shared_vocabulary_explained_once(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        # The 3-mode explanation block appears exactly once, not once per flag
+        assert text.count("shared by \\-wl and \\-ngl") == 1
+        assert text.count("onlycount \\- shows just the total count, no names") == 1
+
+    async def test_defaults_summary_present(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Defaults:" in text
+        assert "\\-wl hidden" in text
+        assert "\\-ngl visible" in text
+        assert "\\-clc on" in text
+
+    async def test_wl_and_clc_still_show_gating_individually(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        wl_line = next(l for l in text.split("\n") if l.startswith("\\-wl \\|"))
+        clc_line = next(l for l in text.split("\n") if l.startswith("\\-clc \\|"))
+        assert "Requires a higher tier" in wl_line
+        assert "Requires a higher tier" in clc_line
+
+
+class TestHelpDmAccessSimplified:
+    """Item 2: help_dm_access was too verbose (5 paragraphs explaining
+    FREE-vs-PRO behavior) - simplified to just the feature's essence,
+    since this section is only ever reached by hubs that already HAVE
+    the feature (a FREE hub sees the locked button + upgrade_info card
+    instead, never this detailed text) - explaining the "unavailable"
+    case here was redundant with the button-lock mechanism itself."""
+
+    async def test_dm_access_text_is_short_and_focused(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_dm_access"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "/switchgroup" in text
+        assert "FREE hubs must run" not in text  # old verbose explanation removed
+
+    async def test_dm_access_button_locked_on_free_hub(self, db_path):
+        chat = make_chat(chat_id=-1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        kb = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        btn = next(b for row in kb.inline_keyboard for b in row if "DM Access" in b.text)
+        assert "⚡" in btn.text
+        assert btn.callback_data == "upgrade_info_dm_access"
+
+
+class TestGoingClickHealsStaleUnresolvableEntry:
+    """Real bug found: someone added via 'Add Extra Member' with no
+    resolvable Telegram user_id gets a placeholder entry in going_data
+    ("username (no_id_in_main_group)"). If that same person LATER
+    clicks Going for real, the click carries a genuine, correct
+    user_id straight from the click event - but the code only ever
+    APPENDED new entries, never updating an existing one (matched
+    purely by username string), so the stale placeholder silently
+    stuck around forever even though a valid ID was right there in the
+    same click. Now heals the stale entry with the fresh, correct one.
+    Child chats are structurally immune to this - they key off numeric
+    user_id via INSERT OR REPLACE, never username-only placeholders."""
+
+    async def test_stale_placeholder_healed_by_real_click(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]')""",
+            (json.dumps(["An (no_id_in_main_group)"]),),
+        )
+        conn.commit()
+
+        query = MagicMock()
+        query.data = "going_ev1"
+        query.message = MagicMock()
+        query.message.chat_id = "-100"
+        query.from_user = MagicMock()
+        query.from_user.id = 999
+        query.from_user.username = "An"
+        query.from_user.first_name = "An"
+        query.from_user.last_name = None
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard(coro):
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+
+        row = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(row[0]) == ["An (999)"]
+
+    async def test_already_valid_entry_not_needlessly_rewritten(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]')""",
+            (json.dumps(["alice (555)"]),),
+        )
+        conn.commit()
+
+        query = MagicMock()
+        query.data = "going_ev1"
+        query.message = MagicMock()
+        query.message.chat_id = "-100"
+        query.from_user = MagicMock()
+        query.from_user.id = 555
+        query.from_user.username = "alice"
+        query.from_user.first_name = "Alice"
+        query.from_user.last_name = None
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        def _discard(coro):
+            coro.close()
+            return MagicMock()
+
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+
+        row = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(row[0]) == ["alice (555)"]
