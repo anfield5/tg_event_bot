@@ -12,7 +12,7 @@ import sqlite3
 import pytest
 from datetime import datetime, timedelta
 from db import (
-    init_db, track_user, get_feature_flags, update_feature_flag, log_command_usage,
+    init_db, track_user, get_all_features, update_feature_flag, log_command_usage,
     get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
     register_chat_added, register_chat_removed, get_feature_limit_for_chat, get_display_name,
     dedupe_waitlist, get_shareevent_remaining_for_chat,
@@ -205,6 +205,35 @@ class TestMigrationChatUsersRename:
         assert "chat_users" not in tables
         rows = fetch_all(path, "SELECT username, status FROM main_group_users WHERE chat_id='c1'")
         assert rows == [("alice", "active")]
+
+
+class TestMigrationAllFeaturesRename:
+    """'feature_flags' table must be renamed to 'all_features', preserving
+    any admin-customized data (e.g. a tier changed via /updatefeature)."""
+
+    def test_renames_and_preserves_data(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE feature_flags (
+                feature_key TEXT PRIMARY KEY,
+                feature_label TEXT NOT NULL,
+                min_tier TEXT NOT NULL DEFAULT 'FREE',
+                limit_count INTEGER DEFAULT NULL,
+                sort_order INTEGER DEFAULT 999,
+                description TEXT DEFAULT NULL
+            )
+        """)
+        # A real feature_key with an admin-customized tier, to confirm the
+        # rename preserves data rather than resetting it via re-seeding.
+        run_sql(path, "INSERT INTO feature_flags (feature_key, feature_label, min_tier) VALUES ('aliases','Aliases','ADMIN')")
+
+        init_db(db_path=path)
+
+        tables = get_tables(path)
+        assert "all_features" in tables
+        assert "feature_flags" not in tables
+        row = fetch_all(path, "SELECT feature_key, min_tier FROM all_features WHERE feature_key='aliases'")
+        assert row == [("aliases", "ADMIN")]
 
 
 class TestMigrationDateBotRemovedRename:
@@ -550,7 +579,7 @@ class TestCommandLog:
 
 class TestFeatureFlags:
     """
-    feature_flags is the single source of truth for what's available at
+    all_features is the single source of truth for what's available at
     each tier (FREE/PRO/ADMIN) - seeded automatically on init_db(), never
     overwritten by a second init_db() call.
     """
@@ -558,20 +587,20 @@ class TestFeatureFlags:
     def test_seeds_sixteen_flags_on_fresh_db(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        rows = get_feature_flags(db_path=path)
+        rows = get_all_features(db_path=path)
         assert len(rows) == 16
 
     def test_free_pro_admin_tiers_all_present(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        rows = get_feature_flags(db_path=path)
+        rows = get_all_features(db_path=path)
         tiers = {r[2] for r in rows}
         assert tiers == {"FREE", "PRO", "ADMIN"}
 
     def test_known_features_have_the_expected_tier(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        by_key = {r[0]: r[2] for r in get_all_features(db_path=path)}
         assert by_key["newevent"] == "FREE"
         assert by_key["editevent"] == "FREE"
         assert by_key["user_management"] == "FREE"
@@ -588,7 +617,7 @@ class TestFeatureFlags:
     def test_shareevent_has_a_default_limit(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        by_key = {r[0]: (r[2], r[3]) for r in get_feature_flags(db_path=path)}
+        by_key = {r[0]: (r[2], r[3]) for r in get_all_features(db_path=path)}
         assert by_key["shareevent"] == ("FREE", 3)
 
     def test_reseeding_does_not_overwrite_a_manually_changed_flag(self, tmp_path):
@@ -598,7 +627,7 @@ class TestFeatureFlags:
 
         init_db(db_path=path)  # re-run must NOT reset aliases back to PRO
 
-        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        by_key = {r[0]: r[2] for r in get_all_features(db_path=path)}
         assert by_key["aliases"] == "ADMIN"
 
     def test_reseeding_refreshes_stale_label_text_but_not_min_tier(self, tmp_path):
@@ -610,12 +639,12 @@ class TestFeatureFlags:
         """
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        run_sql(path, "UPDATE feature_flags SET feature_label = 'stale old label' WHERE feature_key = 'aliases'")
+        run_sql(path, "UPDATE all_features SET feature_label = 'stale old label' WHERE feature_key = 'aliases'")
         update_feature_flag("aliases", "ADMIN", db_path=path)
 
         init_db(db_path=path)
 
-        rows = fetch_all(path, "SELECT feature_label, min_tier FROM feature_flags WHERE feature_key = 'aliases'")
+        rows = fetch_all(path, "SELECT feature_label, min_tier FROM all_features WHERE feature_key = 'aliases'")
         assert rows[0][0] != "stale old label"
         assert rows[0][1] == "ADMIN"
 
@@ -628,15 +657,15 @@ class TestFeatureFlags:
         """
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        run_sql(path, "DELETE FROM feature_flags WHERE feature_key IN ('newevent','editevent','user_management')")
-        run_sql(path, "INSERT INTO feature_flags (feature_key, feature_label, min_tier, description) "
+        run_sql(path, "DELETE FROM all_features WHERE feature_key IN ('newevent','editevent','user_management')")
+        run_sql(path, "INSERT INTO all_features (feature_key, feature_label, min_tier, description) "
                        "VALUES ('event_lifecycle','old bundle','FREE','old desc')")
-        run_sql(path, "INSERT INTO feature_flags (feature_key, feature_label, min_tier, description) "
+        run_sql(path, "INSERT INTO all_features (feature_key, feature_label, min_tier, description) "
                        "VALUES ('updateuser','old updateuser','FREE','old desc')")
 
         init_db(db_path=path)
 
-        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        by_key = {r[0]: r[2] for r in get_all_features(db_path=path)}
         assert "event_lifecycle" not in by_key
         assert "updateuser" not in by_key
         assert by_key["newevent"] == "FREE"
@@ -648,7 +677,7 @@ class TestFeatureFlags:
         init_db(db_path=path)
         update_feature_flag("shareevent", "PRO", db_path=path)
 
-        by_key = {r[0]: r[2] for r in get_feature_flags(db_path=path)}
+        by_key = {r[0]: r[2] for r in get_all_features(db_path=path)}
         assert by_key["shareevent"] == "PRO"
         assert by_key["newevent"] == "FREE"  # untouched
 

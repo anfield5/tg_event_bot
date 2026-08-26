@@ -50,9 +50,9 @@ async def run_db(func, *args, **kwargs):
     return await loop.run_in_executor(None, call)
 
 
-def _seed_feature_flags(cursor):
+def _seed_all_features(cursor):
     """
-    Populates feature_flags with the current, actually-audited access tier
+    Populates all_features with the current, actually-audited access tier
     for every gated feature in the codebase (checked against every
     is_premium()/require_premium() and OWNER_USER_IDS check as of when this
     was written - see subscription.py, aliases.py, monitors.py, handlers.py).
@@ -113,7 +113,7 @@ def _seed_feature_flags(cursor):
     ]
     seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(
-        "INSERT OR IGNORE INTO feature_flags "
+        "INSERT OR IGNORE INTO all_features "
         "(feature_key, feature_label, min_tier, limit_count, sort_order, description) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         seed_rows,
@@ -125,7 +125,7 @@ def _seed_feature_flags(cursor):
     # change (e.g. refreshusersall moving out of event_lifecycle's bundle)
     # picks up the correction too, not just brand-new databases.
     cursor.executemany(
-        "UPDATE feature_flags SET feature_label = ?, sort_order = ?, description = ? WHERE feature_key = ?",
+        "UPDATE all_features SET feature_label = ?, sort_order = ?, description = ? WHERE feature_key = ?",
         [(label, sort_order, desc, key) for key, label, _tier, _limit, sort_order, desc in seed_rows],
     )
     # Retire feature_keys that no longer exist in the current seed list
@@ -135,7 +135,7 @@ def _seed_feature_flags(cursor):
     current_keys = [row[0] for row in seed_rows]
     placeholders = ",".join("?" * len(current_keys))
     cursor.execute(
-        f"DELETE FROM feature_flags WHERE feature_key NOT IN ({placeholders})",
+        f"DELETE FROM all_features WHERE feature_key NOT IN ({placeholders})",
         current_keys,
     )
 
@@ -261,8 +261,21 @@ def init_db(db_path: str = DB_PATH):
     # "inversion" (a higher tier ending up more restricted than a lower
     # one) - the model doesn't allow it, so no separate limit exists per
     # tier and no runtime warning is needed for that case anymore.
+    #
+    # Rename: 'feature_flags' -> 'all_features' - matches this project's
+    # 'all_groups'/'all_channels' naming convention for its other
+    # bot-wide registries. Must run before CREATE TABLE IF NOT EXISTS,
+    # since 'all_features' is a brand new name that "IF NOT EXISTS"
+    # would happily create empty alongside the still-existing old table.
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='feature_flags'")
+    has_feature_flags = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='all_features'")
+    has_all_features = cursor.fetchone() is not None
+    if has_feature_flags and not has_all_features:
+        cursor.execute("ALTER TABLE feature_flags RENAME TO all_features")
+
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS feature_flags (
+        CREATE TABLE IF NOT EXISTS all_features (
             feature_key TEXT PRIMARY KEY,
             feature_label TEXT NOT NULL,
             min_tier TEXT NOT NULL DEFAULT 'FREE',
@@ -271,13 +284,13 @@ def init_db(db_path: str = DB_PATH):
             description TEXT DEFAULT NULL
         )
     """)
-    cursor.execute("PRAGMA table_info(feature_flags)")
-    feature_flags_cols = [col[1] for col in cursor.fetchall()]
-    had_per_tier_limits = "limit_free" in feature_flags_cols
-    if "limit_count" not in feature_flags_cols:
-        cursor.execute("ALTER TABLE feature_flags ADD COLUMN limit_count INTEGER DEFAULT NULL")
-    if "sort_order" not in feature_flags_cols:
-        cursor.execute("ALTER TABLE feature_flags ADD COLUMN sort_order INTEGER DEFAULT 999")
+    cursor.execute("PRAGMA table_info(all_features)")
+    all_features_cols = [col[1] for col in cursor.fetchall()]
+    had_per_tier_limits = "limit_free" in all_features_cols
+    if "limit_count" not in all_features_cols:
+        cursor.execute("ALTER TABLE all_features ADD COLUMN limit_count INTEGER DEFAULT NULL")
+    if "sort_order" not in all_features_cols:
+        cursor.execute("ALTER TABLE all_features ADD COLUMN sort_order INTEGER DEFAULT 999")
     if had_per_tier_limits:
         # One-time migration from the old per-tier model (limit_free/
         # limit_pro/limit_admin, one owner-settable cap per tier) to the
@@ -289,17 +302,17 @@ def init_db(db_path: str = DB_PATH):
         # min_tier to match them, at which point they'd have applied).
         for tier, col in (("FREE", "limit_free"), ("PRO", "limit_pro"), ("ADMIN", "limit_admin")):
             cursor.execute(
-                f"UPDATE feature_flags SET limit_count = {col} "
+                f"UPDATE all_features SET limit_count = {col} "
                 f"WHERE min_tier = ? AND limit_count IS NULL",
                 (tier,),
             )
         try:
-            cursor.execute("ALTER TABLE feature_flags DROP COLUMN limit_free")
-            cursor.execute("ALTER TABLE feature_flags DROP COLUMN limit_pro")
-            cursor.execute("ALTER TABLE feature_flags DROP COLUMN limit_admin")
+            cursor.execute("ALTER TABLE all_features DROP COLUMN limit_free")
+            cursor.execute("ALTER TABLE all_features DROP COLUMN limit_pro")
+            cursor.execute("ALTER TABLE all_features DROP COLUMN limit_admin")
         except sqlite3.OperationalError:
             pass  # older SQLite without DROP COLUMN support - harmless leftover columns
-    _seed_feature_flags(cursor)
+    _seed_all_features(cursor)
 
     # Storage for active voting events within the system.
     # event_status: -1 canceled / 0 open / 1 verification / 2 closed
@@ -858,9 +871,9 @@ def log_command_usage(chat_id: str, user_id, command: str, command_text: str, ti
     conn.close()
 
 
-def get_feature_flags(db_path: str = None):
+def get_all_features(db_path: str = None):
     """
-    Returns every row of feature_flags as (feature_key, feature_label,
+    Returns every row of all_features as (feature_key, feature_label,
     min_tier, limit_count, description) tuples, ordered by sort_order (an
     explicit, developer-defined display order - deliberately not
     tier-then-alphabetical, since the intended order mixes tiers, e.g.
@@ -877,7 +890,7 @@ def get_feature_flags(db_path: str = None):
     cursor = conn.cursor()
     cursor.execute(
         "SELECT feature_key, feature_label, min_tier, limit_count, description "
-        "FROM feature_flags "
+        "FROM all_features "
         "ORDER BY sort_order, feature_key"
     )
     rows = cursor.fetchall()
@@ -917,7 +930,7 @@ def update_feature_flag(feature_key: str, min_tier: str, limit_count=_NO_CHANGE,
         params.append(limit_count)
     params.append(feature_key)
 
-    cursor.execute(f"UPDATE feature_flags SET {', '.join(sets)} WHERE feature_key = ?", params)
+    cursor.execute(f"UPDATE all_features SET {', '.join(sets)} WHERE feature_key = ?", params)
     conn.commit()
     conn.close()
 
@@ -951,7 +964,7 @@ def get_feature_limit_for_chat(chat_id: str, feature_key: str, db_path: str = No
             is_pro = False
 
     group_tier = "PRO" if is_pro else "FREE"
-    cursor.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key = ?", (feature_key,))
+    cursor.execute("SELECT min_tier, limit_count FROM all_features WHERE feature_key = ?", (feature_key,))
     row = cursor.fetchone()
     conn.close()
     if not row:

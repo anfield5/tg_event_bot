@@ -62,7 +62,7 @@ Key relationships:
 - `events.chat_id` is always the **hub** (main group) the event was
   created in; `event_shares` links that same `event_id` to every child
   chat it was shared to.
-- `feature_flags` is read live on every gated action (`has_feature()`,
+- `all_features` is read live on every gated action (`has_feature()`,
   `get_feature_limit_for_chat()`) - there's no cache, so
   `/updatefeature` takes effect immediately. `limit_count` is a single
   value that only ever caps usage while a chat's tier is exactly AT the
@@ -83,7 +83,7 @@ owner-only, always kept in sync regardless of tier):
 |---|---|---|
 | `GROUPS` | CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD | mirrors `all_groups`, on every `/setsub` |
 | `CHANNELS` | CHAT_ID, CHAT_NAME, VISIBILITY, DATE_BOT_ADD | mirrors `all_channels` |
-| `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION | mirrors `feature_flags`, on every `/updatefeature` |
+| `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION | mirrors `all_features`, on every `/updatefeature` |
 | `chats_log` | CHAT_ID, DATE_BOT_ADD, DATE_BOT_REMOVE | mirrors `all_chats_bot_log` - the historical add/remove trail, pushed immediately whenever the bot is removed from a group/channel |
 
 **Per-hub Sheet** (bound via `/setsheet`, PRO-only - a FREE hub writes
@@ -108,7 +108,7 @@ SQLite is the source of truth and the only thing the bot ever *reads* back
    each `sync_*` function wraps its own `open_spreadsheet()`/API calls in
    a try/except that logs and returns on failure instead of raising -
    either way, a Sheets problem never blocks the user-facing action.
-2. `all_groups`/`all_channels`/`feature_flags` are pushed to the Control
+2. `all_groups`/`all_channels`/`all_features` are pushed to the Control
    Sheet *after* every write to those tables (`_push_control_sheet_*`),
    not read back from it - the Control Sheet is a live mirror for the
    owner to view, never a config source.

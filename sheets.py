@@ -376,7 +376,7 @@ _TIER_ORDER = {"FREE": 0, "PRO": 1, "ADMIN": 2}
 async def sync_control_sheet_botconfig(feature_rows: list):
     """
     Overwrites the "BOTCONFIG" tab of the Control Sheet with the current
-    feature_flags table (db.get_feature_flags()) - the actual source of
+    all_features table (db.get_all_features()) - the actual source of
     truth for what's available at each tier, not just reference data.
 
     feature_rows: list of (feature_key, feature_label, min_tier,

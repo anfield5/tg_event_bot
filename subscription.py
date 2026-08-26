@@ -15,7 +15,7 @@ from telegram.ext import ContextTypes
 
 from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
 from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import get_connection, get_feature_flags, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE
+from db import get_connection, get_all_features, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels,
@@ -52,7 +52,7 @@ def is_premium(chat_id: str) -> bool:
 
 def has_feature(chat_id: str, feature_key: str) -> bool:
     """
-    General availability check against feature_flags, for anything beyond
+    General availability check against all_features, for anything beyond
     the plain PRO/FREE split that is_premium() covers - e.g. "verification"
     or "add_extra_member", which are independently configurable via
     set_feature_flag() even though they default to FREE.
@@ -68,7 +68,7 @@ def has_feature(chat_id: str, feature_key: str) -> bool:
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT min_tier FROM feature_flags WHERE feature_key = ?", (feature_key,))
+        cursor.execute("SELECT min_tier FROM all_features WHERE feature_key = ?", (feature_key,))
         row = cursor.fetchone()
 
     if not row:
@@ -79,7 +79,7 @@ def has_feature(chat_id: str, feature_key: str) -> bool:
     return tier_order.get(group_tier, -1) >= tier_order.get(row[0], 99)
 
 
-# feature_flags (db.get_feature_flags) is now the single source of truth
+# all_features (db.get_all_features) is now the single source of truth
 # for what's available at each tier - see set_feature_flag() below and
 # _push_control_sheet_botconfig(), which mirrors it to the Control Sheet's
 # "BOTCONFIG" tab every time it's called.
@@ -606,15 +606,15 @@ async def allchannels_page_callback_handler(update: Update, context: ContextType
 
 
 async def _push_control_sheet_botconfig() -> bool:
-    """Reads all of feature_flags and pushes it to the Control Sheet's 'BOTCONFIG' tab."""
-    rows = get_feature_flags()
+    """Reads all of all_features and pushes it to the Control Sheet's 'BOTCONFIG' tab."""
+    rows = get_all_features()
     return await sync_control_sheet_botconfig(rows)
 
 
 async def set_feature_flag(feature_key: str, min_tier: str, limit_count=_LIMIT_NO_CHANGE) -> bool:
     """
     THE way to change what tier a feature requires (and optionally its
-    limit_count) - writes to feature_flags (db.update_feature_flag) and
+    limit_count) - writes to all_features (db.update_feature_flag) and
     then immediately re-syncs the Control Sheet's BOTCONFIG tab, so it can
     never drift out of date with the table. Powers /updatefeature.
 
@@ -678,7 +678,7 @@ async def updatefeature(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     feature_key = args[0]
-    existing = get_feature_flags()
+    existing = get_all_features()
     if feature_key not in {row[0] for row in existing}:
         await update.message.reply_text(
             f"🔍 Unknown feature\\_key `{escape_markdown(feature_key)}`\\. "

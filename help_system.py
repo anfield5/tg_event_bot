@@ -18,7 +18,7 @@ from config import (
 )
 from subscription import is_premium, has_feature
 from hub_resolver import _get_known_candidate_chats
-from db import get_feature_flags, get_shareevent_remaining_for_chat
+from db import get_all_features, get_shareevent_remaining_for_chat
 from utils import escape_markdown
 
 
@@ -51,11 +51,11 @@ async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYP
     return chat.id
 
 
-# Which feature_flags key(s) gate each /help section button. A button is
+# Which all_features key(s) gate each /help section button. A button is
 # shown locked if ANY of its features aren't accessible to the calling
 # chat - "Utility" maps to nothing since status/switchgroup/userid/chatid
 # are never tier-gated (see the earlier decision to keep them out of
-# feature_flags entirely, matching /userid/chatid/help/start).
+# all_features entirely, matching /userid/chatid/help/start).
 _BUTTON_FEATURE_MAP = {
     "lifecycle":     ["newevent", "editevent", "verification", "add_extra_member", "event_limit"],
     "distribution":  ["shareevent"],
@@ -141,31 +141,17 @@ def _build_main_help_text(has_event_limit: bool = False) -> str:
         "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]"
         "\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Create a new event\n"
-        "\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
-        "\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
-        "\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-        "\\-limit N \\- caps going\\+guests across the whole event; once full, new Going clicks join the Waitlist instead\\. Requires a higher tier\\.\n"
-        "\\-wl \\| \\-waitlist visible\\|hidden\\|onlycount \\- Waitlist visibility in the post \\(independent of \\-limit, can be set/changed on its own\\)\\. Requires a higher tier\\.\n"
-        "\\-ngl \\| \\-notgoinglist visible\\|hidden\\|onlycount \\- Not Going list visibility in the post\\.\n"
-        "\\-clc \\| \\-clickability on\\|off \\- whether names in the post are clickable mentions\\. Requires a higher tier\\.\n\n"
-        "*visible\\|hidden\\|onlycount* \\(shared by \\-wl and \\-ngl\\):\n"
-        "    visible \\- the full list is shown \\(for \\-wl: hub's post shows everyone across every chat; a child chat's post shows only its own\\)\n"
-        "    onlycount \\- shows just the total count, no names\n"
-        "    hidden \\- section not shown in the post at all \\(for \\-wl: admin\\-only via /waitlist\\)\n\n"
-        "*on\\|off* \\(\\-clc only\\):\n"
-        "    on \\- every name is a clickable mention\n"
-        "    off \\- every name is plain, non\\-linked text\n\n"
-        "*Defaults:* \\-wl hidden, \\-ngl visible, \\-clc on\n"
         f"{waitlist_line}"
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]"
-        "\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n"
+        "\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n\n"
+        "See 🗳 *Event Lifecycle* below for what each flag does and its default\\.\n"
     )
     text += "\n📚 *More Info*"
     return text
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    is_owner_request = bool(context.args) and context.args[0].strip().lower() in ("-a", "--admin", "--owner")
+    is_owner_request = bool(context.args) and context.args[0].strip().lower() in ("-a", "-admin")
     if is_owner_request and update.effective_user.id in OWNER_USER_IDS:
         owner_help = (
             "🔑 *Owner\\-Only Commands*\n\n"
@@ -295,7 +281,24 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/switchgroup \\- \\(DM only\\) change which group your DM commands target\\."
         ),
         "help_lifecycle": (
-            f"🗳 *Event Lifecycle Buttons*\n\n"
+            f"🗳 *Event Lifecycle*\n\n"
+            f"*Flags* \\(on /newevent and /editevent\\)\n"
+            f"\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
+            f"\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
+            f"\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
+            f"\\-limit N \\- caps going\\+guests across the whole event; once full, new Going clicks join the Waitlist instead\\. Requires a higher tier\\.\n"
+            f"\\-wl \\| \\-waitlist visible\\|hidden\\|onlycount \\- Waitlist visibility in the post \\(independent of \\-limit, can be set/changed on its own\\)\\. Requires a higher tier\\.\n"
+            f"\\-ngl \\| \\-notgoinglist visible\\|hidden\\|onlycount \\- Not Going list visibility in the post\\.\n"
+            f"\\-clc \\| \\-clickability on\\|off \\- whether names in the post are clickable mentions\\. Requires a higher tier\\.\n\n"
+            f"*visible\\|hidden\\|onlycount* \\(shared by \\-wl and \\-ngl\\):\n"
+            f"    visible \\- the full list is shown \\(for \\-wl: hub's post shows everyone across every chat; a child chat's post shows only its own\\)\n"
+            f"    onlycount \\- shows just the total count, no names\n"
+            f"    hidden \\- section not shown in the post at all \\(for \\-wl: admin\\-only via /waitlist\\)\n\n"
+            f"*on\\|off* \\(\\-clc only\\):\n"
+            f"    on \\- every name is a clickable mention\n"
+            f"    off \\- every name is plain, non\\-linked text\n\n"
+            f"*Defaults:* \\-wl hidden, \\-ngl visible, \\-clc on\n\n"
+            f"*Buttons*\n"
             f"  • Going / Not Going \\- vote, available to everyone\n"
             f"  • ADD / Drop \\- adjust your own guest count one at a time, available to everyone\n"
             f"  • ALL \\- drop ALL of your own guests at once, available to everyone\n"
@@ -337,7 +340,7 @@ async def upgrade_info_callback_handler(update: Update, context: ContextTypes.DE
     """
     Shown when a hub taps a locked /help section button - replaces the old
     dead-end alert ("This section is PRO-only.") with an actual next step:
-    what unlocking it gets you (pulled live from feature_flags.description,
+    what unlocking it gets you (pulled live from all_features.description,
     not a hardcoded message - see task 8), the hub's current tier, a
     button to message the bot owner directly, and a way back to /help.
 
@@ -353,7 +356,7 @@ async def upgrade_info_callback_handler(update: Update, context: ContextTypes.DE
     button_icon, button_label, _ = _BUTTON_LABELS.get(button_key, ("⚡", "This section", None))
     feature_keys = _BUTTON_FEATURE_MAP.get(button_key, [])
 
-    all_flags = {row[0]: row for row in get_feature_flags()}
+    all_flags = {row[0]: row for row in get_all_features()}
     lines = []
     for fk in feature_keys:
         row = all_flags.get(fk)

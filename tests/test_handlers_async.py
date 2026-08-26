@@ -741,7 +741,7 @@ class TestShareevent:
 
     async def test_blocks_after_reaching_the_default_limit_of_3(self, db_path):
         """
-        /shareevent's FREE-tier limit (feature_flags.shareevent.limit_count,
+        /shareevent's FREE-tier limit (all_features.shareevent.limit_count,
         default 3, since shareevent's min_tier is FREE) - the 4th DISTINCT
         event shared to the same target chat from a FREE hub must be
         rejected with the exact requested message.
@@ -1792,7 +1792,7 @@ class TestStatusCommand:
 
 class TestUpgradeInfoCallback:
     """Tapping a locked /help section button opens an upgrade-info message
-    (built from feature_flags.description) instead of the old dead-end alert."""
+    (built from all_features.description) instead of the old dead-end alert."""
 
     async def test_shows_feature_description_status_and_contact_button(self, db_path):
         bot = make_bot()
@@ -1814,7 +1814,7 @@ class TestUpgradeInfoCallback:
         text = query.edit_message_text.call_args.args[0]
         assert "Aliases" in text
         assert "Currently: FREE" in text
-        assert "child groups/channels" in text  # from feature_flags.description
+        assert "child groups/channels" in text  # from all_features.description
 
         keyboard = query.edit_message_text.call_args.kwargs["reply_markup"]
         buttons = [b for row in keyboard.inline_keyboard for b in row]
@@ -3050,7 +3050,7 @@ class TestFeatureFlagsSync:
 
         assert result is True
         conn = sqlite3.connect(db_path)
-        stored = conn.execute("SELECT min_tier FROM feature_flags WHERE feature_key='monitoring'").fetchone()
+        stored = conn.execute("SELECT min_tier FROM all_features WHERE feature_key='monitoring'").fetchone()
         assert stored == ("ADMIN",)
 
         ws = fake_ss.worksheets["BOTCONFIG"]
@@ -3093,7 +3093,7 @@ class TestFeatureSnapshotGrandfathering:
     """
     An event locks in which rules applied to it (verification,
     add_extra_member) at the moment it was created (db.events.feature_snapshot).
-    A later tier or feature_flags change never retroactively changes an
+    A later tier or all_features change never retroactively changes an
     event already in progress - only events created AFTER the change follow
     the new rules.
     """
@@ -3255,7 +3255,7 @@ class TestUpdateFeature:
             reply = msg.reply_text.call_args.args[0]
             assert "No changes given" in reply
             conn = sqlite3.connect(db_path)
-            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            row = conn.execute("SELECT min_tier, limit_count FROM all_features WHERE feature_key='shareevent'").fetchone()
             assert row == ("FREE", 3), "nothing should have changed from the seed default"
 
     async def test_limit_only_tier_unchanged_keeps_existing_limit(self, db_path):
@@ -3272,7 +3272,7 @@ class TestUpdateFeature:
             await subscription.updatefeature(upd, ctx)
 
             conn = sqlite3.connect(db_path)
-            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            row = conn.execute("SELECT min_tier, limit_count FROM all_features WHERE feature_key='shareevent'").fetchone()
             assert row == ("FREE", 3), "limit must be untouched when the tier didn't actually change"
 
     async def test_tier_change_without_limit_resets_it_to_unlimited(self, db_path):
@@ -3291,7 +3291,7 @@ class TestUpdateFeature:
             reply = msg.reply_text.call_args.args[0]
             assert "reset to unlimited" in reply
             conn = sqlite3.connect(db_path)
-            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            row = conn.execute("SELECT min_tier, limit_count FROM all_features WHERE feature_key='shareevent'").fetchone()
             assert row == ("PRO", None)
 
     async def test_limit_0_clears_an_existing_limit(self, db_path):
@@ -3308,7 +3308,7 @@ class TestUpdateFeature:
             await subscription.updatefeature(upd, ctx)
 
             conn = sqlite3.connect(db_path)
-            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            row = conn.execute("SELECT min_tier, limit_count FROM all_features WHERE feature_key='shareevent'").fetchone()
             assert row == ("FREE", None)
 
     async def test_both_flags_together_in_one_call(self, db_path):
@@ -3325,7 +3325,7 @@ class TestUpdateFeature:
             await subscription.updatefeature(upd, ctx)
 
             conn = sqlite3.connect(db_path)
-            row = conn.execute("SELECT min_tier, limit_count FROM feature_flags WHERE feature_key='shareevent'").fetchone()
+            row = conn.execute("SELECT min_tier, limit_count FROM all_features WHERE feature_key='shareevent'").fetchone()
             assert row == ("ADMIN", 7)
 
     async def test_unknown_feature_key(self, db_path):
@@ -6020,7 +6020,7 @@ class TestPromotionAnnouncementTextHelper:
 
 class TestDmAccessHelpSection:
     """Real gap found in an earlier audit and now fixed: dm_access has a
-    detailed feature_flags.description shown when tapping the upgrade
+    detailed all_features.description shown when tapping the upgrade
     prompt, but /help previously had NO corresponding section at all -
     someone reading /help could never find this documented anywhere.
     Added a full help_dm_access section, wired into the keyboard, the
@@ -6084,7 +6084,7 @@ class TestDmAccessHelpSection:
         assert "switchgroup" in text
         assert "\\\"" not in text  # no stray backslash before literal quotes
 
-    async def test_upgrade_prompt_matches_feature_flags_description(self, db_path):
+    async def test_upgrade_prompt_matches_all_features_description(self, db_path):
         chat = make_chat(chat_id=-100123)
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
@@ -6105,7 +6105,7 @@ class TestDmAccessHelpSection:
 
 
 class TestLifecycleHelpMentionsPerEventLockIn:
-    """Real gap found during a follow-up verification pass: feature_flags
+    """Real gap found during a follow-up verification pass: all_features
     descriptions for verification/add_extra_member both mention they're
     'locked in per-event at creation time' (changing the tier later never
     affects an event already running) - a real, important nuance that was
@@ -6134,7 +6134,7 @@ class TestLifecycleHelpMentionsPerEventLockIn:
 class TestDistributionHelpShowsLiveShareLimit:
     """Real gaps found and fixed across two rounds of review:
     1) The share-limit mention in help_distribution was initially a
-       hardcoded literal, not read live from feature_flags.limit_count.
+       hardcoded literal, not read live from all_features.limit_count.
     2) limit_count=0 (this project's 'cleared/unlimited' convention) was
        shown as 'up to 0 times' instead of the unlimited message.
     3) The user asked for a "(limit N, remaining K)" format, computed
@@ -6253,17 +6253,17 @@ class TestDistributionHelpShowsLiveShareLimit:
 
 
 class TestEnrichedFeatureFlagsDescriptions:
-    """newevent/editevent/user_management's feature_flags.description were
+    """newevent/editevent/user_management's all_features.description were
     noticeably thinner than what /help already documents for the same
     commands - enriched to match (e.g. newevent's description now
     mentions -gi/-ni/-d, not just a generic one-liner)."""
 
     def test_newevent_description_mentions_icon_flags(self, db_path):
-        rows = {r[0]: r for r in db.get_feature_flags(db_path=db_path)}
+        rows = {r[0]: r for r in db.get_all_features(db_path=db_path)}
         assert "-gi" in rows["newevent"][4] or "goingicon" in rows["newevent"][4]
 
     def test_user_management_description_lists_individual_commands(self, db_path):
-        rows = {r[0]: r for r in db.get_feature_flags(db_path=db_path)}
+        rows = {r[0]: r for r in db.get_all_features(db_path=db_path)}
         desc = rows["user_management"][4]
         assert "/adduser" in desc
         assert "/notify" in desc
@@ -6839,6 +6839,7 @@ class TestHelpUpdatedForNewFlagsAndStats:
 
     async def test_main_help_shows_new_newevent_syntax(self, db_path):
         chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
         ctx = make_context()
@@ -6847,11 +6848,24 @@ class TestHelpUpdatedForNewFlagsAndStats:
 
         text = msg.reply_text.call_args.args[0]
         assert "\\-wl" in text
-        assert "\\-waitlist" in text
         assert "\\-ngl" in text
-        assert "\\-notgoinglist" in text
         # Old combined syntax must be gone
         assert "\\-limit N \\[visible" not in text
+
+        # Long-form flag names now live in Event Lifecycle, not the main text
+        msg2 = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg2
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd2 = make_update(chat=chat, user=user, message=msg2)
+        upd2.callback_query = query
+        ctx2 = make_context()
+        await help_system.help_callback_handler(upd2, ctx2)
+        lifecycle_text = query.edit_message_text.call_args.args[0]
+        assert "\\-waitlist" in lifecycle_text
+        assert "\\-notgoinglist" in lifecycle_text
 
     async def test_stats_shown_only_on_pro_hub(self, db_path):
         chat_free = make_chat(chat_id=-100123)
@@ -7238,6 +7252,7 @@ class TestHelpMentionsClickabilityFlag:
 
     async def test_main_help_shows_clc_syntax(self, db_path):
         chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
         ctx = make_context()
@@ -7246,7 +7261,19 @@ class TestHelpMentionsClickabilityFlag:
 
         text = msg.reply_text.call_args.args[0]
         assert "\\-clc" in text
-        assert "\\-clickability" in text
+
+        msg2 = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg2
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd2 = make_update(chat=chat, user=user, message=msg2)
+        upd2.callback_query = query
+        ctx2 = make_context()
+        await help_system.help_callback_handler(upd2, ctx2)
+        lifecycle_text = query.edit_message_text.call_args.args[0]
+        assert "\\-clickability" in lifecycle_text
 
     async def test_distribution_section_shows_clc_syntax(self, db_path):
         chat = make_chat(chat_id=-1)
@@ -7377,13 +7404,20 @@ class TestHelpReflectsClickabilityGating:
 
     async def test_main_help_clc_line_says_gated_not_ungated(self, db_path):
         chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
         msg = make_message(chat=chat)
-        upd = make_update(chat=chat, message=msg)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
         ctx = make_context()
 
-        await handlers.help_command(upd, ctx)
+        await help_system.help_callback_handler(upd, ctx)
 
-        text = msg.reply_text.call_args.args[0]
+        text = query.edit_message_text.call_args.args[0]
         clc_line = next(l for l in text.split("\n") if l.startswith("\\-clc \\|"))
         assert "Requires a higher tier" in clc_line
         assert "ungated" not in clc_line
@@ -7392,13 +7426,20 @@ class TestHelpReflectsClickabilityGating:
         """-ngl was never gated by item 3 - its own line must NOT claim
         'Requires a higher tier' (unlike -wl and -clc, which both do)."""
         chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
         msg = make_message(chat=chat)
-        upd = make_update(chat=chat, message=msg)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
         ctx = make_context()
 
-        await handlers.help_command(upd, ctx)
+        await help_system.help_callback_handler(upd, ctx)
 
-        text = msg.reply_text.call_args.args[0]
+        text = query.edit_message_text.call_args.args[0]
         ngl_line = next(l for l in text.split("\n") if l.startswith("\\-ngl \\|"))
         assert "Requires a higher tier" not in ngl_line
 
@@ -7760,33 +7801,49 @@ class TestSendPromotionAnnouncementsHelper:
 class TestHelpFlagsGroupedByVocabulary:
     """Item 1: -wl and -ngl share the same visible|hidden|onlycount
     vocabulary - instead of repeating the same 3-line breakdown under
-    each flag separately, the main help text now describes each flag's
-    own purpose in one line, then explains what visible/onlycount/hidden
-    mean ONCE in a shared block, plus a single consolidated defaults
-    summary at the bottom."""
+    each flag separately, the Event Lifecycle section (help_lifecycle)
+    describes each flag's own purpose in one line, then explains what
+    visible/onlycount/hidden mean ONCE in a shared block, plus a single
+    consolidated defaults summary at the bottom. This whole block later
+    moved out of the top-level /help text into Event Lifecycle to keep
+    the main screen short - see TestHelpNeweventContentMovedToLifecycle."""
 
     async def test_shared_vocabulary_explained_once(self, db_path):
         chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
         msg = make_message(chat=chat)
-        upd = make_update(chat=chat, message=msg)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
         ctx = make_context()
 
-        await handlers.help_command(upd, ctx)
+        await help_system.help_callback_handler(upd, ctx)
 
-        text = msg.reply_text.call_args.args[0]
+        text = query.edit_message_text.call_args.args[0]
         # The 3-mode explanation block appears exactly once, not once per flag
         assert text.count("shared by \\-wl and \\-ngl") == 1
         assert text.count("onlycount \\- shows just the total count, no names") == 1
 
     async def test_defaults_summary_present(self, db_path):
         chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
         msg = make_message(chat=chat)
-        upd = make_update(chat=chat, message=msg)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
         ctx = make_context()
 
-        await handlers.help_command(upd, ctx)
+        await help_system.help_callback_handler(upd, ctx)
 
-        text = msg.reply_text.call_args.args[0]
+        text = query.edit_message_text.call_args.args[0]
         assert "Defaults:" in text
         assert "\\-wl hidden" in text
         assert "\\-ngl visible" in text
@@ -7794,6 +7851,38 @@ class TestHelpFlagsGroupedByVocabulary:
 
     async def test_wl_and_clc_still_show_gating_individually(self, db_path):
         chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        wl_line = next(l for l in text.split("\n") if l.startswith("\\-wl \\|"))
+        clc_line = next(l for l in text.split("\n") if l.startswith("\\-clc \\|"))
+        assert "Requires a higher tier" in wl_line
+        assert "Requires a higher tier" in clc_line
+
+
+class TestHelpNeweventContentMovedToLifecycle:
+    """The main /help screen previously packed the full -newevent/
+    -editevent flag breakdown (flag purposes, shared vocabulary,
+    defaults) directly into the top-level text - 1803 chars just for
+    that block, before any navigation. Moved the detailed prose into
+    the Event Lifecycle section (which already covered the event
+    post's buttons) - the main screen now only shows bare syntax lines
+    plus a pointer, letting someone see every top-level command at a
+    glance without scrolling past one command's full flag reference."""
+
+    async def test_main_help_is_significantly_shorter(self, db_path):
+        chat = make_chat(chat_id=-100123)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, message=msg)
         ctx = make_context()
@@ -7801,10 +7890,40 @@ class TestHelpFlagsGroupedByVocabulary:
         await handlers.help_command(upd, ctx)
 
         text = msg.reply_text.call_args.args[0]
-        wl_line = next(l for l in text.split("\n") if l.startswith("\\-wl \\|"))
-        clc_line = next(l for l in text.split("\n") if l.startswith("\\-clc \\|"))
-        assert "Requires a higher tier" in wl_line
-        assert "Requires a higher tier" in clc_line
+        assert len(text) < 1000  # was 1803 chars before this change
+
+    async def test_main_help_still_has_bare_syntax_and_pointer(self, db_path):
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "/newevent" in text
+        assert "/editevent" in text
+        assert "Event Lifecycle" in text
+
+    async def test_lifecycle_section_has_both_flags_and_buttons(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "*Flags*" in text
+        assert "*Buttons*" in text
+        assert "Going / Not Going" in text  # buttons content preserved
 
 
 class TestHelpDmAccessSimplified:
@@ -7945,3 +8064,61 @@ class TestGoingClickHealsStaleUnresolvableEntry:
 
         row = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()
         assert json.loads(row[0]) == ["alice (555)"]
+
+
+class TestHelpOwnerFlagReducedToTwoForms:
+    """Item 1: /help's owner-only flag reduced from 3 forms (-a, --admin,
+    --owner) to 2 (-a, -admin) - both still gated on OWNER_USER_IDS."""
+
+    async def test_short_form_still_works(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["-a"])
+
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            await help_system.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Owner\\-Only Commands" in text
+
+    async def test_new_long_form_works(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["-admin"])
+
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            await help_system.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Owner\\-Only Commands" in text
+
+    @pytest.mark.parametrize("removed_flag", ["--admin", "--owner"])
+    async def test_removed_forms_no_longer_work(self, db_path, removed_flag):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=[removed_flag])
+
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            await help_system.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Owner\\-Only Commands" not in text
+
+    async def test_still_gated_on_owner_ids(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=999)  # not an owner
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["-admin"])
+
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            await help_system.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Owner\\-Only Commands" not in text

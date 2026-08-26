@@ -41,7 +41,8 @@ class TestBotAddedToGroup:
     async def test_group_added_gets_free_type_and_immediate_sheet_push(self, db_path):
         main.CONTROL_SHEET_ID = "fake_sheet_id"
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock) as sync_main, \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock) as sync_channels:
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock) as sync_channels, \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             sync_main.return_value = True
             sync_channels.return_value = True
             upd = _my_chat_member_update(-100, "supergroup", "My Group", "left", "member")
@@ -59,7 +60,8 @@ class TestBotAddedToGroup:
     async def test_creator_status_also_counts_as_added(self, db_path):
         main.CONTROL_SHEET_ID = "fake_sheet_id"
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True), \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True):
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             upd = _my_chat_member_update(-100, "group", "My Group", "left", "creator")
             await main.on_my_chat_member_update(upd, MagicMock())
 
@@ -71,7 +73,8 @@ class TestBotAddedToChannel:
     async def test_channel_added_goes_to_all_channels_not_all_groups(self, db_path):
         main.CONTROL_SHEET_ID = "fake_sheet_id"
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True), \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock) as sync_channels:
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock) as sync_channels, \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             sync_channels.return_value = True
             upd = _my_chat_member_update(-200, "channel", "My Channel", "left", "administrator")
             await main.on_my_chat_member_update(upd, MagicMock())
@@ -89,13 +92,15 @@ class TestBotRemovedFromGroup:
     async def test_removal_deletes_row_logs_both_dates_clears_sheet(self, db_path):
         main.CONTROL_SHEET_ID = "fake_sheet_id"
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True), \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True):
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             await main.on_my_chat_member_update(
                 _my_chat_member_update(-100, "supergroup", "My Group", "left", "member"), MagicMock()
             )
 
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock) as sync_main, \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True):
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             sync_main.return_value = True
             await main.on_my_chat_member_update(
                 _my_chat_member_update(-100, "supergroup", "My Group", "member", "left"), MagicMock()
@@ -119,7 +124,8 @@ class TestBotRemovedFromGroup:
     async def test_kicked_status_also_counts_as_removed(self, db_path):
         main.CONTROL_SHEET_ID = "fake_sheet_id"
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True), \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True):
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             await main.on_my_chat_member_update(
                 _my_chat_member_update(-100, "supergroup", "My Group", "left", "member"), MagicMock()
             )
@@ -136,13 +142,15 @@ class TestBotRemovedFromChannel:
     async def test_removal_deletes_row_logs_both_dates_clears_sheet(self, db_path):
         main.CONTROL_SHEET_ID = "fake_sheet_id"
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True), \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True):
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             await main.on_my_chat_member_update(
                 _my_chat_member_update(-200, "channel", "My Channel", "left", "administrator"), MagicMock()
             )
 
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True), \
-             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock) as sync_channels:
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock) as sync_channels, \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
             sync_channels.return_value = True
             await main.on_my_chat_member_update(
                 _my_chat_member_update(-200, "channel", "My Channel", "administrator", "left"), MagicMock()

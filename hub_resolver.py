@@ -199,7 +199,7 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
     set, skipping straight past this whole DM-resolution dance).
 
     dm_access gate: if this call originated from a DM (not a group), the
-    resolved hub must have the "dm_access" feature (see feature_flags) -
+    resolved hub must have the "dm_access" feature (see all_features) -
     FREE hubs must run commands inside the actual group chat instead. This
     does NOT apply to running commands directly in the group itself, only
     to going through a private DM with the bot.

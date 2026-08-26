@@ -58,7 +58,7 @@ def create_event_keyboard(
     verification_enabled / add_extra_member_enabled: read from the event's
     OWN stored feature_snapshot (see db.events.feature_snapshot), NOT the
     hub's current live tier - an event keeps whatever rules applied when it
-    was created, even if the hub's tier or feature_flags change later.
+    was created, even if the hub's tier or all_features change later.
     verification_enabled=False changes the OPEN-state button to
     "Save&Close" (callback "directclose_") instead of "Verify"
     (callback "close_") - skipping the review step entirely, since there's
