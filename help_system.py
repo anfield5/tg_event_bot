@@ -20,6 +20,7 @@ from subscription import is_premium, has_feature
 from hub_resolver import _get_known_candidate_chats
 from db import get_all_features, get_shareevent_remaining_for_chat
 from utils import escape_markdown
+import flag_registry
 
 
 async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,7 +78,53 @@ _BUTTON_LABELS = {
 }
 
 
-def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
+def _newevent_flags_detail_text() -> str:
+    """
+    The -d/-gi/-ni/-limit/-wl/-ngl/-clc flag breakdown for /newevent and
+    /editevent - shared by the inline "More" toggle on the main /help
+    screen and the Event Lifecycle section, so the two can't drift apart.
+
+    Per-flag lines are generated from flag_registry.py (the single
+    source of truth for each flag's spelling/default/gating/description);
+    only the header + shared-vocabulary + defaults summary around them
+    stay hand-written here, since those are bespoke prose, not per-flag
+    data the registry can meaningfully hold.
+    """
+    return (
+        "*Flags* \\(on /newevent and /editevent\\)\n"
+        + flag_registry.render_flags_detail("newevent") +
+        "\n"
+        "*visible\\|hidden\\|onlycount* \\(shared by \\-wl and \\-ngl\\):\n"
+        "    visible \\- the full list is shown \\(for \\-wl: hub's post shows everyone across every chat; a child chat's post shows only its own\\)\n"
+        "    onlycount \\- shows just the total count, no names\n"
+        "    hidden \\- section not shown in the post at all \\(for \\-wl: admin\\-only via /waitlist\\)\n\n"
+        "*on\\|off* \\(\\-clc only\\):\n"
+        "    on \\- every name is a clickable mention\n"
+        "    off \\- every name is plain, non\\-linked text\n\n"
+        "*Defaults:* \\-wl hidden, \\-ngl visible, \\-clc on\n"
+    )
+
+
+def _shareevent_flags_detail_text() -> str:
+    """The -mgl/-sngl/-swl/-clc flag breakdown for /shareevent, from flag_registry.py."""
+    return flag_registry.render_flags_detail("shareevent")
+
+
+def _updateuser_flags_detail_text() -> str:
+    """The -a/-p flag breakdown for /updateuser, from flag_registry.py."""
+    return flag_registry.render_flags_detail("updateuser")
+
+
+def _updatefeature_flags_detail_text() -> str:
+    """The -minlevel/-limit flag breakdown for /updatefeature (owner-only), from flag_registry.py."""
+    return (
+        flag_registry.render_flags_detail("updatefeature") +
+        "At least one of the two flags is required\\. If \\-limit is omitted: the existing limit is "
+        "kept if the tier didn't change, or reset to unlimited if it did\\.\n"
+    )
+
+
+def _build_main_help_keyboard(chat_id, expanded: bool = False) -> InlineKeyboardMarkup:
     """
     Every /help section button is tier-aware now, not just Aliases/
     Monitoring - if ANY feature backing a button (_BUTTON_FEATURE_MAP)
@@ -94,7 +141,14 @@ def _build_main_help_keyboard(chat_id) -> InlineKeyboardMarkup:
         callback = f"upgrade_info_{button_key}" if locked else normal_callback
         return InlineKeyboardButton(text, callback_data=callback)
 
+    toggle_button = (
+        InlineKeyboardButton("🔼 Less", callback_data="help_collapse_newevent")
+        if expanded else
+        InlineKeyboardButton("🔽 More: /newevent flags", callback_data="help_expand_newevent")
+    )
+
     return InlineKeyboardMarkup([
+        [toggle_button],
         [_make_button("users"), _make_button("utility")],
         [_make_button("lifecycle"), _make_button("distribution")],
         [_make_button("aliases"), _make_button("monitoring")],
@@ -125,7 +179,7 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _build_main_help_text(has_event_limit: bool = False) -> str:
+def _build_main_help_text(has_event_limit: bool = False, expanded: bool = False) -> str:
     """
     The one and only source of the main /help text - both help_command
     (direct /help) and help_back_handler (the "Back" button from a detail
@@ -135,8 +189,15 @@ def _build_main_help_text(has_event_limit: bool = False) -> str:
     has_event_limit controls whether /waitlist is shown - it lives right
     after -limit's own description (not in Distribution, where a group
     that can't even set -limit would see a dead-end command).
+
+    expanded controls whether the full /newevent+/editevent flag
+    breakdown is shown inline (via the "🔽 More" toggle button) instead
+    of just a pointer to the Event Lifecycle section - same underlying
+    text either way (see _newevent_flags_detail_text), just shown in a
+    different place depending on what the person tapped.
     """
     waitlist_line = "/waitlist \\- Show the Waitlist for the latest event \\(hub sees everyone with `from <chat>`, a child chat sees only its own\\)\n" if has_event_limit else ""
+    tail = _newevent_flags_detail_text() + "\n" if expanded else "See 🗳 *Event Lifecycle* below for what each flag does and its default\\.\n"
     text = (
         "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]"
@@ -144,32 +205,60 @@ def _build_main_help_text(has_event_limit: bool = False) -> str:
         f"{waitlist_line}"
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]"
         "\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n\n"
-        "See 🗳 *Event Lifecycle* below for what each flag does and its default\\.\n"
+        f"{tail}"
     )
     text += "\n📚 *More Info*"
     return text
 
 
+def _build_owner_help_text(expanded_key: str = None) -> str:
+    """
+    expanded_key is one of "updatefeature", "allgroups", or None - only
+    ONE of the two flag-bearing owner commands can be expanded at a
+    time (true accordion, unlike the single-toggle sections elsewhere,
+    since this screen has 2 independent flag-bearing commands on it).
+    """
+    allgroups_detail = "\\-pro \\- filters the list to PRO\\-tier groups only\n" if expanded_key == "allgroups" else ""
+    updatefeature_detail = _updatefeature_flags_detail_text() if expanded_key == "updatefeature" else ""
+    return (
+        "🔑 *Owner\\-Only Commands*\n\n"
+        "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
+        "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
+        "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
+        f"{allgroups_detail}"
+        "/allchannels \\- List every channel the bot is in, 10 at a time\n"
+        "/updatefeature \\[feature\\_key\\] \\[\\-minlevel free\\|pro\\|admin\\] \\[\\-limit N\\] "
+        "\\- Change a feature's tier and/or its usage limit\\. At least one of the two flags is required\\.\n"
+        f"{updatefeature_detail}\n"
+        "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
+        "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
+        "can't be verified and will be rejected\\."
+    )
+
+
+def _build_owner_help_keyboard(expanded_key: str = None) -> InlineKeyboardMarkup:
+    """True accordion: expanding one of these two always implies the
+    other is collapsed, regardless of its own prior state - each button
+    unconditionally targets "make me the (only) expanded one"."""
+    allgroups_btn = InlineKeyboardButton(
+        "🔼 Less" if expanded_key == "allgroups" else "🔽 More: /allgroups flags",
+        callback_data="help_owner_collapse" if expanded_key == "allgroups" else "help_owner_expand_allgroups",
+    )
+    updatefeature_btn = InlineKeyboardButton(
+        "🔼 Less" if expanded_key == "updatefeature" else "🔽 More: /updatefeature flags",
+        callback_data="help_owner_collapse" if expanded_key == "updatefeature" else "help_owner_expand_updatefeature",
+    )
+    return InlineKeyboardMarkup([[allgroups_btn], [updatefeature_btn]])
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_owner_request = bool(context.args) and context.args[0].strip().lower() in ("-a", "-admin")
     if is_owner_request and update.effective_user.id in OWNER_USER_IDS:
-        owner_help = (
-            "🔑 *Owner\\-Only Commands*\n\n"
-            "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
-            "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
-            "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
-            "/allchannels \\- List every channel the bot is in, 10 at a time\n"
-            "/updatefeature \\[feature\\_key\\] \\[\\-minlevel free\\|pro\\|admin\\] \\[\\-limit N\\] "
-            "\\- Change a feature's tier and/or its usage limit\\. At least one of the two flags is required\\.\n"
-            "\\-limit N \\- the cap that applies only while a group is exactly at that feature's tier "
-            "\\(any tier above is always unlimited\\)\\. `0` clears it \\(unlimited\\)\\.\n"
-            "If \\-limit is omitted: the existing limit is kept if the tier didn't change, or reset to "
-            "unlimited if it did\\.\n\n"
-            "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
-            "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
-            "can't be verified and will be rejected\\."
+        await update.message.reply_text(
+            _build_owner_help_text(),
+            parse_mode="MarkdownV2",
+            reply_markup=_build_owner_help_keyboard(),
         )
-        await update.message.reply_text(owner_help, parse_mode="MarkdownV2")
         return
 
     chat_id_for_help = await _help_target_chat_id(update, context)
@@ -203,6 +292,48 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     await query.answer()
 
+    if query.data in ("help_expand_newevent", "help_collapse_newevent"):
+        chat_id_for_toggle = await _help_target_chat_id(update, context)
+        has_event_limit = has_feature(chat_id_for_toggle, "event_limit")
+        expanded = query.data == "help_expand_newevent"
+        new_text = _build_main_help_text(has_event_limit, expanded=expanded)
+        new_keyboard = _build_main_help_keyboard(chat_id_for_toggle, expanded=expanded)
+        await query.edit_message_text(new_text, parse_mode="MarkdownV2", reply_markup=new_keyboard)
+        return
+
+    if query.data in ("help_owner_expand_updatefeature", "help_owner_expand_allgroups", "help_owner_collapse"):
+        if update.effective_user.id not in OWNER_USER_IDS:
+            await query.answer("This section is owner-only.", show_alert=True)
+            return
+        expanded_key = (
+            "updatefeature" if query.data == "help_owner_expand_updatefeature" else
+            "allgroups" if query.data == "help_owner_expand_allgroups" else
+            None
+        )
+        await query.edit_message_text(
+            _build_owner_help_text(expanded_key),
+            parse_mode="MarkdownV2",
+            reply_markup=_build_owner_help_keyboard(expanded_key),
+        )
+        return
+
+    # Toggle clicks for other flagged commands (users/distribution) map
+    # back to their real section key here, carrying along whether THIS
+    # section's one flag-block should render expanded. Each of these
+    # sections only has a single toggleable command today, so there's
+    # nothing else on the same screen that could need collapsing - true
+    # multi-region accordion behavior only applies to the owner screen
+    # (updatefeature + allgroups), handled separately below.
+    users_expanded = query.data == "help_flags_users_expand"
+    if query.data in ("help_users", "help_flags_users_expand", "help_flags_users_collapse"):
+        effective_query_data = "help_users"
+    else:
+        effective_query_data = query.data
+
+    distribution_expanded = query.data == "help_flags_distribution_expand"
+    if query.data in ("help_distribution", "help_flags_distribution_expand", "help_flags_distribution_collapse"):
+        effective_query_data = "help_distribution"
+
     hub_chat_id_for_limits = await _help_target_chat_id(update, context)
     shareevent_limit, shareevent_remaining = get_shareevent_remaining_for_chat(hub_chat_id_for_limits)
     if shareevent_limit is not None:
@@ -221,9 +352,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "username only resolves if they're an admin of this chat or have already interacted with the bot\n"
             "/listusers \\- Show all tracked users\n"
             "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
-            "\\-a \\| \\-active \\- Mark as active\n"
-            "\\-p \\| \\-passive \\- Mark as passive\n"
-            "/notify \\- Ping users who haven't responded\n"
+            + (_updateuser_flags_detail_text() if users_expanded else "")
+            + "/notify \\- Ping users who haven't responded\n"
             "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group"
         ),
         "help_utility": (
@@ -256,14 +386,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "📢 *Distribution Control*\n\n"
             "/shareevent \\[target\\_alias/chatid\\] \\[\\-mgl visible\\|hidden\\|onlycount\\] "
             "\\[\\-sngl visible\\|hidden\\|onlycount\\] \\[\\-swl visible\\|hidden\\|onlycount\\] \\[\\-clc on\\|off\\] \\- Share active event\n\n"
-            "\\-mgl \\| \\-maingoinglist \\- Going list visibility in this specific share \\(defaults to onlycount\\):\n"
-            "  • visible: Show full going list in child chat\n"
-            "  • hidden: Hide event, only show going/notgoing counts\n"
-            "  • onlycount \\(default\\): Show only total going count\n\n"
-            "\\-sngl \\| \\-sharenotgoinglist \\- Not Going list visibility override for this share \\(if omitted, inherits the event's own \\-ngl setting\\)\n"
-            "\\-swl \\| \\-sharewaitlist \\- Waitlist visibility override for this share \\(if omitted, inherits the event's own \\-wl setting\\)\n"
-            "\\-clc \\| \\-clickability on\\|off \\- Name clickability override for this share \\(if omitted, inherits the event's own \\-clc setting\\)\\. Requires a higher tier\\.\n\n"
-            f"{shareevent_limit_line}"
+            + (_shareevent_flags_detail_text() + "\n" if distribution_expanded else "")
+            + f"{shareevent_limit_line}"
         ),
         "help_monitoring": (
             "🔍 *Monitoring*\n\n"
@@ -281,24 +405,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/switchgroup \\- \\(DM only\\) change which group your DM commands target\\."
         ),
         "help_lifecycle": (
-            f"🗳 *Event Lifecycle*\n\n"
-            f"*Flags* \\(on /newevent and /editevent\\)\n"
-            f"\\-d \\| \\-date dd\\.mm\\.yyyy \\[HH:MM\\] \\- Event date \\(and optional time\\)\n"
-            f"\\-gi \\| \\-goingicon \\<emoji\\> \\- Custom Going icon\n"
-            f"\\-ni \\| \\-notgoingicon \\<emoji\\> \\- Custom Not Going icon\n"
-            f"\\-limit N \\- caps going\\+guests across the whole event; once full, new Going clicks join the Waitlist instead\\. Requires a higher tier\\.\n"
-            f"\\-wl \\| \\-waitlist visible\\|hidden\\|onlycount \\- Waitlist visibility in the post \\(independent of \\-limit, can be set/changed on its own\\)\\. Requires a higher tier\\.\n"
-            f"\\-ngl \\| \\-notgoinglist visible\\|hidden\\|onlycount \\- Not Going list visibility in the post\\.\n"
-            f"\\-clc \\| \\-clickability on\\|off \\- whether names in the post are clickable mentions\\. Requires a higher tier\\.\n\n"
-            f"*visible\\|hidden\\|onlycount* \\(shared by \\-wl and \\-ngl\\):\n"
-            f"    visible \\- the full list is shown \\(for \\-wl: hub's post shows everyone across every chat; a child chat's post shows only its own\\)\n"
-            f"    onlycount \\- shows just the total count, no names\n"
-            f"    hidden \\- section not shown in the post at all \\(for \\-wl: admin\\-only via /waitlist\\)\n\n"
-            f"*on\\|off* \\(\\-clc only\\):\n"
-            f"    on \\- every name is a clickable mention\n"
-            f"    off \\- every name is plain, non\\-linked text\n\n"
-            f"*Defaults:* \\-wl hidden, \\-ngl visible, \\-clc on\n\n"
-            f"*Buttons*\n"
+            f"🗳 *Event Lifecycle Buttons*\n\n"
             f"  • Going / Not Going \\- vote, available to everyone\n"
             f"  • ADD / Drop \\- adjust your own guest count one at a time, available to everyone\n"
             f"  • ALL \\- drop ALL of your own guests at once, available to everyone\n"
@@ -311,15 +418,29 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"Verify and Add Extra Member are both locked in per\\-event at "
             f"creation time \\- changing either via /updatefeature never affects an "
             f"event already running\\. If Verify is disabled for a hub, the "
-            f"OPEN\\-state button closes the event directly instead of entering review\\."
+            f"OPEN\\-state button closes the event directly instead of entering review\\.\n\n"
+            f"See /newevent's own \\🔽 More button \\(main /help screen\\) for its flags\\."
         ),
     }
     
-    section_text = help_sections.get(query.data, "Unknown section")
+    section_text = help_sections.get(effective_query_data, "Unknown section")
     
-    keyboard = InlineKeyboardMarkup([
+    toggle_row = []
+    if effective_query_data == "help_users":
+        toggle_row = [InlineKeyboardButton(
+            "🔼 Less" if users_expanded else "🔽 More: /updateuser flags",
+            callback_data="help_flags_users_collapse" if users_expanded else "help_flags_users_expand",
+        )]
+    elif effective_query_data == "help_distribution":
+        toggle_row = [InlineKeyboardButton(
+            "🔼 Less" if distribution_expanded else "🔽 More: /shareevent flags",
+            callback_data="help_flags_distribution_collapse" if distribution_expanded else "help_flags_distribution_expand",
+        )]
+
+    keyboard_rows = ([toggle_row] if toggle_row else []) + [
         [InlineKeyboardButton("🔙 Back", callback_data="help_back")],
-    ])
+    ]
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
     
     await query.edit_message_text(section_text, parse_mode="MarkdownV2", reply_markup=keyboard)
 

@@ -1153,8 +1153,8 @@ class TestHelpTierAwareKeyboard:
         assert monitor_btn.callback_data == "help_monitoring"
 
     async def test_row_layout_lifecycle_distribution_first_aliases_monitoring_second(self, db_path):
-        """Row 1: Users + Utility. Row 2: Event Lifecycle + Distribution.
-        Row 3: Aliases + Monitoring. Row 4: DM Access."""
+        """Row 1: More/Less toggle. Row 2: Users + Utility. Row 3: Event
+        Lifecycle + Distribution. Row 4: Aliases + Monitoring. Row 5: DM Access."""
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
@@ -1164,17 +1164,18 @@ class TestHelpTierAwareKeyboard:
 
         keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
         rows = keyboard.inline_keyboard
-        assert len(rows) == 4
-        row1_texts = [b.text for b in rows[0]]
-        row2_texts = [b.text for b in rows[1]]
+        assert len(rows) == 5
+        assert any("More" in b.text for b in rows[0])
+        row1_texts = [b.text for b in rows[1]]
+        row2_texts = [b.text for b in rows[2]]
         assert any("Users" in t for t in row1_texts)
         assert any("Utility" in t for t in row1_texts)
         assert any("Lifecycle" in t for t in row2_texts)
         assert any("Distribution" in t for t in row2_texts)
-        row3_texts = [b.text for b in rows[2]]
+        row3_texts = [b.text for b in rows[3]]
         assert any("Alias" in t for t in row3_texts)
         assert any("Monitoring" in t for t in row3_texts)
-        row4_texts = [b.text for b in rows[3]]
+        row4_texts = [b.text for b in rows[4]]
         assert any("DM Access" in t for t in row4_texts)
 
     async def test_distribution_button_always_active(self, db_path):
@@ -6852,10 +6853,11 @@ class TestHelpUpdatedForNewFlagsAndStats:
         # Old combined syntax must be gone
         assert "\\-limit N \\[visible" not in text
 
-        # Long-form flag names now live in Event Lifecycle, not the main text
+        # Long-form flag names now live behind the main screen's own
+        # "More" toggle, not in Event Lifecycle
         msg2 = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_lifecycle"
+        query.data = "help_expand_newevent"
         query.message = msg2
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7264,7 +7266,7 @@ class TestHelpMentionsClickabilityFlag:
 
         msg2 = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_lifecycle"
+        query.data = "help_expand_newevent"
         query.message = msg2
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7280,7 +7282,7 @@ class TestHelpMentionsClickabilityFlag:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_distribution"
+        query.data = "help_flags_distribution_expand"
         query.message = msg
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7407,7 +7409,7 @@ class TestHelpReflectsClickabilityGating:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_lifecycle"
+        query.data = "help_expand_newevent"
         query.message = msg
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7429,7 +7431,7 @@ class TestHelpReflectsClickabilityGating:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_lifecycle"
+        query.data = "help_expand_newevent"
         query.message = msg
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7448,7 +7450,7 @@ class TestHelpReflectsClickabilityGating:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_distribution"
+        query.data = "help_flags_distribution_expand"
         query.message = msg
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7813,7 +7815,7 @@ class TestHelpFlagsGroupedByVocabulary:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_lifecycle"
+        query.data = "help_expand_newevent"
         query.message = msg
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7833,7 +7835,7 @@ class TestHelpFlagsGroupedByVocabulary:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_lifecycle"
+        query.data = "help_expand_newevent"
         query.message = msg
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7854,7 +7856,7 @@ class TestHelpFlagsGroupedByVocabulary:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         query = MagicMock()
-        query.data = "help_lifecycle"
+        query.data = "help_expand_newevent"
         query.message = msg
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -7905,7 +7907,7 @@ class TestHelpNeweventContentMovedToLifecycle:
         assert "/editevent" in text
         assert "Event Lifecycle" in text
 
-    async def test_lifecycle_section_has_both_flags_and_buttons(self, db_path):
+    async def test_lifecycle_has_only_buttons_flags_moved_to_main_toggle(self, db_path):
         chat = make_chat(chat_id=-1)
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
@@ -7921,9 +7923,21 @@ class TestHelpNeweventContentMovedToLifecycle:
         await help_system.help_callback_handler(upd, ctx)
 
         text = query.edit_message_text.call_args.args[0]
-        assert "*Flags*" in text
-        assert "*Buttons*" in text
         assert "Going / Not Going" in text  # buttons content preserved
+        assert "\\-wl \\| \\-waitlist" not in text  # flags no longer duplicated here
+
+        # Flags now live behind the main screen's own toggle instead
+        msg2 = make_message(chat=chat)
+        query2 = MagicMock()
+        query2.data = "help_expand_newevent"
+        query2.message = msg2
+        query2.answer = AsyncMock()
+        query2.edit_message_text = AsyncMock()
+        upd2 = make_update(chat=chat, user=user, message=msg2)
+        upd2.callback_query = query2
+        await help_system.help_callback_handler(upd2, make_context())
+        expanded_text = query2.edit_message_text.call_args.args[0]
+        assert "\\-wl \\| \\-waitlist" in expanded_text
 
 
 class TestHelpDmAccessSimplified:
@@ -8122,3 +8136,315 @@ class TestHelpOwnerFlagReducedToTwoForms:
 
         text = msg.reply_text.call_args.args[0]
         assert "Owner\\-Only Commands" not in text
+
+
+class TestNeweventInlineFlagsToggle:
+    """New feature: instead of only navigating away to the Event
+    Lifecycle section, the main /help screen now has a "More"/"Less"
+    toggle button that expands/collapses the /newevent+/editevent flag
+    details INLINE, in the same message, via edit_message_text - the
+    exact same "edit this message in place" mechanism already used for
+    section navigation elsewhere in /help."""
+
+    async def test_collapsed_state_shows_more_button_and_short_text(self, db_path):
+        chat = make_chat(chat_id=-1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await help_system.help_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        kb = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
+        more_btn = next(b for row in kb.inline_keyboard for b in row if "More" in b.text)
+        assert more_btn.callback_data == "help_expand_newevent"
+        assert "Event Lifecycle" in text
+        assert "\\-wl \\| \\-waitlist" not in text  # detailed flag text not inline yet
+
+    async def test_expand_toggle_shows_full_flags_inline(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_expand_newevent"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
+        less_btn = next(b for row in kb.inline_keyboard for b in row if "Less" in b.text)
+        assert less_btn.callback_data == "help_collapse_newevent"
+        assert "\\-wl \\| \\-waitlist" in text
+        assert "Defaults:" in text
+
+    async def test_collapse_toggle_returns_to_short_form(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_collapse_newevent"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
+        more_btn = next(b for row in kb.inline_keyboard for b in row if "More" in b.text)
+        assert more_btn.callback_data == "help_expand_newevent"
+        assert "Event Lifecycle" in text
+        assert "\\-wl \\| \\-waitlist" not in text
+
+    async def test_full_round_trip_returns_byte_identical_text(self, db_path):
+        """Expanding then collapsing must return the EXACT original text,
+        not a close approximation - proves no state leaks between calls."""
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+
+        msg1 = make_message(chat=chat)
+        upd1 = make_update(chat=chat, message=msg1)
+        ctx1 = make_context()
+        await help_system.help_command(upd1, ctx1)
+        original_text = msg1.reply_text.call_args.args[0]
+
+        msg2 = make_message(chat=chat)
+        query1 = MagicMock()
+        query1.data = "help_expand_newevent"
+        query1.message = msg2
+        query1.answer = AsyncMock()
+        query1.edit_message_text = AsyncMock()
+        upd2 = make_update(chat=chat, user=user, message=msg2)
+        upd2.callback_query = query1
+        await help_system.help_callback_handler(upd2, make_context())
+
+        msg3 = make_message(chat=chat)
+        query2 = MagicMock()
+        query2.data = "help_collapse_newevent"
+        query2.message = msg3
+        query2.answer = AsyncMock()
+        query2.edit_message_text = AsyncMock()
+        upd3 = make_update(chat=chat, user=user, message=msg3)
+        upd3.callback_query = query2
+        await help_system.help_callback_handler(upd3, make_context())
+
+        collapsed_again_text = query2.edit_message_text.call_args.args[0]
+        assert collapsed_again_text == original_text
+
+    async def test_lifecycle_no_longer_duplicates_flag_content(self, db_path):
+        """Item 1 reverted the earlier duplication: Event Lifecycle now
+        ONLY has Buttons content - flags live exclusively at /newevent's
+        own location via the main screen's toggle, not duplicated here."""
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "\\-wl \\| \\-waitlist" not in text
+        assert "Going / Not Going" in text
+
+
+class TestUsersAndDistributionFlagToggles:
+    """Item 2: the same expand/collapse toggle pattern from /newevent
+    extended to every other command with flags - /updateuser (in
+    help_users) and /shareevent (in help_distribution). Each section
+    only has one flag-bearing command, so there's no accordion
+    conflict here (unlike the owner screen, tested separately)."""
+
+    async def test_help_users_collapsed_by_default(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_users"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+
+        await help_system.help_callback_handler(upd, make_context())
+
+        text = query.edit_message_text.call_args.args[0]
+        kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
+        more_btn = next(b for row in kb.inline_keyboard for b in row if "More" in b.text)
+        assert more_btn.callback_data == "help_flags_users_expand"
+        assert "\\-active" not in text
+
+    async def test_help_users_expand_then_collapse_round_trips(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+
+        msg1 = make_message(chat=chat)
+        query1 = MagicMock()
+        query1.data = "help_users"
+        query1.message = msg1
+        query1.answer = AsyncMock()
+        query1.edit_message_text = AsyncMock()
+        upd1 = make_update(chat=chat, user=user, message=msg1)
+        upd1.callback_query = query1
+        await help_system.help_callback_handler(upd1, make_context())
+        original_text = query1.edit_message_text.call_args.args[0]
+
+        msg2 = make_message(chat=chat)
+        query2 = MagicMock()
+        query2.data = "help_flags_users_expand"
+        query2.message = msg2
+        query2.answer = AsyncMock()
+        query2.edit_message_text = AsyncMock()
+        upd2 = make_update(chat=chat, user=user, message=msg2)
+        upd2.callback_query = query2
+        await help_system.help_callback_handler(upd2, make_context())
+        expanded_text = query2.edit_message_text.call_args.args[0]
+        assert "\\-active" in expanded_text
+
+        msg3 = make_message(chat=chat)
+        query3 = MagicMock()
+        query3.data = "help_flags_users_collapse"
+        query3.message = msg3
+        query3.answer = AsyncMock()
+        query3.edit_message_text = AsyncMock()
+        upd3 = make_update(chat=chat, user=user, message=msg3)
+        upd3.callback_query = query3
+        await help_system.help_callback_handler(upd3, make_context())
+        collapsed_again_text = query3.edit_message_text.call_args.args[0]
+        assert collapsed_again_text == original_text
+
+    async def test_help_distribution_toggle_shows_mgl_detail(self, db_path):
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_flags_distribution_expand"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+
+        await help_system.help_callback_handler(upd, make_context())
+
+        text = query.edit_message_text.call_args.args[0]
+        kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
+        less_btn = next(b for row in kb.inline_keyboard for b in row if "Less" in b.text)
+        assert less_btn.callback_data == "help_flags_distribution_collapse"
+        assert "\\-maingoinglist" in text
+
+
+class TestOwnerHelpAccordion:
+    """Item 2: the owner-only screen (only reachable via /help -a, and
+    which previously had NO keyboard at all) now has a real accordion
+    between /updatefeature and /allgroups - expanding one always
+    implies the other collapses, since only one of the two can be
+    expanded at a time by definition (stateless: each button always
+    targets 'make me the one expanded region', never toggling based on
+    prior state)."""
+
+    async def test_owner_help_now_has_a_keyboard(self, db_path):
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            chat = make_chat(chat_id=-1)
+            user = make_user(user_id=1)
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(args=["-a"])
+
+            await help_system.help_command(upd, ctx)
+
+            assert msg.reply_text.call_args.kwargs.get("reply_markup") is not None
+
+    async def test_expanding_updatefeature_shows_its_detail_only(self, db_path):
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            chat = make_chat(chat_id=-1)
+            user = make_user(user_id=1)
+            msg = make_message(chat=chat)
+            query = MagicMock()
+            query.data = "help_owner_expand_updatefeature"
+            query.message = msg
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd = make_update(chat=chat, user=user, message=msg)
+            upd.callback_query = query
+
+            await help_system.help_callback_handler(upd, make_context())
+
+            text = query.edit_message_text.call_args.args[0]
+            assert "the minimum tier required to use this feature" in text
+            assert "filters the list to PRO\\-tier groups only" not in text
+
+    async def test_expanding_allgroups_collapses_updatefeature(self, db_path):
+        """The core accordion behavior: switching to allgroups must
+        remove updatefeature's own detail, even though updatefeature
+        was never explicitly told to collapse."""
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            chat = make_chat(chat_id=-1)
+            user = make_user(user_id=1)
+            msg = make_message(chat=chat)
+            query = MagicMock()
+            query.data = "help_owner_expand_allgroups"
+            query.message = msg
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd = make_update(chat=chat, user=user, message=msg)
+            upd.callback_query = query
+
+            await help_system.help_callback_handler(upd, make_context())
+
+            text = query.edit_message_text.call_args.args[0]
+            assert "filters the list to PRO\\-tier groups only" in text
+            assert "the minimum tier required to use this feature" not in text
+
+    async def test_collapse_hides_both_details(self, db_path):
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            chat = make_chat(chat_id=-1)
+            user = make_user(user_id=1)
+            msg = make_message(chat=chat)
+            query = MagicMock()
+            query.data = "help_owner_collapse"
+            query.message = msg
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd = make_update(chat=chat, user=user, message=msg)
+            upd.callback_query = query
+
+            await help_system.help_callback_handler(upd, make_context())
+
+            text = query.edit_message_text.call_args.args[0]
+            assert "the minimum tier required to use this feature" not in text
+            assert "filters the list to PRO\\-tier groups only" not in text
+
+    async def test_non_owner_blocked_from_toggle(self, db_path):
+        with patch("help_system.OWNER_USER_IDS", [1]):
+            chat = make_chat(chat_id=-1)
+            user = make_user(user_id=999)  # not in OWNER_USER_IDS
+            msg = make_message(chat=chat)
+            query = MagicMock()
+            query.data = "help_owner_expand_updatefeature"
+            query.message = msg
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            upd = make_update(chat=chat, user=user, message=msg)
+            upd.callback_query = query
+
+            await help_system.help_callback_handler(upd, make_context())
+
+            assert query.edit_message_text.call_args is None
+            query.answer.assert_any_call("This section is owner-only.", show_alert=True)
