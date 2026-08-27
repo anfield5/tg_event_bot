@@ -400,7 +400,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT type, subs_date_end, sheet_id, sheet_name FROM all_groups WHERE chat_id = ?",
+            "SELECT type, subs_date_end, sheet_id, sheet_name, chat_name FROM all_groups WHERE chat_id = ?",
             (chat_id,),
         )
         row = cursor.fetchone()
@@ -414,8 +414,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
     else:
         due_line = "unlimited"
 
+    # Only shown in DM - the "sticky selected group" a DM command targets
+    # can silently differ from whichever group the person is thinking of,
+    # with nothing else in this reply to reveal that. Redundant (and
+    # skipped) when the command is run directly inside the group itself,
+    # since the person is obviously already looking right at it.
+    is_dm = update.effective_chat.type == "private"
+    group_name = (row[4] if row and row[4] else chat_id) if is_dm else None
+    header = f"{ICON_STATS} *Status for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Status*"
+
     lines = [
-        f"{ICON_STATS} *Status*",
+        header,
         "",
         f"Type: {type_line}",
         f"Due Date: {due_line}",

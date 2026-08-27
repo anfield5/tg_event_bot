@@ -203,7 +203,7 @@ class TestNewevent:
         assert any("Going" in t for t in texts), "open-state Going button missing"
         assert any("Not Going" in t for t in texts), "open-state Not Going button missing"
         assert any("ADD" in t for t in texts), "open-state ADD button missing"
-        assert any("Drop" in t for t in texts), "open-state Drop button missing"
+        assert any("DROP" in t for t in texts), "open-state Drop button missing"
         assert any("ALL" in t for t in texts), "open-state ALL button missing"
         assert any("Verify" in t for t in texts), "Verify button missing"
         assert any("Cancel" in t for t in texts), "Cancel button missing"
@@ -1153,8 +1153,8 @@ class TestHelpTierAwareKeyboard:
         assert monitor_btn.callback_data == "help_monitoring"
 
     async def test_row_layout_lifecycle_distribution_first_aliases_monitoring_second(self, db_path):
-        """Row 1: More/Less toggle. Row 2: Users + Utility. Row 3: Event
-        Lifecycle + Distribution. Row 4: Aliases + Monitoring. Row 5: DM Access."""
+        """Row 1: Users + Utility. Row 2: Event Lifecycle + Distribution.
+        Row 3: Aliases + Monitoring. Row 4: DM Access. Row 5: More/Hide Flags toggle."""
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
@@ -1165,17 +1165,17 @@ class TestHelpTierAwareKeyboard:
         keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
         rows = keyboard.inline_keyboard
         assert len(rows) == 5
-        assert any("More" in b.text for b in rows[0])
-        row1_texts = [b.text for b in rows[1]]
-        row2_texts = [b.text for b in rows[2]]
+        assert any("More" in b.text for b in rows[4])
+        row1_texts = [b.text for b in rows[0]]
+        row2_texts = [b.text for b in rows[1]]
         assert any("Users" in t for t in row1_texts)
         assert any("Utility" in t for t in row1_texts)
         assert any("Lifecycle" in t for t in row2_texts)
         assert any("Distribution" in t for t in row2_texts)
-        row3_texts = [b.text for b in rows[3]]
+        row3_texts = [b.text for b in rows[2]]
         assert any("Alias" in t for t in row3_texts)
         assert any("Monitoring" in t for t in row3_texts)
-        row4_texts = [b.text for b in rows[4]]
+        row4_texts = [b.text for b in rows[3]]
         assert any("DM Access" in t for t in row4_texts)
 
     async def test_distribution_button_always_active(self, db_path):
@@ -8178,7 +8178,7 @@ class TestNeweventInlineFlagsToggle:
 
         text = query.edit_message_text.call_args.args[0]
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
-        less_btn = next(b for row in kb.inline_keyboard for b in row if "Less" in b.text)
+        less_btn = next(b for row in kb.inline_keyboard for b in row if "Hide Flags" in b.text)
         assert less_btn.callback_data == "help_collapse_newevent"
         assert "\\-wl \\| \\-waitlist" in text
         assert "Defaults:" in text
@@ -8345,7 +8345,7 @@ class TestUsersAndDistributionFlagToggles:
 
         text = query.edit_message_text.call_args.args[0]
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
-        less_btn = next(b for row in kb.inline_keyboard for b in row if "Less" in b.text)
+        less_btn = next(b for row in kb.inline_keyboard for b in row if "Hide Flags" in b.text)
         assert less_btn.callback_data == "help_flags_distribution_collapse"
         assert "\\-maingoinglist" in text
 
@@ -8448,3 +8448,286 @@ class TestOwnerHelpAccordion:
 
             assert query.edit_message_text.call_args is None
             query.answer.assert_any_call("This section is owner-only.", show_alert=True)
+
+
+class TestStatusStatsShowGroupNameWhenCalledFromDM:
+    """Real bug found: /status and /stats gave zero indication of WHICH
+    group they were reporting on when called from a DM. The actual
+    tier-check logic (resolve_hub_chat_id, is_premium) was verified
+    correct - the real issue is that a DM's 'sticky selected group' can
+    silently differ from whichever group the person is thinking of
+    (e.g. they administer multiple groups), with nothing in the reply
+    to reveal that. Now prepends 'for <Group Name>' when called via DM;
+    unchanged when called directly inside the group (redundant there)."""
+
+    async def test_status_in_group_has_no_group_name_prefix(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await subscription.status_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert text.startswith("📊 *Status*")
+
+    async def test_status_via_dm_shows_group_name(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO all_groups (chat_id, chat_name, type, subs_date_end) VALUES ('-100','My Awesome Group','PRO','2099-01-01 00:00:00')"
+        )
+        conn.commit()
+
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context()
+        ctx.user_data = {"selected_hub_chat_id": "-100"}
+
+        await subscription.status_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Status for My Awesome Group" in text
+
+    async def test_stats_via_dm_shows_group_name(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE all_groups SET chat_name = 'Stats Test Group' WHERE chat_id = '-100'")
+        conn.commit()
+
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context()
+        ctx.user_data = {"selected_hub_chat_id": "-100"}
+
+        await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Event Stats for Stats Test Group" in text
+
+    async def test_stats_in_group_has_no_group_name_prefix(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context()
+
+        await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert text.startswith("📊 *Event Stats*")
+
+
+class TestShareeventAllowsAnonymousHubAdmin:
+    """Item 3: /shareevent used to unconditionally block anonymous
+    callers ("Remain anonymous" mode), since Telegram never reveals who
+    they really are, making the usual "are you an admin of the TARGET
+    chat" check impossible to run. Confirmed via research: "Remain
+    Anonymous" is itself an admin-only toggle set in a group's own
+    Admin Rights panel - a regular, non-admin member has no way to
+    enable it, spoofed or otherwise. This means an anonymous caller is
+    GUARANTEED, by Telegram's own platform enforcement, to already be a
+    genuine admin of the hub they're posting in. Given that guarantee,
+    the per-user target-chat check is now skipped specifically for
+    anonymous callers, trusting their hub-admin status - the bot's own
+    admin status in the target chat (checked separately, unconditionally,
+    earlier in the flow) remains the one hard requirement either way.
+
+    This is a narrower, more specific case than /setsub's OWN anonymous
+    check (see TestOwnerOnlyCommandsGating.test_anonymous_sender_gets_an_explicit_message),
+    which correctly still blocks anonymity - OWNER_USER_IDS matches
+    specific individual people, not "any hub admin", so being a
+    verified hub admin doesn't imply being the bot owner at all."""
+
+    GROUP_ANONYMOUS_BOT_ID = 1087968824
+
+    async def _make_shareevent_bot(self, caller_user_id, caller_is_target_admin):
+        async def fake_get_chat_member(chat_id, user_id):
+            if user_id == caller_user_id:
+                return MagicMock(status="administrator" if caller_is_target_admin else "member")
+            return MagicMock(status="administrator")  # the bot's own admin status in target
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Target Group"))
+        bot.get_chat_member = AsyncMock(side_effect=fake_get_chat_member)
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+        return bot
+
+    async def test_anonymous_caller_share_succeeds(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = await self._make_shareevent_bot(self.GROUP_ANONYMOUS_BOT_ID, caller_is_target_admin=False)
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=self.GROUP_ANONYMOUS_BOT_ID)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute("SELECT * FROM event_shares WHERE chat_id='-200'").fetchone()
+        assert row is not None
+        sent_texts = [c.kwargs.get("text", "") for c in bot.send_message.call_args_list]
+        assert not any("Remain anonymous" in t for t in sent_texts)
+
+    async def test_non_anonymous_non_admin_caller_still_blocked(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = await self._make_shareevent_bot(42, caller_is_target_admin=False)
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=42)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute("SELECT * FROM event_shares WHERE chat_id='-200'").fetchone()
+        assert row is None
+        sent_texts = [c.kwargs.get("text", "") for c in bot.send_message.call_args_list]
+        assert any("admin rights in the target chat" in t for t in sent_texts)
+
+    async def test_non_anonymous_admin_caller_still_works_normally(self, db_path):
+        """Confirms the fix didn't accidentally change anything about
+        the NORMAL, already-working case: a real, identifiable person
+        who genuinely IS an admin of the target chat."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = await self._make_shareevent_bot(42, caller_is_target_admin=True)
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=42)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["-200"])
+
+        await handlers.shareevent(upd, ctx)
+
+        row = conn.execute("SELECT * FROM event_shares WHERE chat_id='-200'").fetchone()
+        assert row is not None
+
+
+class TestMasterChildPostRetryOnTransientEditFailure:
+    """Real bug found from a user screenshot: the master hub's post
+    showed some names as non-clickable while the SAME people, in the
+    child chat's own post, showed as clickable - despite both being
+    built from identical data in the same render pass (verified via a
+    live test with synthetic data producing byte-identical output).
+
+    Root cause: the master's edit_message_text runs sequentially,
+    awaited on its own, separately from child edits (which run
+    concurrently afterward). If the master's edit specifically hit a
+    transient failure (rate-limiting, network blip), it was caught,
+    logged, and left there permanently - the post stayed stuck showing
+    an older render until some UNRELATED future click happened to
+    trigger a full refresh again, while children's edits (succeeding
+    independently) could easily reflect newer/healed data in the
+    meantime. Fixed by retrying transient failures a couple of times
+    before giving up, for both master and child edits."""
+
+    async def test_master_edit_retries_after_transient_failure(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','⚽','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        call_count = {"n": 0}
+
+        async def flaky_edit(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise Exception("Simulated transient network error")
+            return None
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock(side_effect=flaky_edit)
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.asyncio.sleep", new_callable=AsyncMock):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        assert call_count["n"] == 2
+
+    async def test_message_not_modified_is_not_retried(self, db_path):
+        """The one expected, harmless BadRequest - retrying this would
+        be pure wasted API calls, not a real recovery."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','⚽','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        call_count = {"n": 0}
+
+        async def not_modified_edit(**kwargs):
+            call_count["n"] += 1
+            raise event_engine.BadRequest("Message is not modified")
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock(side_effect=not_modified_edit)
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.asyncio.sleep", new_callable=AsyncMock):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        assert call_count["n"] == 1  # no retry for this specific, expected error
+
+    async def test_persistent_failure_still_gives_up_eventually(self, db_path):
+        """After exhausting retries, a genuinely persistent failure
+        must still be caught and logged, not raised uncaught."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','⚽','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock(side_effect=Exception("Persistent failure"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.asyncio.sleep", new_callable=AsyncMock):
+            # Must not raise - the outer try/except in update_all_shared_views
+            # is expected to catch and log this, not crash the whole refresh.
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        assert bot.edit_message_text.call_count == 3  # 1 initial + 2 retries

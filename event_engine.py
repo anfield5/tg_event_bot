@@ -97,6 +97,47 @@ async def schedule_view_refresh(context: ContextTypes.DEFAULT_TYPE, event_id: st
             await update_all_shared_views(context, event_id)
 
 
+async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_delay: float = 0.5, **kwargs):
+    """
+    Wraps context.bot.edit_message_text with a couple of retries on
+    transient failures - found via a real screenshot where the master
+    hub's post showed some names as non-clickable while the SAME
+    people, in the child chat's own post, showed as clickable, despite
+    both being built from identical data in the same render pass.
+
+    The root cause: the master's edit runs sequentially, awaited on its
+    own, separately from child edits (which run concurrently
+    afterward). If the master's SPECIFIC edit_message_text call hits a
+    transient failure (Telegram rate-limiting, a network blip), it was
+    being caught, logged, and left there - the post stayed stuck
+    showing whatever it rendered on the PREVIOUS successful update
+    until some unrelated future click happened to trigger a full
+    refresh again. Meanwhile any child chat's edit, which failed
+    independently or not at all, could easily reflect newer data in
+    the meantime (e.g. a stale-entry healing fix landing on a later
+    click). Retrying closes this window instead of leaving one post
+    permanently stale after a single bad API call.
+
+    "Message is not modified" is NOT retried - it's an expected,
+    harmless BadRequest whenever the new text happens to exactly match
+    what's already there.
+    """
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            await context.bot.edit_message_text(**kwargs)
+            return
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                return
+            last_exception = e
+        except Exception as e:
+            last_exception = e
+        if attempt < max_retries:
+            await asyncio.sleep(retry_delay)
+    raise last_exception
+
+
 def _mention_link(chat_id: str, username: str, user_id=None, clickable: bool = True) -> str:
     """
     Builds a clickable MarkdownV2 mention - [First Last](tg://user?id=...) -
@@ -526,7 +567,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     )
 
     try:
-        await context.bot.edit_message_text(
+        await _edit_message_text_with_retry(
+            context,
             chat_id=int(main_chat_id),
             message_id=int(main_msg_id),
             text=master_text,
@@ -639,7 +681,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             add_extra_member_enabled=add_extra_member_enabled,
         )
         try:
-            await context.bot.edit_message_text(
+            await _edit_message_text_with_retry(
+                context,
                 chat_id=int(s_chat_id) if str(s_chat_id).replace("-", "").isdigit() else s_chat_id,
                 message_id=int(s_msg_id),
                 text=child_text,

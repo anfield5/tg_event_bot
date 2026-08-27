@@ -142,17 +142,17 @@ def _build_main_help_keyboard(chat_id, expanded: bool = False) -> InlineKeyboard
         return InlineKeyboardButton(text, callback_data=callback)
 
     toggle_button = (
-        InlineKeyboardButton("🔼 Less", callback_data="help_collapse_newevent")
+        InlineKeyboardButton("Hide Flags", callback_data="help_collapse_newevent")
         if expanded else
-        InlineKeyboardButton("🔽 More: /newevent flags", callback_data="help_expand_newevent")
+        InlineKeyboardButton("More about Flags", callback_data="help_expand_newevent")
     )
 
     return InlineKeyboardMarkup([
-        [toggle_button],
         [_make_button("users"), _make_button("utility")],
         [_make_button("lifecycle"), _make_button("distribution")],
         [_make_button("aliases"), _make_button("monitoring")],
         [_make_button("dm_access")],
+        [toggle_button],
     ])
 
 
@@ -241,11 +241,11 @@ def _build_owner_help_keyboard(expanded_key: str = None) -> InlineKeyboardMarkup
     other is collapsed, regardless of its own prior state - each button
     unconditionally targets "make me the (only) expanded one"."""
     allgroups_btn = InlineKeyboardButton(
-        "🔼 Less" if expanded_key == "allgroups" else "🔽 More: /allgroups flags",
+        "Hide Flags" if expanded_key == "allgroups" else "More about Flags",
         callback_data="help_owner_collapse" if expanded_key == "allgroups" else "help_owner_expand_allgroups",
     )
     updatefeature_btn = InlineKeyboardButton(
-        "🔼 Less" if expanded_key == "updatefeature" else "🔽 More: /updatefeature flags",
+        "Hide Flags" if expanded_key == "updatefeature" else "More about Flags",
         callback_data="help_owner_collapse" if expanded_key == "updatefeature" else "help_owner_expand_updatefeature",
     )
     return InlineKeyboardMarkup([[allgroups_btn], [updatefeature_btn]])
@@ -407,7 +407,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         "help_lifecycle": (
             f"🗳 *Event Lifecycle Buttons*\n\n"
             f"  • Going / Not Going \\- vote, available to everyone\n"
-            f"  • ADD / Drop \\- adjust your own guest count one at a time, available to everyone\n"
+            f"  • ADD / DROP \\- adjust your own guest count one at a time, available to everyone\n"
             f"  • ALL \\- drop ALL of your own guests at once, available to everyone\n"
             f"  • {ICON_VERIFICATION} Verify \\- admin only, locks voting and opens roster review\n"
             f"  • {ICON_CANCEL_EVENT} Cancel \\- admin only, cancels immediately \\(CANCELED in Events sheet\\)\n"
@@ -428,18 +428,18 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     toggle_row = []
     if effective_query_data == "help_users":
         toggle_row = [InlineKeyboardButton(
-            "🔼 Less" if users_expanded else "🔽 More: /updateuser flags",
+            "Hide Flags" if users_expanded else "More about Flags",
             callback_data="help_flags_users_collapse" if users_expanded else "help_flags_users_expand",
         )]
     elif effective_query_data == "help_distribution":
         toggle_row = [InlineKeyboardButton(
-            "🔼 Less" if distribution_expanded else "🔽 More: /shareevent flags",
+            "Hide Flags" if distribution_expanded else "More about Flags",
             callback_data="help_flags_distribution_collapse" if distribution_expanded else "help_flags_distribution_expand",
         )]
 
-    keyboard_rows = ([toggle_row] if toggle_row else []) + [
+    keyboard_rows = [
         [InlineKeyboardButton("🔙 Back", callback_data="help_back")],
-    ]
+    ] + ([toggle_row] if toggle_row else [])
     keyboard = InlineKeyboardMarkup(keyboard_rows)
     
     await query.edit_message_text(section_text, parse_mode="MarkdownV2", reply_markup=keyboard)

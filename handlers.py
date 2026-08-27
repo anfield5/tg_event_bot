@@ -1604,38 +1604,42 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         return
 
     if user_id == GROUP_ANONYMOUS_BOT_ID:
-        await context.bot.send_message(
-            chat_id=main_hub_chat_id,
-            text=f"{ICON_ADMIN_ONLY} Please disable \"Remain anonymous\" and re\\-run /shareevent \\- "
-                 f"your admin status in the target chat can't be verified anonymously\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
-
-    try:
-        user_member = await context.bot.get_chat_member(chat_id=target_chat_api, user_id=user_id)
-        if user_member.status in ["left", "kicked"]:
+        # Telegram genuinely never reveals who's behind an anonymous post,
+        # so we can't run the SAME per-user "are you an admin of the
+        # TARGET chat" check below for them - but "Remain Anonymous" is
+        # itself an admin-only toggle (set in the group's own Admin
+        # Rights panel; a regular member has no way to enable it,
+        # spoofed or otherwise), so an anonymous caller is, by Telegram's
+        # own enforcement, guaranteed to already be a real admin of THIS
+        # hub. Trust that and skip straight to sharing - the bot's own
+        # admin status in the target chat (already checked above,
+        # unconditionally) remains the one hard requirement either way.
+        pass
+    else:
+        try:
+            user_member = await context.bot.get_chat_member(chat_id=target_chat_api, user_id=user_id)
+            if user_member.status in ["left", "kicked"]:
+                await context.bot.send_message(
+                    chat_id=main_hub_chat_id,
+                    text=f"{ICON_ADMIN_ONLY} You are not a member of that chat\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+            if user_member.status not in ["administrator", "creator"]:
+                await context.bot.send_message(
+                    chat_id=main_hub_chat_id,
+                    text=f"{ICON_ADMIN_ONLY} You need admin rights in the target chat to share there\\.",
+                    parse_mode="MarkdownV2",
+                )
+                return
+        except Exception as e:
+            logger.error(f"shareevent user check: {e}")
             await context.bot.send_message(
                 chat_id=main_hub_chat_id,
-                text=f"{ICON_ADMIN_ONLY} You are not a member of that chat\\.",
+                text=f"{ICON_WARNING} Could not verify your membership in the target chat\\.",
                 parse_mode="MarkdownV2",
             )
             return
-        if user_member.status not in ["administrator", "creator"]:
-            await context.bot.send_message(
-                chat_id=main_hub_chat_id,
-                text=f"{ICON_ADMIN_ONLY} You need admin rights in the target chat to share there\\.",
-                parse_mode="MarkdownV2",
-            )
-            return
-    except Exception as e:
-        logger.error(f"shareevent user check: {e}")
-        await context.bot.send_message(
-            chat_id=main_hub_chat_id,
-            text=f"{ICON_WARNING} Could not verify your membership in the target chat\\.",
-            parse_mode="MarkdownV2",
-        )
-        return
 
     try:
         sent = await context.bot.send_message(
@@ -1918,8 +1922,18 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
     average_members = round(total_members / events_closed, 1) if events_closed > 0 else 0
     average_members_text = str(average_members).replace(".", "\\.")
 
+    is_dm = update.effective_chat.type == "private"
+    group_name = None
+    if is_dm:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (chat_id,))
+            row = cursor.fetchone()
+            group_name = row[0] if row and row[0] else chat_id
+    header = f"{ICON_STATS} *Event Stats for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Event Stats*"
+
     text = (
-        f"{ICON_STATS} *Event Stats*\n\n"
+        f"{header}\n\n"
         f"Events amount: {events_amount}\n"
         f"Events closed: {events_closed}\n"
         f"Total members amount: {total_members}\n"

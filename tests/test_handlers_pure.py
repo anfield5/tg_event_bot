@@ -193,12 +193,12 @@ class TestCreateEventKeyboard:
         assert any("Not Going" in btn.text for row in rows for btn in row)
 
     def test_open_event_has_add_drop_all_guest_row(self):
-        """Buttons are labeled plain 'ADD'/'Drop'/'ALL', not 'Add Guest'/'Sub Guest'."""
+        """Buttons are labeled plain 'ADD'/'DROP'/'ALL', not 'Add Guest'/'Sub Guest'."""
         kb   = create_event_keyboard(self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN)
         flat = [btn for row in kb.inline_keyboard for btn in row]
         texts = [b.text for b in flat]
         assert any("ADD" in t for t in texts)
-        assert any("Drop" in t for t in texts)
+        assert any("DROP" in t for t in texts)
         assert any("ALL" in t for t in texts)
 
     def test_open_event_master_has_verification_button(self):
