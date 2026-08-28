@@ -77,6 +77,30 @@ def get_users(db_path, chat_id="-100123"):
     return rows
 
 
+def get_event_users(db_path, event_id="ev1", chat_id=None):
+    """Variant B helper: returns event_users rows as a dict keyed by
+    username, for convenient assertions. Optionally filtered by chat_id
+    (pass None to get every chat's rows for this event)."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    if chat_id is not None:
+        cursor.execute(
+            "SELECT username, status, guests, user_id, first_name, last_name FROM event_users WHERE event_id = ? AND chat_id = ?",
+            (event_id, chat_id),
+        )
+    else:
+        cursor.execute(
+            "SELECT username, status, guests, user_id, first_name, last_name FROM event_users WHERE event_id = ?",
+            (event_id,),
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    return {
+        r[0]: {"status": r[1], "guests": r[2], "user_id": r[3], "first_name": r[4], "last_name": r[5]}
+        for r in rows
+    }
+
+
 def insert_event_user(db_path, event_id="ev1", chat_id="-200", user_id="1",
                        username="alice", status="going", guests=0):
     conn = sqlite3.connect(db_path)
@@ -1258,7 +1282,7 @@ class TestGoingFromLabel:
             "INSERT INTO event_shares (share_id, event_id, chat_id, message_id, share_mode, chat_type) VALUES (NULL,'ev1','-200','42','-visible','group')"
         )
         conn.execute(
-            "INSERT INTO event_users VALUES ('ev1','-200','999','anreon','going',3)"
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES ('ev1','-200','999','anreon','going',3)"
         )
         conn.commit()
         conn.close()
@@ -1881,9 +1905,9 @@ class TestButtonHandlerMasterHub:
              patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
-        row = get_event(db_path, "ev1")
-        going = json.loads(row[7])  # going_data column
-        assert going == ["alice (1)"]
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert users["alice"]["status"] == "going"
+        assert users["alice"]["user_id"] == "1"
 
     async def test_notgoing_preserves_existing_guest_count(self, db_path):
         """
@@ -1903,13 +1927,9 @@ class TestButtonHandlerMasterHub:
              patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
-        row = get_event(db_path, "ev1")
-        going     = json.loads(row[7])
-        not_going = json.loads(row[8])
-        counters  = json.loads(row[9])
-        assert going == []
-        assert "alice" in not_going
-        assert counters.get("alice") == 2, "guest count must survive a Not Going click"
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert users["alice"]["status"] == "notgoing"
+        assert users["alice"]["guests"] == 2, "guest count must survive a Not Going click"
 
     async def test_add_guest_increments_counter(self, db_path):
         insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going=json.dumps(["alice (1)"]))
@@ -1922,9 +1942,8 @@ class TestButtonHandlerMasterHub:
              patch("event_engine.open_spreadsheet",   new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
-        row = get_event(db_path, "ev1")
-        counters = json.loads(row[9])
-        assert counters.get("alice") == 1
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert users["alice"]["guests"] == 1
 
 
 class TestButtonHandlerCrossChatProtection:
@@ -3780,10 +3799,12 @@ class TestButtonHandlerCapacityAndPromotion:
         query, ctx = await self._click(db_path, "notgoing", "-100", 2, "bob")
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        going = json.loads(row[0])
-        assert any("dave" in g for g in going)
-        assert json.loads(row[1]) == []
+        row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='dave'"
+        ).fetchone()
+        assert row == ("going",)
+        waitlist_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(waitlist_row[0]) == []
         ctx.bot.send_message.assert_awaited_once()
         assert "moved from the Waitlist to Going" in ctx.bot.send_message.call_args.kwargs["text"]
 
@@ -3815,9 +3836,12 @@ class TestButtonHandlerCapacityAndPromotion:
         query, ctx = await self._click(db_path, "going", "-100", 1, "alice")
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        assert "alice" in row[0]
-        assert json.loads(row[1]) == []
+        row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()
+        assert row == ("going",)
+        waitlist_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(waitlist_row[0]) == []
 
 
 class TestWaitlistCommand:
@@ -4812,9 +4836,12 @@ class TestAddGuestGoesToWaitlist:
 
         await self._click("add", "-100", 1, "alice")
 
-        row = conn.execute("SELECT counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        assert json.loads(row[0]) == {"alice": 1}
-        assert json.loads(row[1]) == []
+        row = conn.execute(
+            "SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()
+        assert row == (1,)
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(wl_row[0]) == []
 
     async def test_guest_slot_promoted_when_a_spot_frees_up(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -4829,9 +4856,12 @@ class TestAddGuestGoesToWaitlist:
         await self._click("add", "-100", 1, "alice")  # queues a guest slot for alice
         _, ctx = await self._click("notgoing", "-100", 2, "bob")  # frees a slot
 
-        row = conn.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        assert json.loads(row[1]) == {"alice": 1}
-        assert json.loads(row[2]) == []
+        row = conn.execute(
+            "SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()
+        assert row == (1,)
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(wl_row[0]) == []
         assert "guest for" in ctx.bot.send_message.call_args.kwargs["text"]
 
     async def test_stale_guest_slot_discarded_when_owner_leaves(self, db_path):
@@ -4851,10 +4881,12 @@ class TestAddGuestGoesToWaitlist:
         # attach to anymore and must be discarded, not promoted
         _, ctx = await self._click("notgoing", "-100", 1, "alice")
 
-        row = conn.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        assert "alice" not in row[0]
-        assert json.loads(row[1]) == {}
-        assert json.loads(row[2]) == []
+        row = conn.execute(
+            "SELECT status, guests FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()
+        assert row == ("notgoing", 0)
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(wl_row[0]) == []
         assert ctx.bot.send_message.call_args is None
 
 
@@ -5074,10 +5106,16 @@ class TestDropGuestTriggersWaitlistPromotion:
 
         _, ctx = await self._click("sub", "-100", 1, "alice")
 
-        row = conn.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        assert any("carol" in g for g in json.loads(row[0]))
-        assert json.loads(row[1]) == {"alice": 1}
-        assert json.loads(row[2]) == []
+        alice_row = conn.execute(
+            "SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()
+        carol_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='carol'"
+        ).fetchone()
+        assert alice_row == (1,)
+        assert carol_row == ("going",)
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert json.loads(wl_row[0]) == []
         assert "moved from the Waitlist to Going" in ctx.bot.send_message.call_args.kwargs["text"]
 
     async def test_sub_guest_in_child_chat_promotes_waiting_person(self, db_path):
@@ -5116,8 +5154,10 @@ class TestDropGuestTriggersWaitlistPromotion:
         _, ctx = await self._click("sub", "-100", 1, "alice")
 
         assert ctx.bot.send_message.call_args is None
-        row = conn.execute("SELECT counters_data FROM events WHERE event_id='ev1'").fetchone()
-        assert json.loads(row[0]) == {"alice": 1}
+        row = conn.execute(
+            "SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()
+        assert row == (1,)
 
 
 class TestWaitlistCommandCleansUpStaleDuplicates:
@@ -5822,9 +5862,12 @@ class TestWaitlistMechanicsUnaffectedByVisibility:
 
         _, ctx = await self._click("notgoing", "-100", 2, "bob")
 
-        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        assert any("carol" in g for g in json.loads(row[0]))
-        assert json.loads(row[1]) == []
+        carol_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='carol'"
+        ).fetchone()
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert carol_row == ("going",)
+        assert json.loads(wl_row[0]) == []
         assert ctx.bot.send_message.call_args is not None  # announcement fires despite hidden display
 
 
@@ -7694,11 +7737,20 @@ class TestDropallGuests:
 
         _, ctx = await self._click("dropall", "-100", 1, "alice")
 
-        row = conn.execute("SELECT counters_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        counters = json.loads(row[0])
-        waitlist = json.loads(row[1])
-        assert counters.get("alice", 0) == 0
-        assert waitlist == []
+        alice_row = conn.execute(
+            "SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()
+        bob_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='bob'"
+        ).fetchone()
+        carol_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='carol'"
+        ).fetchone()
+        wl_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        assert alice_row == (0,)
+        assert bob_row == ("going",)
+        assert carol_row == ("going",)
+        assert json.loads(wl_row[0]) == []
         assert ctx.bot.send_message.call_count == 2  # both bob and carol get announced
 
     async def test_dropall_child_zeros_guests_and_promotes_all_waiting(self, db_path):
@@ -8034,8 +8086,11 @@ class TestGoingClickHealsStaleUnresolvableEntry:
         with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
             await event_engine.button_handler(upd, ctx)
 
-        row = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()
-        assert json.loads(row[0]) == ["An (999)"]
+        conn2 = sqlite3.connect(db_path)
+        row = conn2.execute(
+            "SELECT status, user_id FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='An'"
+        ).fetchone()
+        assert row == ("going", "999")
 
     async def test_already_valid_entry_not_needlessly_rewritten(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -8731,3 +8786,322 @@ class TestMasterChildPostRetryOnTransientEditFailure:
             await event_engine.update_all_shared_views(ctx, "ev1")
 
         assert bot.edit_message_text.call_count == 3  # 1 initial + 2 retries
+
+
+class TestGuestActionsAlwaysCaptureRealName:
+    """Real bug found from a screenshot: clicking ADD to add a guest,
+    WITHOUT ever clicking Going first, showed the guest counter's
+    "-, from: <username>" line as a raw @username instead of
+    "First Last" - it only switched to the correct format once the
+    person separately clicked Going. Root cause: the going/notgoing
+    action handlers correctly called pending_track_user() to capture
+    the click's real first_name/last_name, but add/sub/dropall (both
+    master hub and child chat) - and even going's OWN
+    waitlist-join branch - never did. Fixed by tracking on every
+    genuine click, not just going/notgoing's normal-path branches."""
+
+    async def test_master_add_alone_captures_real_name(self, db_path):
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]", counters="{}")
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=555, username="andr_lia", first_name="Andrii", last_name="Liashchuk")
+        upd = make_callback_update("add_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT first_name, last_name FROM main_group_users WHERE chat_id=? AND username='andr_lia'",
+            (MAIN_CHAT,),
+        ).fetchone()
+        assert row == ("Andrii", "Liashchuk")
+
+    async def test_master_sub_captures_real_name(self, db_path):
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]", counters=json.dumps({"bob": 2}))
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES (?, 'bob', '42', 'active')",
+            (MAIN_CHAT,),
+        )
+        conn.commit()
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=42, username="bob", first_name="Bob", last_name="Smith")
+        upd = make_callback_update("sub_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT first_name, last_name FROM main_group_users WHERE chat_id=? AND username='bob'",
+            (MAIN_CHAT,),
+        ).fetchone()
+        assert row == ("Bob", "Smith")
+
+    async def test_master_dropall_captures_real_name(self, db_path):
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]", counters=json.dumps({"carol": 3}))
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES (?, 'carol', '43', 'active')",
+            (MAIN_CHAT,),
+        )
+        conn.commit()
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=43, username="carol", first_name="Carol", last_name="Jones")
+        upd = make_callback_update("dropall_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT first_name, last_name FROM main_group_users WHERE chat_id=? AND username='carol'",
+            (MAIN_CHAT,),
+        ).fetchone()
+        assert row == ("Carol", "Jones")
+
+    async def test_master_going_to_waitlist_captures_real_name(self, db_path):
+        """Even the going-click's OWN waitlist-join branch (event at
+        capacity) had this gap - only the normal-add branch tracked."""
+        insert_event(
+            db_path, event_id="ev1", chat_id=MAIN_CHAT,
+            going=json.dumps(["existing (1)"]), counters="{}",
+        )
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE events SET total_limit = 1 WHERE event_id = 'ev1'")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=99, username="dave", first_name="Dave", last_name="Lee")
+        upd = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT first_name, last_name FROM main_group_users WHERE chat_id=? AND username='dave'",
+            (MAIN_CHAT,),
+        ).fetchone()
+        assert row == ("Dave", "Lee")
+
+
+class TestNotGoingEmbedsUserIdDirectly:
+    """Real bug found: the master hub's Not Going list stored only bare
+    usernames (no id), relying entirely on a fallback lookup-by-username
+    in main_group_users at render time. This is fragile whenever
+    main_group_users doesn't have a matching row for any reason (never
+    tracked, deleted, or - for someone with no real @username - keyed
+    under their changeable first_name rather than a stable identifier).
+    Fixed by embedding the real user_id directly in each Not Going
+    entry at write time, mirroring going_data's own "username (id)"
+    format - eliminates the runtime dependency on that fallback lookup
+    entirely for anything written after this fix, while staying fully
+    backward compatible with older events still using the bare-username
+    format (handled by _mention_link's existing fallback)."""
+
+    async def test_notgoing_click_embeds_id_in_storage(self, db_path):
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]")
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=777, username=None, first_name="Andr", last_name=None)
+        upd = make_callback_update("notgoing_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert users["Andr"]["status"] == "notgoing"
+        assert users["Andr"]["user_id"] == "777"
+
+    async def test_notgoing_stays_clickable_even_if_main_group_users_row_missing(self, db_path):
+        """The actual payoff: renders correctly even with ZERO
+        supporting data in main_group_users, since the id travels with
+        the entry itself now."""
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]", notgoing=json.dumps(["Andr (777)"]))
+        # Deliberately no main_group_users row at all for this chat/user
+
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        text = bot.edit_message_text.call_args.kwargs["text"]
+        assert "tg://user?id=777" in text
+
+    async def test_old_format_bare_username_still_works(self, db_path):
+        """Backward compatibility: events created before this fix have
+        bare-username entries with no embedded id - must still resolve
+        via the pre-existing fallback lookup, not break."""
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]", notgoing=json.dumps(["oldstyle"]))
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, status, first_name, last_name) VALUES (?, 'oldstyle', '888', 'active', 'Old', 'Style')",
+            (MAIN_CHAT,),
+        )
+        conn.commit()
+
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        text = bot.edit_message_text.call_args.kwargs["text"]
+        assert "tg://user?id=888" in text
+
+    async def test_going_click_removes_from_notgoing_regardless_of_format(self, db_path):
+        """The going-click's own removal-from-not_going must still work
+        correctly against the new "username (id)" format."""
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]", notgoing=json.dumps(["alice (1)"]))
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=1, username="alice")
+        upd = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert users["alice"]["status"] == "going"
+
+
+class TestVariantBUnification:
+    """Variant B: the master hub's own participants now live in
+    event_users too (chat_id=main_chat_id), the same table children
+    have always used, instead of separate going_data/notgoing_data/
+    counters_data JSON columns. Covers: the 'notselected' status for
+    guest-only clicks, permanent records regardless of guest count, and
+    that the same going/notgoing/add/sub/dropall code path now handles
+    both master and child clicks identically."""
+
+    async def test_add_without_going_gives_notselected_status(self, db_path):
+        """Someone who only ever adds a guest for themselves, without
+        personally declaring going or not going, gets the explicit
+        'notselected' status - not an empty string, not 'going'."""
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]")
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=50, username="frank", first_name="Frank")
+        upd = make_callback_update("add_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert users["frank"]["status"] == "notselected"
+        assert users["frank"]["guests"] == 1
+
+    async def test_notgoing_with_zero_guests_keeps_permanent_row(self, db_path):
+        """Not Going no longer deletes the row when guests=0 - the DB
+        must retain a full record of anyone who ever clicked, regardless
+        of guest count."""
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going=json.dumps(["grace (51)"]))
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=51, username="grace")
+        upd = make_callback_update("notgoing_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert "grace" in users
+        assert users["grace"]["status"] == "notgoing"
+        assert users["grace"]["guests"] == 0
+
+    async def test_master_and_child_clicks_use_identical_code_path(self, db_path):
+        """A going click in the master hub and a going click in a child
+        chat both correctly land in event_users, distinguished only by
+        chat_id - not by any special-cased master-only logic anymore."""
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]")
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200', ?, 'child')", (MAIN_CHAT,))
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','2','-visible','group')")
+        conn.commit()
+
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user_hub = make_user(user_id=60, username="hubperson")
+        upd_hub = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user_hub)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd_hub, ctx)
+
+        user_child = make_user(user_id=61, username="childperson")
+        upd_child = make_callback_update("going_ev1", chat_id=-200, user=user_child)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd_child, ctx)
+
+        hub_users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        child_users = get_event_users(db_path, "ev1", "-200")
+        assert hub_users["hubperson"]["status"] == "going"
+        assert child_users["childperson"]["status"] == "going"
+
+    async def test_migration_on_touch_converts_old_format_once(self, db_path):
+        """The first click on a pre-existing (old-format) event migrates
+        going_data/notgoing_data/counters_data into event_users, without
+        needing a separate migration script or deploy step."""
+        insert_event(
+            db_path, event_id="ev1", chat_id=MAIN_CHAT,
+            going=json.dumps(["alice (1)"]), notgoing=json.dumps(["henry (52)"]),
+            counters=json.dumps({"alice": 2}),
+        )
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=99, username="newperson")
+        upd = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        users = get_event_users(db_path, "ev1", MAIN_CHAT)
+        assert users["alice"]["status"] == "going"
+        assert users["alice"]["guests"] == 2
+        assert users["henry"]["status"] == "notgoing"
+        assert users["newperson"]["status"] == "going"
+
+    async def test_waitlist_entry_stores_first_and_last_name(self, db_path):
+        """Per the explicit requirement: waitlist entries carry user_id,
+        first_name+last_name, and chat_id directly - not just username."""
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going=json.dumps(["a (1)", "b (2)"]))
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE events SET total_limit = 2 WHERE event_id = 'ev1'")
+        conn.commit()
+        conn.close()
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=70, username="ivan", first_name="Ivan", last_name="Petrov")
+        upd = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        row = get_event(db_path, "ev1")
+        waitlist = json.loads(row[14])  # waitlist_data column
+        assert len(waitlist) == 1
+        assert waitlist[0]["user_id"] == "70"
+        assert waitlist[0]["first_name"] == "Ivan"
+        assert waitlist[0]["last_name"] == "Petrov"
+        assert waitlist[0]["chat_id"] == MAIN_CHAT

@@ -138,7 +138,7 @@ async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_del
     raise last_exception
 
 
-def _mention_link(chat_id: str, username: str, user_id=None, clickable: bool = True) -> str:
+def _mention_link(chat_id: str, username: str, user_id=None, clickable: bool = True, display_name_override: str = None) -> str:
     """
     Builds a clickable MarkdownV2 mention - [First Last](tg://user?id=...) -
     using the stored first_name/last_name for this user_id if we have it on
@@ -158,6 +158,13 @@ def _mention_link(chat_id: str, username: str, user_id=None, clickable: bool = T
     plain, non-linked text even when a valid user_id IS available - the
     display name is still resolved the same way (First Last if on file),
     just without the tg://user?id=... link wrapper.
+
+    `display_name_override`: if the caller already has a resolved "First
+    Last" string on hand (e.g. a waitlist entry, which stores first_name/
+    last_name directly at write time), pass it here to skip the
+    get_display_name lookup entirely - avoids depending on a separate
+    main_group_users row existing/matching, the same fragility class
+    fixed for the Not Going list.
     """
     if user_id is None:
         with get_connection() as conn:
@@ -172,7 +179,7 @@ def _mention_link(chat_id: str, username: str, user_id=None, clickable: bool = T
     if not user_id or not str(user_id).lstrip("-").isdigit():
         return escape_markdown(username)
 
-    display = get_display_name(str(chat_id), str(user_id), username)
+    display = display_name_override if display_name_override else get_display_name(str(chat_id), str(user_id), username)
     if not clickable:
         return escape_markdown(display)
     return f"[{escape_markdown(display)}](tg://user?id={user_id})"
@@ -218,6 +225,15 @@ async def _send_promotion_announcements(context, waitlist_promotion, extra_promo
             logger.error(f"Waitlist promotion announcement failed for chat {promo_chat_id}: {e}")
 
 
+def _waitlist_display_name_override(entry: dict) -> str:
+    """Builds a "First Last" string directly from a waitlist entry's own
+    stored fields, avoiding a separate main_group_users lookup. Returns
+    None (falls back to _mention_link's own lookup) for old-format
+    entries created before first_name/last_name were added here."""
+    parts = [p for p in (entry.get("first_name"), entry.get("last_name")) if p]
+    return " ".join(parts) if parts else None
+
+
 def _render_waitlist_local(waitlist: list, chat_id: str, clickable: bool = True) -> tuple:
     """
     Filters an event's waitlist_data down to entries added from THIS
@@ -241,16 +257,18 @@ def _render_waitlist_local(waitlist: list, chat_id: str, clickable: bool = True)
     """
     entries = [e for e in waitlist if str(e.get("chat_id")) == str(chat_id)]
     person_lines = [
-        f"{ICON_STANDBY} {_mention_link(chat_id, e['username'], e['user_id'], clickable)}"
+        f"{ICON_STANDBY} {_mention_link(chat_id, e['username'], e['user_id'], clickable, _waitlist_display_name_override(e))}"
         for e in entries if not e.get("is_guest")
     ]
     guest_counts = {}
+    guest_name_overrides = {}
     for e in entries:
         if e.get("is_guest"):
             key = (e["user_id"], e["username"])
             guest_counts[key] = guest_counts.get(key, 0) + 1
+            guest_name_overrides[key] = _waitlist_display_name_override(e)
     guest_lines = [
-        f"{ICON_GUEST} {count}, from: {_mention_link(chat_id, uname, uid, clickable)}"
+        f"{ICON_GUEST} {count}, from: {_mention_link(chat_id, uname, uid, clickable, guest_name_overrides.get((uid, uname)))}"
         for (uid, uname), count in guest_counts.items()
     ]
     lines = person_lines + guest_lines
@@ -290,12 +308,14 @@ async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: Conte
 
     person_lines = []
     guest_counts = {}  # (user_id, username, chat_id) -> count
+    guest_name_overrides = {}
     for e in waitlist:
         if e.get("is_guest"):
             key = (e["user_id"], e["username"], e["chat_id"])
             guest_counts[key] = guest_counts.get(key, 0) + 1
+            guest_name_overrides[key] = _waitlist_display_name_override(e)
             continue
-        mention = f"{ICON_STANDBY} {_mention_link(e['chat_id'], e['username'], e['user_id'], clickable)}"
+        mention = f"{ICON_STANDBY} {_mention_link(e['chat_id'], e['username'], e['user_id'], clickable, _waitlist_display_name_override(e))}"
         if str(e.get("chat_id")) != str(main_chat_id):
             chat_title = await _title(e["chat_id"])
             mention += f" from {escape_markdown(chat_title)}"
@@ -303,7 +323,7 @@ async def _render_waitlist_all(waitlist: list, main_chat_id: str, context: Conte
 
     guest_lines = []
     for (uid, uname, cid), count in guest_counts.items():
-        line = f"{ICON_GUEST} {count}, from: {_mention_link(cid, uname, uid, clickable)}"
+        line = f"{ICON_GUEST} {count}, from: {_mention_link(cid, uname, uid, clickable, guest_name_overrides.get((uid, uname, cid)))}"
         if str(cid) != str(main_chat_id):
             chat_title = await _title(cid)
             line += f" \\({escape_markdown(chat_title)}\\)"
@@ -374,10 +394,41 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         verification_enabled = feature_snapshot.get("verification", True)
         add_extra_member_enabled = feature_snapshot.get("add_extra_member", True)
 
-        master_going     = json.loads(going_data)
-        master_not_going = json.loads(notgoing_data)
-        master_counters  = json.loads(counters_data)
-        master_kicked    = set(json.loads(kicked_data or "[]"))
+        cursor.execute(
+            "SELECT username, status, guests, user_id, first_name, last_name FROM event_users "
+            "WHERE event_id = ? AND chat_id = ?",
+            (event_id, str(main_chat_id)),
+        )
+        main_hub_users = cursor.fetchall()
+
+        if not main_hub_users:
+            # Not yet migrated to event_users (no click has touched this
+            # event since the Variant B deploy) - fall back to rendering
+            # straight from the old JSON columns rather than showing an
+            # empty event. The actual migration itself only happens in
+            # button_handler's own transaction (this function is
+            # read-only), so this fallback stays in place until the next
+            # real click on the event.
+            master_going = json.loads(going_data)
+            master_not_going = json.loads(notgoing_data)
+            master_counters = json.loads(counters_data)
+            master_kicked = set(json.loads(kicked_data or "[]"))
+        else:
+            master_going = []
+            master_not_going = []
+            master_counters = {}
+            master_kicked = set()
+            for m_username, m_status, m_guests, m_user_id, m_first, m_last in main_hub_users:
+                has_id = m_user_id and str(m_user_id).lstrip("-").isdigit()
+                entry = f"{m_username} ({m_user_id})" if has_id else m_username
+                if m_status == "going":
+                    master_going.append(entry)
+                elif m_status == "notgoing":
+                    master_not_going.append(entry)
+                elif m_status == "kicked":
+                    master_kicked.add(m_username)
+                if m_guests and m_guests > 0:
+                    master_counters[m_username] = m_guests
         master_waitlist  = dedupe_waitlist(json.loads(waitlist_data_raw or "[]"))
 
         cursor.execute(
@@ -475,7 +526,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     if notgoing_visibility == "visible":
         not_going_list_text = (
-            "\n".join(f"{notgoing_icon} {_mention_link(main_chat_id, u, None, master_clickable)}" for u in master_not_going)
+            "\n".join(
+                f"{notgoing_icon} {_mention_link(main_chat_id, u.split(' (')[0], u.split('(')[-1].rstrip(')') if '(' in u else None, master_clickable)}"
+                for u in master_not_going
+            )
             if master_not_going else ""
         )
         notgoing_section = f"\n\n*Not Going* \\({len(master_not_going)}\\):\n{not_going_list_text}"
@@ -841,20 +895,81 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 not_going = set(json.loads(notgoing_data))
                 counters  = json.loads(counters_data)
                 kicked    = json.loads(kicked_data or "[]")
+
+                # ── One-time migration to the unified event_users model ────────
+                # Variant B: the master hub's own participants now live in
+                # event_users too (chat_id=main_chat_id), the same table
+                # child chats have always used - going_data/notgoing_data/
+                # counters_data/kicked_data stop being the source of truth
+                # after this runs once per event. Detected by "does
+                # event_users already have ANY row for (event_id,
+                # main_chat_id)" - INSERT OR IGNORE means running this
+                # again on an already-migrated event is a safe no-op.
+                cursor.execute(
+                    "SELECT 1 FROM event_users WHERE event_id = ? AND chat_id = ? LIMIT 1",
+                    (event_id, main_chat_id),
+                )
+                if cursor.fetchone() is None:
+                    kicked_usernames = set(kicked)
+                    migrated_usernames = set()
+                    for entry in going:
+                        m_username = entry.split(" (")[0]
+                        m_id = entry.split("(")[-1].rstrip(")") if "(" in entry else None
+                        if not m_id or not str(m_id).lstrip("-").isdigit():
+                            continue  # unresolvable legacy entry - nothing to migrate an ID for
+                        status = "kicked" if m_username in kicked_usernames else "going"
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
+                            (event_id, main_chat_id, m_id, m_username, status, counters.get(m_username, 0)),
+                        )
+                        migrated_usernames.add(m_username)
+                    for entry in not_going:
+                        m_username = entry.split(" (")[0]
+                        m_id = entry.split("(")[-1].rstrip(")") if "(" in entry else None
+                        if not m_id or not str(m_id).lstrip("-").isdigit():
+                            continue
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notgoing', ?)",
+                            (event_id, main_chat_id, m_id, m_username, counters.get(m_username, 0)),
+                        )
+                        migrated_usernames.add(m_username)
+                    # Guest-only entries in counters with no going/not_going
+                    # status of their own become 'notselected' - matches the
+                    # NEW behavior going forward (see the "add" action below).
+                    for c_username, c_count in counters.items():
+                        if c_username in migrated_usernames or c_count <= 0:
+                            continue
+                        cursor.execute(
+                            "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+                            (main_chat_id, c_username),
+                        )
+                        mg_row = cursor.fetchone()
+                        if not mg_row or not mg_row[0]:
+                            continue  # unresolvable - can't migrate without a real user_id
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notselected', ?)",
+                            (event_id, main_chat_id, mg_row[0], c_username, c_count),
+                        )
                 waitlist  = json.loads(waitlist_data_raw or "[]")
 
                 def _current_headcount():
                     """Reads-only, uses the SAME cursor/connection already
                     open here - never call db.get_event_total_going_headcount()
                     from inside this transaction, it opens its own connection
-                    and would deadlock against this one."""
-                    main_hc = len(going) + sum(counters.values())
+                    and would deadlock against this one.
+
+                    Single unified query across the WHOLE event_id (no
+                    chat_id filter) - Variant B means the master hub's own
+                    participants live in event_users too (chat_id=main_chat_id),
+                    the same as any child chat, so counting them separately
+                    from a child-scoped query would double-count anyone
+                    already migrated there.
+                    """
                     cursor.execute(
                         "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
                         (event_id,),
                     )
-                    child_hc = cursor.fetchone()[0]
-                    return main_hc + child_hc
+                    return cursor.fetchone()[0]
 
                 def _is_at_capacity():
                     return total_limit is not None and _current_headcount() >= total_limit
@@ -889,37 +1004,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             waitlist = [e for e in waitlist if e is not candidate]
                             cursor.execute(
-                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
-                                (event_id, target_chat_id, candidate["user_id"], candidate["username"]),
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) VALUES (?, ?, ?, ?, ?, ?, 'going', 0)",
+                                (event_id, target_chat_id, candidate["user_id"], candidate["username"], candidate.get("first_name"), candidate.get("last_name")),
                             )
                             pending_track_user.append(
-                                (target_chat_id, candidate["username"], candidate["user_id"], None, None)
-                            )
-                            return (candidate["username"], candidate["user_id"], False)
-                    return None
-
-                def _promote_master():
-                    """Same as _promote_child, but for the main hub - mutates
-                    going/counters/not_going (all in closure scope) instead
-                    of event_users."""
-                    nonlocal waitlist, going
-                    this_chat_waiting = [e for e in waitlist if str(e.get("chat_id")) == str(main_chat_id)]
-                    this_chat_waiting.sort(key=lambda e: e.get("timestamp", ""))
-                    for candidate in this_chat_waiting:
-                        if candidate.get("is_guest"):
-                            still_going = any(g.split(" (")[0] == candidate["username"] for g in going)
-                            if still_going:
-                                counters[candidate["username"]] = counters.get(candidate["username"], 0) + 1
-                                waitlist = [e for e in waitlist if e is not candidate]
-                                return (candidate["username"], candidate["user_id"], True)
-                            waitlist = [e for e in waitlist if e is not candidate]
-                            continue
-                        else:
-                            waitlist = [e for e in waitlist if e is not candidate]
-                            going.append(f"{candidate['username']} ({candidate['user_id']})")
-                            not_going.discard(candidate["username"])
-                            pending_track_user.append(
-                                (main_chat_id, candidate["username"], candidate["user_id"], None, None)
+                                (target_chat_id, candidate["username"], candidate["user_id"], candidate.get("first_name"), candidate.get("last_name"))
                             )
                             return (candidate["username"], candidate["user_id"], False)
                     return None
@@ -932,30 +1021,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if event_status in (2, -1):
                     return
 
-                is_click_in_child  = (int(click_chat_id) != int(main_chat_id))
                 going_usernames    = {u.split(" (")[0] for u in going}
 
-                # Extract the real user_id from each "name (user_id)" master
-                # going-list entry, so cross-chat protection compares actual
-                # Telegram users rather than display-name strings. Comparing by
-                # name text was a bug: any two different people who happen to
-                # render with the same name (extremely common in a busy public
-                # channel full of subscribers without an @username, who all show
-                # up by first_name only) would falsely collide, silently
-                # blocking the second person's Going/Add/Sub click in every
-                # child chat.
-                master_going_user_ids = set()
-                for entry in going:
-                    m = re.search(r'\((\d+)\)', entry)
-                    if m:
-                        master_going_user_ids.add(m.group(1))
-
                 # ── Cross-chat protection ─────────────────────────────────────
+                # Now purely event_users-based - the master hub's own
+                # participants live there too (chat_id=main_chat_id), so a
+                # 'going' row for the hub is found the SAME way as any
+                # child chat's row, with no separate master-vs-child logic
+                # needed here anymore.
                 if action in ["going", "add", "sub"]:
                     user_already_registered = False
-
-                    if str(user_id) in master_going_user_ids and is_click_in_child:
-                        user_already_registered = True
 
                     cursor.execute(
                         "SELECT chat_id FROM event_users WHERE event_id = ? AND user_id = ? AND status = 'going'",
@@ -963,9 +1038,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     for (recorded_chat_id,) in cursor.fetchall():
                         if str(recorded_chat_id) != str(click_chat_id):
-                            user_already_registered = True
-                            break
-                        if not is_click_in_child:
                             user_already_registered = True
                             break
 
@@ -995,18 +1067,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             pass
                         return
 
-                # ── Child-chat interaction ────────────────────────────────────
-                if is_click_in_child:
-                    if action not in ["going", "notgoing", "add", "sub", "dropall"]:
-                        try:
-                            await query.answer(
-                                text="⛔️ This action is only available from the main event post.",
-                                show_alert=True,
-                            )
-                        except Exception:
-                            pass
-                        return
-
+                # ── Going/Not Going/Add/Drop/ALL - unified for every chat ──────
+                # Variant B: the main hub is no longer special-cased here -
+                # it's just another chat_id in event_users, using the exact
+                # same code every child chat has always used for these 5
+                # actions. Only genuinely master-only actions (Verify,
+                # Save & Close, Cancel, Kick/Return/±guest during
+                # verification, Add Extra Member) fall through to the
+                # admin-only section below instead.
+                if action in ["going", "notgoing", "add", "sub", "dropall"]:
                     cursor.execute(
                         "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
                         (event_id, click_chat_id, str(user_id)),
@@ -1024,12 +1093,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             if not already_waiting:
                                 waitlist.append({
                                     "chat_id": str(click_chat_id),
-                                    "chat_name": None,  # resolved lazily by /waitlist and rendering, not stored stale here
-                                    "username": username_raw,
                                     "user_id": str(user_id),
+                                    "first_name": user.first_name,
+                                    "last_name": user.last_name,
+                                    "username": username_raw,
                                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 })
                                 data_changed = True
+                            pending_track_user.append(
+                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                            )
                             try:
                                 await query.answer(text=f"{ICON_STANDBY} Event is full - you've been added to the Waitlist", show_alert=True)
                             except Exception:
@@ -1037,24 +1110,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             # In child chats, Going should only set status to 'going', never toggle off
                             cursor.execute(
-                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
-                                (event_id, click_chat_id, str(user_id), username_raw, current_guests),
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) VALUES (?, ?, ?, ?, ?, ?, 'going', ?)",
+                                (event_id, click_chat_id, str(user_id), username_raw, user.first_name, user.last_name, current_guests),
                             )
                             pending_track_user.append(
                                 (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
                             )
                             data_changed = True
                     elif action == "notgoing":
-                        if current_guests > 0:
-                            cursor.execute(
-                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notgoing', ?)",
-                                (event_id, click_chat_id, str(user_id), username_raw, current_guests),
-                            )
-                        else:
-                            cursor.execute(
-                                "DELETE FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                                (event_id, click_chat_id, str(user_id)),
-                            )
+                        # Always keep a permanent row - guests=0 no longer
+                        # means "delete", since the DB should retain full
+                        # information about anyone who ever clicked on the
+                        # event at all, independent of their guest count.
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) VALUES (?, ?, ?, ?, ?, ?, 'notgoing', ?)",
+                            (event_id, click_chat_id, str(user_id), username_raw, user.first_name, user.last_name, current_guests),
+                        )
                         pending_track_user.append(
                             (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
                         )
@@ -1068,26 +1139,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if _is_at_capacity():
                             waitlist.append({
                                 "chat_id": str(click_chat_id),
-                                "chat_name": None,
-                                "username": username_raw,
                                 "user_id": str(user_id),
+                                "first_name": user.first_name,
+                                "last_name": user.last_name,
+                                "username": username_raw,
                                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "is_guest": True,
                             })
                             data_changed = True
+                            pending_track_user.append(
+                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
+                            )
                             try:
                                 await query.answer(text=f"{ICON_STANDBY} Event is full - your guest has been added to the Waitlist", show_alert=True)
                             except Exception:
                                 pass
                         else:
-                            # NOTE: does NOT force status='going' - mirrors the main
-                            # hub, where Add Guest only ever touches the guest
-                            # counter and is completely independent of whether the
-                            # clicker themselves is going/not going/undeclared.
-                            preserved_status = current_status if current_status != "none" else ""
+                            # NOTE: does NOT force status='going' - Add Guest
+                            # only ever touches the guest counter, completely
+                            # independent of whether the clicker is going/not
+                            # going/undeclared. 'notselected' is the explicit
+                            # status for someone who's only ever added guests
+                            # for themselves without personally declaring
+                            # going or not going at all.
+                            preserved_status = current_status if current_status != "none" else "notselected"
                             cursor.execute(
-                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
-                                (event_id, click_chat_id, str(user_id), username_raw, preserved_status, current_guests + 1),
+                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (event_id, click_chat_id, str(user_id), username_raw, user.first_name, user.last_name, preserved_status, current_guests + 1),
+                            )
+                            pending_track_user.append(
+                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
                             )
                             data_changed = True
                     elif action == "sub":
@@ -1096,8 +1177,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if current_guests > 0:
                             new_guests = current_guests - 1
                             cursor.execute(
-                                "UPDATE event_users SET guests = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                                (new_guests, event_id, click_chat_id, str(user_id)),
+                                "UPDATE event_users SET guests = ?, first_name = ?, last_name = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (new_guests, user.first_name, user.last_name, event_id, click_chat_id, str(user_id)),
+                            )
+                            pending_track_user.append(
+                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
                             )
                             data_changed = True
                             # Removing a guest frees a capacity slot too - promote
@@ -1119,8 +1203,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # them, not just one.
                         if current_guests > 0:
                             cursor.execute(
-                                "UPDATE event_users SET guests = 0 WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                                (event_id, click_chat_id, str(user_id)),
+                                "UPDATE event_users SET guests = 0, first_name = ?, last_name = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (user.first_name, user.last_name, event_id, click_chat_id, str(user_id)),
+                            )
+                            pending_track_user.append(
+                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
                             )
                             data_changed = True
                             for _ in range(current_guests):
@@ -1169,6 +1256,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     return
 
+                # Everything past this point (Verify, Save & Close, Cancel,
+                # Kick/Return/±guest during verification, Add Extra Member)
+                # is genuinely master-only - none of it makes sense from a
+                # child chat's own post, regardless of the clicker's admin
+                # status there.
+                if int(click_chat_id) != int(main_chat_id):
+                    try:
+                        await query.answer(
+                            text="⛔️ This action is only available from the main event post.",
+                            show_alert=True,
+                        )
+                    except Exception:
+                        pass
+                    return
+
                 # ── Admin-only actions guard ──────────────────────────────────
                 # close/directclose/save (the Verify&Close flow) also allow
                 # the event's OWN creator, not just group admins - /newevent
@@ -1199,129 +1301,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # ── Master open (event_status == 0) ───────────────────────────
                 if event_status == 0:
-                    if action == "going":
-                        went_to_waitlist = False
-                        if username_raw not in going_usernames:
-                            if _is_at_capacity():
-                                already_waiting = any(
-                                    str(e.get("user_id")) == str(user_id) and str(e.get("chat_id")) == str(click_chat_id)
-                                    for e in waitlist
-                                )
-                                if not already_waiting:
-                                    waitlist.append({
-                                        "chat_id": str(click_chat_id),
-                                        "chat_name": None,
-                                        "username": username_raw,
-                                        "user_id": str(user_id),
-                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    })
-                                went_to_waitlist = True
-                                try:
-                                    await query.answer(text=f"{ICON_STANDBY} Event is full - you've been added to the Waitlist", show_alert=True)
-                                except Exception:
-                                    pass
-                            else:
-                                going.append(f"{username_raw} ({user_id})")
-                        else:
-                            # Already in going_usernames - but if the EXISTING
-                            # entry has no resolvable user_id (e.g. a stale
-                            # "username (no_id_in_main_group)" placeholder left
-                            # over from Add Extra Member, before this person
-                            # ever personally interacted with the bot), a
-                            # genuine click like this one carries a real,
-                            # correct user_id straight from the click event -
-                            # heal the stale entry instead of silently
-                            # discarding this real ID by leaving the old
-                            # unresolvable one in place forever.
-                            existing_entry = next((u for u in going if u.split(" (")[0] == username_raw), None)
-                            if existing_entry:
-                                existing_id = existing_entry.split("(")[-1].rstrip(")") if "(" in existing_entry else None
-                                if not existing_id or not str(existing_id).lstrip("-").isdigit():
-                                    going = [u for u in going if u.split(" (")[0] != username_raw]
-                                    going.append(f"{username_raw} ({user_id})")
-                        if not went_to_waitlist:
-                            not_going.discard(username_raw)
-                            # Store user_id for refreshusers
-                            pending_track_user.append(
-                                (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
-                            )
-                        data_changed = True
-                    elif action == "notgoing":
-                        was_going = username_raw in going_usernames
-                        going    = [u for u in going if u.split(" (")[0] != username_raw]
-                        not_going.add(username_raw)
-                        pending_track_user.append(
-                            (click_chat_id, username_raw, str(user_id), user.first_name, user.last_name)
-                        )
-                        # NOTE: guests are intentionally left untouched here -
-                        # they're only ever added/removed via Add Guest/Sub
-                        # Guest, never as a side effect of opting out.
-                        data_changed = True
-                        if was_going:
-                            promoted = _promote_master()
-                            if promoted:
-                                p_username, p_user_id, p_is_guest = promoted
-                                waitlist_promotion = (main_chat_id, p_username, p_user_id, p_is_guest)
-                    elif action == "add":
-                        if _is_at_capacity():
-                            waitlist.append({
-                                "chat_id": str(main_chat_id),
-                                "chat_name": None,
-                                "username": username_raw,
-                                "user_id": str(user_id),
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "is_guest": True,
-                            })
-                            data_changed = True
-                            try:
-                                await query.answer(text=f"{ICON_STANDBY} Event is full - your guest has been added to the Waitlist", show_alert=True)
-                            except Exception:
-                                pass
-                        else:
-                            counters[username_raw] = counters.get(username_raw, 0) + 1
-                            data_changed = True
-                    elif action == "sub":
-                        if username_raw in counters:
-                            if counters[username_raw] > 1:
-                                counters[username_raw] -= 1
-                            else:
-                                # Don't remove from counters if user is in going list
-                                # Keep them with 0 guests if they're going
-                                if username_raw not in going_usernames:
-                                    counters.pop(username_raw)
-                                else:
-                                    counters[username_raw] = 0
-                            data_changed = True
-                            promoted = _promote_master()
-                            if promoted:
-                                p_username, p_user_id, p_is_guest = promoted
-                                waitlist_promotion = (main_chat_id, p_username, p_user_id, p_is_guest)
-                        else:
-                            return
-                    elif action == "dropall":
-                        # Drops ALL of the clicking user's own guests at once
-                        # (see the child-chat version's own comment above for
-                        # the full rationale) - frees as many slots as guests
-                        # dropped, promoting once per freed slot.
-                        dropped = counters.get(username_raw, 0)
-                        if dropped > 0:
-                            if username_raw not in going_usernames:
-                                counters.pop(username_raw)
-                            else:
-                                counters[username_raw] = 0
-                            data_changed = True
-                            for _ in range(dropped):
-                                promoted = _promote_master()
-                                if not promoted:
-                                    break
-                                p_username, p_user_id, p_is_guest = promoted
-                                if waitlist_promotion is None:
-                                    waitlist_promotion = (main_chat_id, p_username, p_user_id, p_is_guest)
-                                else:
-                                    extra_promotions.append((main_chat_id, p_username, p_user_id, p_is_guest))
-                        else:
-                            return
-                    elif action == "close":
+                    if action == "close":
                         if not verification_enabled:
                             return
                         event_status = 1
@@ -1354,44 +1334,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     clean_target_usr = target_username.replace("ch-", "", 1) if is_target_child else target_username
 
                     if action == "kick" and target_username:
+                        # 'kicked' is distinct from 'notselected' (guest-only,
+                        # never declared going) so the keyboard can tell the
+                        # two apart and only show Return for genuinely-kicked
+                        # people - see create_event_keyboard's docstring.
                         if is_target_child:
-                            # 'kicked' is distinct from '' (guest-only, never
-                            # declared going) so the keyboard can tell the two
-                            # apart and only show Return for genuinely-kicked
-                            # people - see create_event_keyboard's docstring.
                             cursor.execute(
                                 "UPDATE event_users SET status = 'kicked' WHERE event_id = ? AND username = ?",
                                 (event_id, clean_target_usr),
                             )
                         else:
-                            going = [u for u in going if u.split(" (")[0] != clean_target_usr]
-                            # Don't pop counters - guests should remain even after user is kicked
-                            if clean_target_usr not in kicked:
-                                kicked.append(clean_target_usr)
+                            cursor.execute(
+                                "UPDATE event_users SET status = 'kicked' WHERE event_id = ? AND chat_id = ? AND username = ?",
+                                (event_id, main_chat_id, clean_target_usr),
+                            )
                         data_changed = True
 
                     elif action == "return" and target_username:
                         if is_target_child:
-                            # Set status back to 'going'
                             cursor.execute(
                                 "UPDATE event_users SET status = 'going' WHERE event_id = ? AND username = ?",
                                 (event_id, clean_target_usr),
                             )
                         else:
-                            if clean_target_usr in kicked:
-                                kicked.remove(clean_target_usr)
-                            # Add user back to going list
-                            # Try to find if they have a stored user_id
                             cursor.execute(
-                                "SELECT user_id FROM main_group_users WHERE username = ? AND chat_id = ?",
-                                (clean_target_usr, main_chat_id),
+                                "UPDATE event_users SET status = 'going' WHERE event_id = ? AND chat_id = ? AND username = ?",
+                                (event_id, main_chat_id, clean_target_usr),
                             )
-                            user_id_row = cursor.fetchone()
-
-                            if user_id_row and user_id_row[0]:
-                                going.append(f"{clean_target_usr} ({user_id_row[0]})")
-                            else:
-                                going.append(clean_target_usr)
                         data_changed = True
 
                     elif action == "incgst" and target_username:
@@ -1401,7 +1370,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 (event_id, clean_target_usr),
                             )
                         else:
-                            counters[clean_target_usr] = counters.get(clean_target_usr, 0) + 1
+                            cursor.execute(
+                                "UPDATE event_users SET guests = guests + 1 WHERE event_id = ? AND chat_id = ? AND username = ?",
+                                (event_id, main_chat_id, clean_target_usr),
+                            )
                         data_changed = True
 
                     elif action == "decgst" and target_username:
@@ -1417,11 +1389,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     (event_id, clean_target_usr),
                                 )
                         else:
-                            if clean_target_usr in counters:
-                                if counters[clean_target_usr] > 1:
-                                    counters[clean_target_usr] -= 1
-                                else:
-                                    counters.pop(clean_target_usr)
+                            cursor.execute(
+                                "SELECT guests FROM event_users WHERE event_id = ? AND chat_id = ? AND username = ?",
+                                (event_id, main_chat_id, clean_target_usr),
+                            )
+                            cg_row = cursor.fetchone()
+                            if cg_row and cg_row[0] > 0:
+                                cursor.execute(
+                                    "UPDATE event_users SET guests = guests - 1 WHERE event_id = ? AND chat_id = ? AND username = ?",
+                                    (event_id, main_chat_id, clean_target_usr),
+                                )
                         data_changed = True
 
                     elif action == "save":
@@ -1477,42 +1454,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not ss:
                     pass  # free tier / no sheet configured / expired - SQLite-only save, nothing more to do
                 else:
-                    # 1. Collect master going user_ids (stored as "username (user_id)").
-                    #    Entries added via "Add Extra Member" should have user_id
-                    #    If no user_id is available, use username as fallback
-                    master_going_ids = []
-                    for entry in going:
-                        m = re.search(r'\(([^)]+)\)', entry)
-                        if m:
-                            master_going_ids.append(m.group(1))
-                        else:
-                            # Extra player without user_id - use username as user_id
-                            username = entry.split(" (")[0]
-                            master_going_ids.append(username)
-
-                    # 2. Collect child going user_ids from event_users table
+                    # 1. Query event_users ONCE for the whole event_id (no
+                    #    chat_id filter) - Variant B migration means the
+                    #    master hub's own participants live there too
+                    #    (chat_id=main_chat_id), the same as any child
+                    #    chat's, so this single query already covers
+                    #    everyone with a resolvable numeric user_id.
                     with get_connection() as conn_eu:
                         cursor_eu = conn_eu.cursor()
                         cursor_eu.execute(
-                            "SELECT user_id FROM event_users WHERE event_id = ? AND status = 'going'",
+                            "SELECT user_id, status, guests FROM event_users WHERE event_id = ?",
                             (event_id,),
                         )
-                        child_going_ids = [r[0] for r in cursor_eu.fetchall()]
+                        all_rows = cursor_eu.fetchall()
 
-                        all_going_ids = master_going_ids + child_going_ids
+                    all_going_ids = [r[0] for r in all_rows if r[1] == "going"]
 
-                        # 3. Compute total for Events sheet
-                        # Include all child users (going + those with guests) and their guests
-                        cursor_eu.execute(
-                            "SELECT status, guests FROM event_users WHERE event_id = ? AND (status = 'going' OR guests > 0)",
-                            (event_id,),
-                        )
-                        child_rows = cursor_eu.fetchall()
-                    # Count child users who are going, plus all their guests (including from non-going users)
-                    child_going_count = sum(1 for status, guests in child_rows if status == 'going')
-                    child_guests_total = sum(guests for status, guests in child_rows)
-                    # Master: going users + all guests (including from non-going users)
-                    total_going    = len(going) + sum(counters.values()) + child_going_count + child_guests_total
+                    # 2. Entries with NO resolvable numeric id (e.g.
+                    #    unresolvable "Add Extra Member" additions) are
+                    #    deliberately skipped by migration - they never
+                    #    make it into event_users at all. Preserve the
+                    #    existing fallback behavior for these: identify
+                    #    them by username instead of a real user_id, by
+                    #    scanning the frozen `going` list (still holds
+                    #    whatever was loaded at the start of this
+                    #    transaction, untouched by migration).
+                    for entry in going:
+                        m = re.search(r'\(([^)]+)\)', entry)
+                        entry_id = m.group(1) if m else None
+                        if not entry_id or not str(entry_id).lstrip("-").isdigit():
+                            username = entry.split(" (")[0]
+                            all_going_ids.append(username)
+
+                    # 3. Compute total for Events sheet - going users plus
+                    #    every guest (including from non-going/notselected
+                    #    users), summed once across the whole event_id.
+                    total_going = sum(
+                        (1 if status == "going" else 0) + (guests or 0)
+                        for _uid, status, guests in all_rows
+                    )
+                    # Same unresolvable-entry fallback as above, for the
+                    # rare "Add Extra Member" person who was never
+                    # migrated into event_users at all.
+                    for entry in going:
+                        m = re.search(r'\(([^)]+)\)', entry)
+                        entry_id = m.group(1) if m else None
+                        if not entry_id or not str(entry_id).lstrip("-").isdigit():
+                            total_going += 1
 
                     # 4. Update Events sheet row
                     ws      = await ss.worksheet("Events")

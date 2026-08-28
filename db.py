@@ -496,6 +496,8 @@ def init_db(db_path: str = DB_PATH):
             chat_id TEXT,
             user_id TEXT,
             username TEXT,
+            first_name TEXT,
+            last_name TEXT,
             status TEXT,
             guests INTEGER DEFAULT 0,
             PRIMARY KEY (event_id, chat_id, user_id)
@@ -704,6 +706,18 @@ def init_db(db_path: str = DB_PATH):
 
     # 4. Rename legacy status value 'frozen' → 'passive'
     cursor.execute("UPDATE main_group_users SET status = 'passive' WHERE status = 'frozen'")
+
+    # 5. event_users: add first_name/last_name if missing (Variant B
+    # unification - the display name now travels directly with each
+    # row instead of needing a separate main_group_users lookup at
+    # render time, which is exactly the fragility class fixed for the
+    # Not Going list earlier this session).
+    cursor.execute("PRAGMA table_info(event_users)")
+    event_users_cols = [col[1] for col in cursor.fetchall()]
+    if "first_name" not in event_users_cols:
+        cursor.execute("ALTER TABLE event_users ADD COLUMN first_name TEXT")
+    if "last_name" not in event_users_cols:
+        cursor.execute("ALTER TABLE event_users ADD COLUMN last_name TEXT")
 
     conn.commit()
     conn.close()
