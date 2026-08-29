@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "4.0.0"
+BOT_VERSION = "4.1.0"
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -60,7 +60,7 @@ GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 # code that needs "the Kick icon" or "the warning icon" reads from one
 # source instead of a bare emoji literal repeated at each call site.
 
-ICON_GUEST = "👤⊕"   # marks "N guests, from: <username>" lines
+ICON_GUEST = "⊕"   # marks "N guests, from: <username>" lines
 ICON_STANDBY = "💤"   # marks a person waiting in the Waitlist/Standby queue
 CLOSE_ICON = "🔴"
 ICON_VERIFICATION = "🔄"   # used on the "Verify" button (open -> verification mode)
@@ -89,4 +89,5 @@ ICON_NOTIFY         = "🔔"
 ICON_CLEAN          = "🧹"   # /refreshusers removal summary
 ICON_ADMIN_ONLY     = "⛔️"
 ICON_GLOBE          = "🌍"   # /refreshusersall global sync section
-ICON_PREMIUM        = "⚡ᴾᴿᴼ"   # marks premium-only features (e.g. Aliases/Monitoring on /help)
+ICON_PREMIUM        = "⚡"   # marks premium-only features (e.g. Aliases/Monitoring on /help)
+ICON_TOTAL          = "🌐"   # marks the "Total Going" line in event posts

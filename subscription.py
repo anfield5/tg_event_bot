@@ -14,8 +14,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
-from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import get_connection, get_all_features, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE
+from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_dm_only
+from db import get_connection, get_all_features, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE, is_bot_locked, set_bot_locked
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels,
@@ -143,6 +143,63 @@ async def _push_control_sheet_chats_log() -> bool:
     return await sync_control_sheet_chats_log(rows)
 
 
+async def lockbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only. /lockbot on makes the bot ignore every command and
+    button click from anyone NOT in OWNER_USER_IDS, across every chat -
+    a global emergency switch, not scoped to any one group. /lockbot off
+    restores normal FREE-tier availability for everyone.
+
+    The actual enforcement lives in main.py's own early-group gate
+    handler (checked before any other handler runs, via
+    ApplicationHandlerStop) - this command only flips the persisted
+    flag that gate reads.
+
+    Gated the same way /setsub is: OWNER_USER_IDS, not chat admin
+    status - an anonymous poster gets a specific message asking them to
+    de-anonymize (their identity can't be verified either way), anyone
+    else who isn't an owner gets silence, so the command's existence
+    isn't revealed to non-owners.
+    """
+    if update.effective_user.id not in OWNER_USER_IDS:
+        is_anonymous = (
+            update.effective_user.id == GROUP_ANONYMOUS_BOT_ID
+            or getattr(update.message, "sender_chat", None) is not None
+        )
+        if is_anonymous:
+            await update.message.reply_text(
+                "⛔️ Owner\\-only commands can't be verified while posting anonymously \\- "
+                "please disable \"Remain anonymous\" and try again\\.",
+                parse_mode="MarkdownV2",
+            )
+        return  # otherwise silent - don't reveal this command exists to non-owners
+
+    if not await require_dm_only(update, "lockbot"):
+        return
+
+    args = context.args
+    if not args or args[0].strip().lower() not in ("on", "off"):
+        await update.message.reply_text(
+            "❌ *Syntax:* `/lockbot on` or `/lockbot off`",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    mode = args[0].strip().lower()
+    set_bot_locked(mode == "on")
+
+    if mode == "on":
+        await update.message.reply_text(
+            "🔒 Bot is now locked \\- only owners can use any command or button until `/lockbot off`\\.",
+            parse_mode="MarkdownV2",
+        )
+    else:
+        await update.message.reply_text(
+            "🔓 Bot is unlocked \\- back to normal availability for everyone\\.",
+            parse_mode="MarkdownV2",
+        )
+
+
 async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Owner-only. The simplest possible manual subscription control - no
@@ -172,6 +229,9 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2",
             )
         return  # otherwise silent - don't reveal this command exists to non-owners
+
+    if not await require_dm_only(update, "setsub"):
+        return
 
     args = context.args
     if len(args) < 2:
@@ -299,6 +359,9 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     verified immediately by actually opening it and reading its title,
     rather than trusting the ID blindly.
     """
+    if not await require_dm_only(update, "setsheet"):
+        return
+
     chat_id = await resolve_hub_chat_id(update, context, "setsheet", override_chat_id)
     if chat_id is None:
         return
@@ -514,6 +577,9 @@ async def allgroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in OWNER_USER_IDS:
         return
 
+    if not await require_dm_only(update, "allgroups"):
+        return
+
     pro_only = bool(context.args) and context.args[0].strip().lower() in ("-pro", "--pro")
 
     with get_connection() as conn:
@@ -574,6 +640,9 @@ async def allgroups_page_callback_handler(update: Update, context: ContextTypes.
 async def allchannels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Owner-only. Lists every channel the bot is currently in (all_channels), 10 at a time."""
     if update.effective_user.id not in OWNER_USER_IDS:
+        return
+
+    if not await require_dm_only(update, "allchannels"):
         return
 
     with get_connection() as conn:
@@ -676,6 +745,9 @@ async def updatefeature(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2",
             )
         return  # otherwise silent - don't reveal this command exists to non-owners
+
+    if not await require_dm_only(update, "updatefeature"):
+        return
 
     args = context.args
     if len(args) < 1:

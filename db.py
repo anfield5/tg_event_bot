@@ -504,6 +504,14 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_lock (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            locked INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    cursor.execute("INSERT OR IGNORE INTO bot_lock (id, locked) VALUES (1, 0)")
+
     # ── Migrations ────────────────────────────────────────────────────────────
 
     # -1. Add any of all_groups' newer columns if still missing (covers an
@@ -721,6 +729,104 @@ def init_db(db_path: str = DB_PATH):
 
     conn.commit()
     conn.close()
+
+
+def is_bot_locked() -> bool:
+    """True if /lockbot on is currently active - the bot should ignore
+    every command/callback from anyone not in OWNER_USER_IDS while this
+    is set. Checked on every single incoming update (see main.py's
+    early-group gate handler), so this must stay fast - a single-row
+    lookup, no joins."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT locked FROM bot_lock WHERE id = 1")
+        row = cursor.fetchone()
+    return bool(row and row[0])
+
+
+def set_bot_locked(locked: bool):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE bot_lock SET locked = ? WHERE id = 1", (1 if locked else 0,))
+        conn.commit()
+
+
+def migrate_event_to_event_users(cursor, event_id: str, main_chat_id: str, going: list, not_going, counters: dict, kicked: list):
+    """
+    One-time migration to the unified event_users model (Variant B): the
+    master hub's own participants live in event_users too
+    (chat_id=main_chat_id), the same table child chats have always used -
+    going_data/notgoing_data/counters_data/kicked_data stop being the
+    source of truth after this runs once per event.
+
+    Must be called by EVERY code path that touches an event's state
+    before reading from event_users - not just button clicks
+    (button_handler) but also /editevent's own -limit headcount check,
+    which needs an accurate count even for an event nobody has clicked
+    on yet since this feature was deployed.
+
+    Uses the SAME cursor/connection the caller already has open (an
+    active transaction) - never opens its own connection here.
+
+    Detected by "does event_users already have ANY row for (event_id,
+    main_chat_id)" - safe to call on every touch; an already-migrated
+    event is a fast single-row SELECT, no-op.
+    """
+    cursor.execute(
+        "SELECT 1 FROM event_users WHERE event_id = ? AND chat_id = ? LIMIT 1",
+        (event_id, main_chat_id),
+    )
+    if cursor.fetchone() is not None:
+        return  # already migrated
+
+    kicked_usernames = set(kicked)
+    migrated_usernames = set()
+    for entry in going:
+        m_username = entry.split(" (")[0]
+        m_id = entry.split("(")[-1].rstrip(")") if "(" in entry else None
+        if not m_id or not str(m_id).lstrip("-").isdigit():
+            # Legacy unresolvable entry (old "(no_id_in_main_group)" marker,
+            # or any bare-username-only entry with no parens at all) -
+            # migrate using the username itself as a fallback identifying
+            # key, matching the same convention handle_extra_player_input
+            # uses going forward. Without this, these people would simply
+            # vanish from event_users entirely rather than staying visible
+            # (as plain, non-clickable text) and surfaceable by
+            # /refreshusers' own unresolved-entry report.
+            m_id = m_username
+        status = "kicked" if m_username in kicked_usernames else "going"
+        cursor.execute(
+            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
+            (event_id, main_chat_id, m_id, m_username, status, counters.get(m_username, 0)),
+        )
+        migrated_usernames.add(m_username)
+    for entry in not_going:
+        m_username = entry.split(" (")[0]
+        m_id = entry.split("(")[-1].rstrip(")") if "(" in entry else None
+        if not m_id or not str(m_id).lstrip("-").isdigit():
+            continue
+        cursor.execute(
+            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notgoing', ?)",
+            (event_id, main_chat_id, m_id, m_username, counters.get(m_username, 0)),
+        )
+        migrated_usernames.add(m_username)
+    # Guest-only entries in counters with no going/not_going status of
+    # their own become 'notselected' - matches current behavior for
+    # anyone freshly clicking ADD without personally declaring going.
+    for c_username, c_count in counters.items():
+        if c_username in migrated_usernames or c_count <= 0:
+            continue
+        cursor.execute(
+            "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+            (main_chat_id, c_username),
+        )
+        mg_row = cursor.fetchone()
+        if not mg_row or not mg_row[0]:
+            continue  # unresolvable - can't migrate without a real user_id
+        cursor.execute(
+            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notselected', ?)",
+            (event_id, main_chat_id, mg_row[0], c_username, c_count),
+        )
 
 
 def track_user(chat_id: str, username: str, status: str = "active",

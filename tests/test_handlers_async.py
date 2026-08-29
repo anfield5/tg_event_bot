@@ -401,15 +401,19 @@ class TestNotify:
         conn.commit()
         conn.close()
 
+        bot  = make_bot()
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context()
+        ctx  = make_context(bot=bot)
 
         await handlers.notify(upd, ctx)
 
-        # reply_text should have been called at least once (header + mention chunks)
-        assert msg.reply_text.await_count >= 1
+        # The actual ping now goes to the resolved chat_id via send_message,
+        # not reply_text - identical destination here since the command was
+        # called directly in the group.
+        assert bot.send_message.await_count >= 1
+        assert bot.send_message.call_args.kwargs["chat_id"] == "-100123"
 
     async def test_skips_users_who_already_responded(self, db_path):
         # alice is going → must NOT be pinged
@@ -1087,7 +1091,7 @@ class TestSetsub:
     async def test_owner_can_turn_on(self, db_path):
         with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}), \
              patch("subscription.sync_control_sheet_main", new_callable=AsyncMock):
-            chat = make_chat()
+            chat = make_chat(chat_type="private")
             user = make_user(user_id=self.OWNER_ID)
             msg  = make_message(chat=chat)
             upd  = make_update(chat=chat, user=user, message=msg)
@@ -1102,7 +1106,7 @@ class TestSetsub:
         insert_premium(db_path, chat_id="-100")
         with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}), \
              patch("subscription.sync_control_sheet_main", new_callable=AsyncMock):
-            chat = make_chat()
+            chat = make_chat(chat_type="private")
             user = make_user(user_id=self.OWNER_ID)
             msg  = make_message(chat=chat)
             upd  = make_update(chat=chat, user=user, message=msg)
@@ -1117,7 +1121,7 @@ class TestSetsub:
         insert_premium(db_path, chat_id="-100", days=10)
         with patch("subscription.OWNER_USER_IDS", {self.OWNER_ID}), \
              patch("subscription.sync_control_sheet_main", new_callable=AsyncMock):
-            chat = make_chat()
+            chat = make_chat(chat_type="private")
             user = make_user(user_id=self.OWNER_ID)
             msg  = make_message(chat=chat)
             upd  = make_update(chat=chat, user=user, message=msg)
@@ -2636,9 +2640,10 @@ class TestStartCommand:
         reply = msg.reply_text.call_args.args[0]
         assert "don't see you as an admin" in reply
 
-    async def test_does_nothing_when_run_inside_a_group(self, db_path):
-        """/start is only meaningful in a DM - a stray /start typed inside
-        a group must be a silent no-op, not spam the group."""
+    async def test_shows_dm_only_error_when_run_inside_a_group(self, db_path):
+        """/start is only meaningful in a DM - running it inside a group
+        now gives an explicit error (not silence), per the Type 3
+        (DM-only) command classification."""
         import hub_resolver
         bot  = make_bot()
         chat = make_chat(chat_id=-100123, chat_type="supergroup")
@@ -2648,7 +2653,8 @@ class TestStartCommand:
 
         await hub_resolver.start_command(upd, ctx)
 
-        msg.reply_text.assert_not_awaited()
+        msg.reply_text.assert_awaited_once()
+        assert "only works in a DM" in msg.reply_text.call_args.args[0]
 
     async def test_finds_groups_only_known_via_main_group_users(self, db_path):
         """
@@ -2883,7 +2889,7 @@ class TestAllgroupsAllchannels:
 
         with patch("subscription.OWNER_USER_IDS", {555}):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -2903,7 +2909,7 @@ class TestAllgroupsAllchannels:
 
         with patch("subscription.OWNER_USER_IDS", {555}):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -2918,7 +2924,7 @@ class TestAllgroupsAllchannels:
     async def test_non_owner_is_silently_ignored(self, db_path):
         with patch("subscription.OWNER_USER_IDS", {555}):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=999)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -2940,7 +2946,7 @@ class TestAllgroupsAllchannels:
 
         with patch("subscription.OWNER_USER_IDS", {555}):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -2975,7 +2981,7 @@ class TestAllgroupsAllchannels:
 
         with patch("subscription.OWNER_USER_IDS", {555}):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -3264,7 +3270,7 @@ class TestUpdateFeature:
              patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -3283,7 +3289,7 @@ class TestUpdateFeature:
              patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -3300,7 +3306,7 @@ class TestUpdateFeature:
              patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -3319,7 +3325,7 @@ class TestUpdateFeature:
              patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -3336,7 +3342,7 @@ class TestUpdateFeature:
              patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -3351,7 +3357,7 @@ class TestUpdateFeature:
     async def test_unknown_feature_key(self, db_path):
         with patch("subscription.OWNER_USER_IDS", {555}):
             bot = make_bot()
-            chat = make_chat(chat_id=-999)
+            chat = make_chat(chat_id=-999, chat_type="private")
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
@@ -3413,11 +3419,12 @@ class TestSetsheet:
     async def test_free_hub_is_rejected(self, db_path):
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
-        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        chat = make_chat(chat_id=1, chat_type="private")
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
         ctx = make_context(bot=bot, args=["abc"])
+        ctx.user_data["selected_hub_chat_id"] = "-100123"
 
         await subscription.setsheet(upd, ctx)
 
@@ -3427,11 +3434,12 @@ class TestSetsheet:
         insert_premium(db_path, chat_id="-100123")
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
-        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        chat = make_chat(chat_id=1, chat_type="private")
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
         ctx = make_context(bot=bot, args=[])
+        ctx.user_data["selected_hub_chat_id"] = "-100123"
 
         await subscription.setsheet(upd, ctx)
 
@@ -3441,11 +3449,12 @@ class TestSetsheet:
         insert_premium(db_path, chat_id="-100123")
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
-        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        chat = make_chat(chat_id=1, chat_type="private")
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
         ctx = make_context(bot=bot, args=["abc123sheetid"])
+        ctx.user_data["selected_hub_chat_id"] = "-100123"
 
         with patch("subscription.open_spreadsheet", new_callable=AsyncMock, return_value=self._FakeSpreadsheet()), \
              patch("subscription._push_control_sheet_main", new_callable=AsyncMock):
@@ -3459,11 +3468,12 @@ class TestSetsheet:
         insert_premium(db_path, chat_id="-100123")
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
-        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        chat = make_chat(chat_id=1, chat_type="private")
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
         ctx = make_context(bot=bot, args=["abc"])
+        ctx.user_data["selected_hub_chat_id"] = "-100123"
 
         await subscription.setsheet(upd, ctx)
 
@@ -3502,11 +3512,13 @@ class TestHandleExtraPlayerInput:
             await handlers.handle_extra_player_input(upd, ctx)
 
         conn = sqlite3.connect(db_path)
-        going = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()[0]
-        assert "bob (555)" in going
+        row = conn.execute(
+            "SELECT status, user_id FROM event_users WHERE event_id='ev1' AND chat_id='-100123' AND username='bob'"
+        ).fetchone()
+        assert row == ("going", "555")
         assert "awaiting_extra_player_for" not in ctx.user_data
 
-    async def test_unknown_username_falls_back_to_no_id_marker(self, db_path):
+    async def test_unknown_username_falls_back_to_username_as_id(self, db_path):
         conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
@@ -3533,8 +3545,10 @@ class TestHandleExtraPlayerInput:
             await handlers.handle_extra_player_input(upd, ctx)
 
         conn = sqlite3.connect(db_path)
-        going = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()[0]
-        assert "unknownguy (no_id_in_main_group)" in going
+        row = conn.execute(
+            "SELECT status, user_id FROM event_users WHERE event_id='ev1' AND chat_id='-100123' AND username='unknownguy'"
+        ).fetchone()
+        assert row == ("going", "unknownguy")
 
     async def test_non_admin_is_silently_ignored(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -4409,11 +4423,13 @@ class TestEditeventLimitRaisePromotesFromWaitlist:
         await handlers.editevent(upd, ctx)
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT total_limit, going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        row = conn.execute("SELECT total_limit, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
         assert row[0] == 4
-        going = json.loads(row[1])
-        assert any("dave" in g for g in going)
-        assert json.loads(row[2]) == []
+        dave_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100123' AND username='dave'"
+        ).fetchone()
+        assert dave_row == ("going",)
+        assert json.loads(row[1]) == []
         child_row = conn.execute(
             "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-200' AND user_id='5'"
         ).fetchone()
@@ -4431,10 +4447,12 @@ class TestEditeventLimitRaisePromotesFromWaitlist:
         await handlers.editevent(upd, ctx)
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT going_data, waitlist_data FROM events WHERE event_id='ev1'").fetchone()
-        going = json.loads(row[0])
-        waitlist = json.loads(row[1])
-        assert any("dave" in g for g in going)  # dave was oldest, promoted
+        row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
+        waitlist = json.loads(row[0])
+        dave_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100123' AND username='dave'"
+        ).fetchone()
+        assert dave_row == ("going",)  # dave was oldest, promoted
         assert len(waitlist) == 1 and waitlist[0]["username"] == "erin"  # erin still waiting
         assert bot.send_message.call_count == 1
 
@@ -5249,7 +5267,7 @@ class TestNotifyUsesListusersFormat:
 
         await handlers.notify(upd, ctx)
 
-        text = msg.reply_text.call_args.args[0]
+        text = bot.send_message.call_args.kwargs["text"]
         assert "tg://user?id=100" in text
         assert "Alice Smith" in text
 
@@ -5313,7 +5331,7 @@ class TestWaitlistGuestRenderingMatchesGoing:
 
         text = msg.reply_text.call_args.args[0]
         assert "carol" in text
-        assert "👤⊕ 2, from:" in text
+        assert "⊕ 2, from:" in text
         # The guest line must NOT use the Standby icon (that would be the
         # old, wrong "person waiting" rendering)
         guest_line = [l for l in text.split("\n") if "alice" in l][0]
@@ -5345,7 +5363,7 @@ class TestWaitlistGuestRenderingMatchesGoing:
         await handlers.waitlist_command(upd, ctx)
 
         text = msg.reply_text.call_args.args[0]
-        assert "👤⊕ 3, from:" in text
+        assert "⊕ 3, from:" in text
 
     async def test_post_render_also_groups_guest_slots(self, db_path):
         """The actual post's own Waitlist section (not just /waitlist)
@@ -5359,7 +5377,7 @@ class TestWaitlistGuestRenderingMatchesGoing:
         count, text = event_engine._render_waitlist_local(waitlist, "-100")
         assert count == 3
         assert "carol" in text
-        assert "👤⊕ 2, from:" in text
+        assert "⊕ 2, from:" in text
 
 
 class TestRefreshusersallCoversHubItself:
@@ -5545,13 +5563,20 @@ class TestDeduplicatedProTierChecks:
     used by aliases.py/monitors.py. Now both go through it."""
 
     async def test_setsheet_free_tier_uses_require_premium(self, db_path):
-        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        chat = make_chat(chat_id=1, chat_type="private")
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
         ctx = make_context(args=["sheetid123"])
+        ctx.user_data["selected_hub_chat_id"] = "-1"
 
-        await subscription.setsheet(upd, ctx)
+        # Isolate what this test actually verifies (setsheet's OWN
+        # require_premium usage for Sheets binding) from the unrelated
+        # dm_access gate that now ALSO applies since setsheet became
+        # DM-only - a real FREE hub genuinely lacks both, but this test
+        # is specifically about the Sheets-binding check.
+        with patch("subscription.has_feature", return_value=True):
+            await subscription.setsheet(upd, ctx)
 
         text = msg.reply_text.call_args.args[0]
         assert "PRO" in text
@@ -5900,11 +5925,14 @@ class TestEditeventVisibilityAndLimitChanges:
              patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
             await handlers.editevent(upd, ctx)
 
-        row = conn.execute("SELECT going_data, waitlist_data, waitlist_visibility, total_limit FROM events WHERE event_id='ev1'").fetchone()
-        assert row[2] == "visible"
-        assert row[3] == 3
-        assert any("carol" in g for g in json.loads(row[0]))
-        assert json.loads(row[1]) == []
+        row = conn.execute("SELECT waitlist_data, waitlist_visibility, total_limit FROM events WHERE event_id='ev1'").fetchone()
+        assert row[1] == "visible"
+        assert row[2] == 3
+        carol_row = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='carol'"
+        ).fetchone()
+        assert carol_row == ("going",)
+        assert json.loads(row[0]) == []
         assert bot.send_message.call_count == 1
 
     async def test_visibility_only_change_does_not_falsely_promote(self, db_path):
@@ -6399,7 +6427,7 @@ class TestSetsubRejectsChannelTargets:
     async def test_channel_target_rejected_no_wrong_row_created(self, db_path):
         bot = make_bot()
         bot.get_chat = AsyncMock(return_value=MagicMock(type="channel", title="My Channel", username=None))
-        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        chat = make_chat(chat_id=-1, chat_type="private")
         owner = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=owner, message=msg)
@@ -6418,7 +6446,7 @@ class TestSetsubRejectsChannelTargets:
     async def test_real_group_target_still_works(self, db_path):
         bot = make_bot()
         bot.get_chat = AsyncMock(return_value=MagicMock(type="supergroup", title="Real Group", username=None))
-        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        chat = make_chat(chat_id=-1, chat_type="private")
         owner = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=owner, message=msg)
@@ -6443,7 +6471,7 @@ class TestSetsubRejectsChannelTargets:
         failed for some unrelated reason."""
         bot = make_bot()
         bot.get_chat = AsyncMock(side_effect=Exception("Chat not found"))
-        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        chat = make_chat(chat_id=-1, chat_type="private")
         owner = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=owner, message=msg)
@@ -9105,3 +9133,235 @@ class TestVariantBUnification:
         assert waitlist[0]["first_name"] == "Ivan"
         assert waitlist[0]["last_name"] == "Petrov"
         assert waitlist[0]["chat_id"] == MAIN_CHAT
+
+
+class TestLockbotCommand:
+    """New /lockbot command - owner-only, flips the global lock flag
+    that main.lock_gate reads before every command/callback. Follows
+    the exact same gating pattern as /setsub: anonymous posters get a
+    specific message, any other non-owner gets total silence (the
+    command's existence isn't revealed to them)."""
+
+    async def test_owner_can_lock(self, db_path):
+        user = make_user(user_id=999)
+        chat = make_chat(chat_id=1, chat_type="private")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["on"])
+
+        with patch("subscription.OWNER_USER_IDS", {999}):
+            await subscription.lockbot(upd, ctx)
+
+        import db
+        assert db.is_bot_locked() is True
+        assert "locked" in msg.reply_text.call_args.args[0].lower()
+
+    async def test_owner_can_unlock(self, db_path):
+        import db
+        db.set_bot_locked(True)
+        user = make_user(user_id=999)
+        chat = make_chat(chat_id=1, chat_type="private")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["off"])
+
+        with patch("subscription.OWNER_USER_IDS", {999}):
+            await subscription.lockbot(upd, ctx)
+
+        assert db.is_bot_locked() is False
+        assert "unlocked" in msg.reply_text.call_args.args[0].lower()
+
+    async def test_non_owner_gets_silence(self, db_path):
+        import db
+        user = make_user(user_id=42)
+        chat = make_chat(chat_id=-1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["on"])
+
+        with patch("subscription.OWNER_USER_IDS", {999}):
+            await subscription.lockbot(upd, ctx)
+
+        assert not msg.reply_text.called
+        assert db.is_bot_locked() is False
+
+    async def test_invalid_argument_shows_syntax(self, db_path):
+        user = make_user(user_id=999)
+        chat = make_chat(chat_id=1, chat_type="private")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["maybe"])
+
+        with patch("subscription.OWNER_USER_IDS", {999}):
+            await subscription.lockbot(upd, ctx)
+
+        assert "Syntax" in msg.reply_text.call_args.args[0]
+
+    async def test_no_argument_shows_syntax(self, db_path):
+        user = make_user(user_id=999)
+        chat = make_chat(chat_id=1, chat_type="private")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=[])
+
+        with patch("subscription.OWNER_USER_IDS", {999}):
+            await subscription.lockbot(upd, ctx)
+
+        assert "Syntax" in msg.reply_text.call_args.args[0]
+
+    async def test_owner_in_group_gets_dm_only_error(self, db_path):
+        """Owner-check passes first (still silent for non-owners), but
+        an OWNER calling from a group now gets an explicit DM-only
+        error instead of proceeding."""
+        user = make_user(user_id=999)
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["on"])
+
+        with patch("subscription.OWNER_USER_IDS", {999}):
+            await subscription.lockbot(upd, ctx)
+
+        import db
+        assert db.is_bot_locked() is False
+        assert "only works in a DM" in msg.reply_text.call_args.args[0]
+
+
+class TestStalePlaceholderRenameAvoidsGoingDuplicate:
+    """Real bug found while fixing legacy unresolvable-entry migration:
+    once migrate_event_to_event_users started migrating unresolvable
+    Add Extra Member placeholders (using username-as-id, so they'd stay
+    visible/surfaceable by /refreshusers), a REAL click by that same
+    person afterward created a genuine SECOND row keyed by their real
+    numeric id - a silent duplicate. Fixed by "renaming" the stale
+    placeholder row's user_id to the real one (preserving its guests/
+    status) instead of leaving it orphaned alongside a fresh row."""
+
+    async def test_no_duplicate_row_after_real_click_and_guests_preserved(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]',?,'[]')""",
+            (json.dumps(["An (no_id_in_main_group)"]), json.dumps({"An": 3})),
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        ctx = make_context(bot=bot)
+        user = make_user(user_id=999, username="An", first_name="An")
+        upd = make_callback_update("going_ev1", chat_id=-100, user=user)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT user_id, status, guests FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='An'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == ("999", "going", 3)
+
+
+class TestNotifyPingsGroupNotCaller:
+    """Real bug found: /notify's actual ping used reply_text, meaning if
+    called from a DM, the ping (with mentions of pending people) would
+    land in the DM instead of the group where those people actually
+    are - defeating the entire purpose of the command. Fixed to always
+    send the ping to the resolved hub chat_id via send_message, with a
+    brief confirmation back to the caller if they're in a DM (since
+    otherwise they'd get zero feedback in their own chat)."""
+
+    async def test_called_directly_in_group_pings_that_same_group(self, db_path):
+        insert_event(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(bot=bot)
+
+        await handlers.notify(upd, ctx)
+
+        assert bot.send_message.call_args.kwargs["chat_id"] == "-100123"
+        # No extra DM confirmation needed - the ping itself already
+        # landed in the same place the command was run from.
+        assert not msg.reply_text.called
+
+    async def test_called_from_dm_pings_the_group_and_confirms_to_caller(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100','alice','1','active')")
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat_dm = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat_dm)
+        upd = make_update(chat=chat_dm, user=user, message=msg)
+        ctx = make_context(bot=bot)
+        ctx.user_data = {"selected_hub_chat_id": "-100"}
+
+        await handlers.notify(upd, ctx)
+
+        # The real ping goes to the GROUP, not the DM
+        assert bot.send_message.call_args.kwargs["chat_id"] == "-100"
+        assert "alice" in bot.send_message.call_args.kwargs["text"]
+        # The caller still gets SOME feedback in their own DM
+        assert msg.reply_text.called
+        assert "Pinged" in msg.reply_text.call_args.args[0]
+
+
+class TestOwnerHelpMentionsLockbotAndDmOnly:
+    """Real gap found: /lockbot was implemented and registered, but
+    never added to /help -a's own owner-only text - an owner would have
+    no way to discover the command exists except by reading the source
+    or being told directly. Also verifies the DM-only requirement
+    (added for all owner-only commands in the same session) is
+    mentioned in the text, since a stale help screen claiming these
+    work anywhere would be actively misleading."""
+
+    def test_lockbot_is_listed(self):
+        text = help_system._build_owner_help_text()
+        assert "/lockbot on\\|off" in text
+
+    def test_dm_only_requirement_is_mentioned(self):
+        text = help_system._build_owner_help_text()
+        assert "only work from a DM" in text
+
+
+class TestSetsheetHelpMarkedDmOnly:
+    """Real gap found: /switchgroup's help line already had a
+    "(DM only)" marker, but /setsheet's own help line didn't, even
+    though setsheet became Type 3 (DM only) too in the same session."""
+
+    async def test_setsheet_help_line_has_dm_only_marker(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1)
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_utility"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=user, message=msg)
+        upd.callback_query = query
+        ctx = make_context()
+
+        await help_system.help_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "/setsheet \\(DM only\\)" in text

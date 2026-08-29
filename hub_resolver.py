@@ -44,7 +44,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from db import get_connection
-from utils import escape_markdown
+from utils import escape_markdown, require_dm_only
 
 # Filled in by aliases.py, handlers.py, monitors.py, subscription.py (and
 # whichever other modules opt into this) at import time - kept here rather
@@ -114,7 +114,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plainly if they're not an admin anywhere yet.
     """
     chat = update.effective_chat
-    if chat.type != "private":
+    if not await require_dm_only(update, "start"):
         return
 
     admin_of = await _get_known_candidate_chats(context, update.effective_user.id)
@@ -159,7 +159,7 @@ async def switchgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     different group.
     """
     chat = update.effective_chat
-    if chat.type != "private":
+    if not await require_dm_only(update, "switchgroup"):
         return
 
     context.user_data.pop("selected_hub_chat_id", None)

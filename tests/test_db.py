@@ -15,7 +15,8 @@ from db import (
     init_db, track_user, get_all_features, update_feature_flag, log_command_usage,
     get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
     register_chat_added, register_chat_removed, get_feature_limit_for_chat, get_display_name,
-    dedupe_waitlist, get_shareevent_remaining_for_chat,
+    dedupe_waitlist, get_shareevent_remaining_for_chat, migrate_event_to_event_users,
+    is_bot_locked, set_bot_locked,
 )
 
 
@@ -1139,3 +1140,177 @@ class TestGetShareeventRemainingForChat:
         limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
         assert limit == 1
         assert remaining == 0
+
+
+class TestMigrateEventToEventUsers:
+    """Direct, isolated unit tests for the Variant B migration function -
+    previously only covered indirectly through button_handler/editevent/
+    notify/refreshusers, each exercising it as a side effect of their own
+    logic rather than testing the function's own behavior directly."""
+
+    def _setup_event(self, path, going="[]", not_going="[]", counters="{}", kicked="[]"):
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,?,?,?)""",
+            (going, not_going, counters, kicked),
+        )
+        conn.commit()
+        return conn
+
+    def test_migrates_going_notgoing_and_guests(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(
+            path,
+            going='["alice (1)", "bob (2)"]',
+            not_going='["carol (3)"]',
+            counters='{"alice": 2}',
+        )
+        cursor = conn.cursor()
+        migrate_event_to_event_users(cursor, "ev1", "-100", ["alice (1)", "bob (2)"], ["carol (3)"], {"alice": 2}, [])
+        conn.commit()
+
+        rows = {r[0]: r for r in conn.execute(
+            "SELECT username, status, guests, user_id FROM event_users WHERE event_id='ev1' AND chat_id='-100'"
+        ).fetchall()}
+        assert rows["alice"][1] == "going" and rows["alice"][2] == 2
+        assert rows["bob"][1] == "going" and rows["bob"][2] == 0
+        assert rows["carol"][1] == "notgoing"
+        conn.close()
+
+    def test_kicked_status_takes_priority_over_going(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path, going='["dave (4)"]')
+        cursor = conn.cursor()
+        migrate_event_to_event_users(cursor, "ev1", "-100", ["dave (4)"], [], {}, ["dave"])
+        conn.commit()
+
+        row = conn.execute("SELECT status FROM event_users WHERE event_id='ev1' AND username='dave'").fetchone()
+        assert row == ("kicked",)
+        conn.close()
+
+    def test_guest_only_entry_gets_notselected_status(self, tmp_path):
+        """Someone with a counters entry but no going/notgoing status of
+        their own - only migratable if resolvable via main_group_users."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path, counters='{"erin": 3}')
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100', 'erin', '5', 'active')"
+        )
+        conn.commit()
+        cursor = conn.cursor()
+        migrate_event_to_event_users(cursor, "ev1", "-100", [], [], {"erin": 3}, [])
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT status, guests, user_id FROM event_users WHERE event_id='ev1' AND username='erin'"
+        ).fetchone()
+        assert row == ("notselected", 3, "5")
+        conn.close()
+
+    def test_unresolvable_guest_only_entry_is_skipped(self, tmp_path):
+        """No main_group_users row at all - genuinely can't be migrated
+        (no fallback id makes sense for a PURE guest-count entry, unlike
+        a going/notgoing entry which at least has a username to fall
+        back on)."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path, counters='{"frank": 1}')
+        cursor = conn.cursor()
+        migrate_event_to_event_users(cursor, "ev1", "-100", [], [], {"frank": 1}, [])
+        conn.commit()
+
+        row = conn.execute("SELECT * FROM event_users WHERE event_id='ev1' AND username='frank'").fetchone()
+        assert row is None
+        conn.close()
+
+    def test_legacy_unresolvable_going_entry_uses_username_as_fallback_id(self, tmp_path):
+        """The old '(no_id_in_main_group)' marker (or any bare entry with
+        no parens at all) migrates using the username itself as a
+        fallback identifying key - stays visible/surfaceable rather than
+        silently vanishing."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path, going='["ghost (no_id_in_main_group)"]')
+        cursor = conn.cursor()
+        migrate_event_to_event_users(cursor, "ev1", "-100", ["ghost (no_id_in_main_group)"], [], {}, [])
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT status, user_id FROM event_users WHERE event_id='ev1' AND username='ghost'"
+        ).fetchone()
+        assert row == ("going", "ghost")
+        conn.close()
+
+    def test_already_migrated_event_is_a_safe_noop(self, tmp_path):
+        """Calling migration twice (e.g. two clicks in a row) must not
+        duplicate or corrupt already-migrated data."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path, going='["alice (1)"]')
+        cursor = conn.cursor()
+        migrate_event_to_event_users(cursor, "ev1", "-100", ["alice (1)"], [], {}, [])
+        conn.commit()
+
+        # Simulate real-world drift: after migration, going_data is frozen
+        # and stops reflecting reality, but calling migrate again with the
+        # SAME (now-stale) input must not touch the already-migrated row.
+        conn.execute("UPDATE event_users SET guests = 99 WHERE event_id='ev1' AND username='alice'")
+        conn.commit()
+        migrate_event_to_event_users(cursor, "ev1", "-100", ["alice (1)"], [], {}, [])
+        conn.commit()
+
+        row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND username='alice'").fetchone()
+        assert row == (99,), "second call must be a no-op, not overwrite real event_users state"
+        conn.close()
+
+    def test_empty_event_migrates_to_nothing(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path)
+        cursor = conn.cursor()
+        migrate_event_to_event_users(cursor, "ev1", "-100", [], [], {}, [])
+        conn.commit()
+
+        rows = conn.execute("SELECT * FROM event_users WHERE event_id='ev1'").fetchall()
+        assert rows == []
+        conn.close()
+
+
+class TestBotLockState:
+    """Direct unit tests for the /lockbot feature's persistence layer."""
+
+    def test_defaults_to_unlocked(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        import db
+        db.DB_PATH = path
+        assert is_bot_locked() is False
+
+    def test_lock_and_unlock_round_trip(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        import db
+        db.DB_PATH = path
+
+        set_bot_locked(True)
+        assert is_bot_locked() is True
+
+        set_bot_locked(False)
+        assert is_bot_locked() is False
+
+    def test_lock_state_survives_reinit(self, tmp_path):
+        """init_db() (e.g. on bot restart) must not reset an already-set
+        lock state - 'INSERT OR IGNORE' should leave an existing row alone."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        import db
+        db.DB_PATH = path
+        set_bot_locked(True)
+
+        init_db(db_path=path)  # simulates a restart
+        assert is_bot_locked() is True

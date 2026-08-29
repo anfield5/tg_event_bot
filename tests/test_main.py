@@ -287,3 +287,52 @@ class TestOnChatMemberUpdateCapturesRealName:
         conn = sqlite3.connect(db_path)
         row = conn.execute("SELECT user_id, first_name, last_name, status FROM main_group_users WHERE chat_id='-1'").fetchone()
         assert row == ("888", "Leaver", "Person", "passive")
+
+
+class TestLockGate:
+    """New /lockbot feature: main.lock_gate runs before every command and
+    callback query (registered at group=-3, earlier than every other
+    handler group) and silently stops all processing for anyone not in
+    OWNER_USER_IDS while the bot is locked. Owners are always
+    unaffected, regardless of lock state."""
+
+    async def test_not_locked_lets_everyone_through(self, db_path):
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=42)
+
+        # Should return normally, no exception
+        await main.lock_gate(upd, MagicMock())
+
+    async def test_locked_stops_non_owner(self, db_path):
+        import db
+        db.set_bot_locked(True)
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=42)
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            with pytest.raises(Exception) as exc_info:
+                await main.lock_gate(upd, MagicMock())
+            assert type(exc_info.value).__name__ == "ApplicationHandlerStop"
+
+    async def test_locked_lets_owner_through(self, db_path):
+        import db
+        db.set_bot_locked(True)
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=999)
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            # Should return normally, no exception - owner is unaffected
+            await main.lock_gate(upd, MagicMock())
+
+    async def test_no_effective_user_does_not_crash(self, db_path):
+        """Defensive: some update types could theoretically have no
+        effective_user - must not crash, and (being unable to verify
+        owner status) should be treated as non-owner when locked."""
+        import db
+        db.set_bot_locked(True)
+        upd = MagicMock()
+        upd.effective_user = None
+
+        with pytest.raises(Exception) as exc_info:
+            await main.lock_gate(upd, MagicMock())
+        assert type(exc_info.value).__name__ == "ApplicationHandlerStop"

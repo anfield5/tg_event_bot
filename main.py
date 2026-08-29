@@ -1,5 +1,6 @@
 from telegram.ext import (
     ApplicationBuilder,
+    ApplicationHandlerStop,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
@@ -8,7 +9,7 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
-from db import init_db, track_user, register_chat_added, register_chat_removed, log_command_usage
+from db import init_db, track_user, register_chat_added, register_chat_removed, log_command_usage, is_bot_locked
 from hub_resolver import hub_pick_callback_handler, start_command, switchgroup_command
 from handlers import (
     help_command, help_callback_handler, help_back_handler, upgrade_info_callback_handler, userid, chatid,
@@ -24,11 +25,33 @@ from handlers import (
 )
 from subscription import (
     setsub, setsheet, status_command, allgroups_command, allgroups_page_callback_handler,
-    allchannels_command, allchannels_page_callback_handler, updatefeature,
+    allchannels_command, allchannels_page_callback_handler, updatefeature, lockbot,
     _push_control_sheet_main, _push_control_sheet_channels, _push_control_sheet_botconfig,
     _push_control_sheet_chats_log,
 )
 from utils import now2ddmmyy
+
+
+async def lock_gate(update, context):
+    """
+    Runs before every single command and button click, in every chat -
+    registered at group=-3, earlier than track_command_interaction/
+    log_command_usage_handler below, so a locked bot doesn't even track
+    or log interactions from non-owners while locked.
+
+    When /lockbot on is active, silently stops all further processing
+    (via ApplicationHandlerStop) for anyone not in OWNER_USER_IDS - no
+    reply, no error, the bot simply doesn't respond at all, same as
+    being offline. Owners themselves are completely unaffected: every
+    command and button (including /lockbot off itself) keeps working
+    normally for them regardless of lock state.
+    """
+    if not is_bot_locked():
+        return
+    user = update.effective_user
+    if user is not None and user.id in OWNER_USER_IDS:
+        return
+    raise ApplicationHandlerStop
 
 
 async def track_command_interaction(update, context):
@@ -266,6 +289,8 @@ def main():
     # own handler (registered in the default group 0 below), not instead
     # of it - marks the invoker as tracked for ANY command, not just
     # event-button clicks or /refreshusers (see track_command_interaction).
+    app.add_handler(MessageHandler(filters.COMMAND, lock_gate), group=-3)
+    app.add_handler(CallbackQueryHandler(lock_gate), group=-3)
     app.add_handler(MessageHandler(filters.COMMAND, track_command_interaction), group=-1)
     app.add_handler(MessageHandler(filters.COMMAND, log_command_usage_handler), group=-2)
 
@@ -298,6 +323,7 @@ def main():
 
     # 6. Subscription control (owner-only, checked inside setsub itself)
     app.add_handler(CommandHandler("setsub", setsub))
+    app.add_handler(CommandHandler("lockbot", lockbot))
     app.add_handler(CommandHandler("updatefeature", updatefeature))
     app.add_handler(CommandHandler("setsheet", setsheet))
     app.add_handler(CommandHandler("status", status_command))

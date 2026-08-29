@@ -224,6 +224,8 @@ def _build_owner_help_text(expanded_key: str = None) -> str:
         "🔑 *Owner\\-Only Commands*\n\n"
         "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
         "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
+        "/lockbot on\\|off \\- Global emergency switch \\- `on` makes the bot ignore "
+        "everyone except owners, across every chat at once\n"
         "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
         f"{allgroups_detail}"
         "/allchannels \\- List every channel the bot is in, 10 at a time\n"
@@ -232,7 +234,8 @@ def _build_owner_help_text(expanded_key: str = None) -> str:
         f"{updatefeature_detail}\n"
         "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
         "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
-        "can't be verified and will be rejected\\."
+        "can't be verified and will be rejected\\. All of these also only work from a DM "
+        "with the bot \\- running any of them inside a group is rejected\\."
     )
 
 
@@ -363,7 +366,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/userid \\- Show your own Telegram user ID\n"
             "/chatid \\- Show this chat's ID"
             + (
-                "\n/setsheet \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet "
+                "\n/setsheet \\(DM only\\) \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet "
                 "\\(Users/Events/Actions/EventUsers/UserPresenceLog tabs\\)\n"
                 "sheetid\\|sheeturl \\- either the raw spreadsheet ID, or a full Google Sheets URL "
                 "\\(the ID is extracted automatically\\)"

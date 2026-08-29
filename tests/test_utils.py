@@ -7,7 +7,7 @@ or fixtures are needed — just call and assert.
 
 import re
 import pytest
-from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS
+from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS, require_dm_only, COMMAND_DESTINATION_TYPE
 
 
 # ---------------------------------------------------------------------------
@@ -138,3 +138,116 @@ class TestParseEventDate:
     def test_all_supported_formats_covered(self):
         # DATE_FORMATS must contain exactly 2 entries
         assert len(DATE_FORMATS) == 2
+
+
+class TestCommandDestinationClassification:
+    """Direct unit tests for the command destination-type classification
+    (COMMAND_DESTINATION_TYPE) and its Type 3 enforcement helper
+    (require_dm_only), previously only covered indirectly through each
+    individual command's own tests."""
+
+    def test_type_2_commands_are_exactly_these_four(self):
+        type_2 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 2}
+        assert type_2 == {"newevent", "editevent", "shareevent", "notify"}
+
+    def test_type_3_commands_are_exactly_these_eight(self):
+        type_3 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 3}
+        assert type_3 == {
+            "switchgroup", "start", "lockbot", "allgroups",
+            "allchannels", "updatefeature", "setsub", "setsheet",
+        }
+
+    def test_no_command_is_both_type_2_and_type_3(self):
+        type_2 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 2}
+        type_3 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 3}
+        assert type_2.isdisjoint(type_3)
+
+    @pytest.mark.asyncio
+    async def test_require_dm_only_allows_private_chat(self):
+        from unittest.mock import MagicMock, AsyncMock
+        update = MagicMock()
+        update.effective_chat.type = "private"
+        update.message.reply_text = AsyncMock()
+
+        result = await require_dm_only(update, "somecommand")
+
+        assert result is True
+        assert not update.message.reply_text.called
+
+    @pytest.mark.asyncio
+    async def test_require_dm_only_rejects_group_with_explicit_error(self):
+        from unittest.mock import MagicMock, AsyncMock
+        update = MagicMock()
+        update.effective_chat.type = "supergroup"
+        update.message.reply_text = AsyncMock()
+
+        result = await require_dm_only(update, "somecommand")
+
+        assert result is False
+        update.message.reply_text.assert_awaited_once()
+        text = update.message.reply_text.call_args.args[0]
+        assert "/somecommand" in text
+        assert "only works in a DM" in text
+
+    @pytest.mark.asyncio
+    async def test_require_dm_only_rejects_channel_too(self):
+        """A channel post isn't a DM either - must be rejected the same
+        way as a group."""
+        from unittest.mock import MagicMock, AsyncMock
+        update = MagicMock()
+        update.effective_chat.type = "channel"
+        update.message.reply_text = AsyncMock()
+
+        result = await require_dm_only(update, "somecommand")
+
+        assert result is False
+
+
+class TestCommandDestinationTypeMatchesRealCode:
+    """Drift-detection test, matching the pattern already used for
+    flag_registry.py's gating verification (test_flag_registry.py):
+    parses each Type 3 command's actual source function and confirms
+    it genuinely calls require_dm_only() somewhere - catches a future
+    command being added to COMMAND_DESTINATION_TYPE without the
+    enforcement actually being wired up, or the reverse (enforcement
+    removed from code without updating the dict)."""
+
+    # (function name, source file, source file's own dispatcher name for the command key)
+    TYPE_3_FUNCTIONS = {
+        "switchgroup": ("switchgroup_command", "hub_resolver.py"),
+        "start": ("start_command", "hub_resolver.py"),
+        "lockbot": ("lockbot", "subscription.py"),
+        "allgroups": ("allgroups_command", "subscription.py"),
+        "allchannels": ("allchannels_command", "subscription.py"),
+        "updatefeature": ("updatefeature", "subscription.py"),
+        "setsub": ("setsub", "subscription.py"),
+        "setsheet": ("setsheet", "subscription.py"),
+    }
+
+    def _get_function_source(self, filename, function_name):
+        import re
+        with open(filename) as f:
+            content = f.read()
+        # Match from "async def <name>(" to the next top-level "async def "
+        # (a function starting at column 0), or end of file.
+        pattern = rf"async def {function_name}\(.*?(?=\nasync def |\Z)"
+        match = re.search(pattern, content, re.DOTALL)
+        assert match, f"Could not find function {function_name} in {filename}"
+        return match.group(0)
+
+    def test_every_type_3_command_in_the_dict_has_a_known_function(self):
+        type_3 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 3}
+        assert type_3 == set(self.TYPE_3_FUNCTIONS.keys()), \
+            "TYPE_3_FUNCTIONS in this test must be kept in sync with COMMAND_DESTINATION_TYPE"
+
+    @pytest.mark.parametrize("command_key", [
+        "switchgroup", "start", "lockbot", "allgroups",
+        "allchannels", "updatefeature", "setsub", "setsheet",
+    ])
+    def test_type_3_command_actually_calls_require_dm_only(self, command_key):
+        function_name, filename = self.TYPE_3_FUNCTIONS[command_key]
+        source = self._get_function_source(filename, function_name)
+        assert "require_dm_only(" in source, (
+            f"/{command_key} is listed as Type 3 (DM-only) in COMMAND_DESTINATION_TYPE, "
+            f"but its function {function_name}() in {filename} never calls require_dm_only()"
+        )

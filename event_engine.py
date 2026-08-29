@@ -32,10 +32,10 @@ from telegram.error import BadRequest
 from keyboard import create_event_keyboard
 from config import (
     ICON_CANCEL_EVENT, ICON_CLOCK, ICON_GUEST, ICON_SHARED, ICON_STATS, ICON_STANDBY,
-    ICON_WARNING, logger,
+    ICON_WARNING, ICON_TOTAL, logger,
 )
 from utils import escape_markdown, now2ddmmyy, is_real_admin
-from db import get_connection, get_display_name, track_user, dedupe_waitlist
+from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet
 
 
@@ -558,7 +558,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         f"{notgoing_section}"
         f"{master_shares_block}"
         f"{waitlist_section}\n\n"
-        f"{ICON_STATS} *TOTAL Going:* {global_total}"
+        f"{ICON_TOTAL} *TOTAL Going:* {global_total}"
     )
 
     # Keyboard buttons for master (verification mode needs child rows too)
@@ -725,7 +725,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             f"*Going here:* \\({c_info['count']}\\)\n{c_info['users_text']}\n\n"
             f"{child_notgoing_section}"
             f"{child_waitlist_section}"
-            f"{ICON_STATS} *Total Going \\(all groups\\):* {global_total}\n"
+            f"{ICON_TOTAL} *Total Going \\(all groups\\):* {global_total}\n"
         )
 
         child_keyboard = create_event_keyboard(
@@ -897,59 +897,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 kicked    = json.loads(kicked_data or "[]")
 
                 # ── One-time migration to the unified event_users model ────────
-                # Variant B: the master hub's own participants now live in
-                # event_users too (chat_id=main_chat_id), the same table
-                # child chats have always used - going_data/notgoing_data/
-                # counters_data/kicked_data stop being the source of truth
-                # after this runs once per event. Detected by "does
-                # event_users already have ANY row for (event_id,
-                # main_chat_id)" - INSERT OR IGNORE means running this
-                # again on an already-migrated event is a safe no-op.
-                cursor.execute(
-                    "SELECT 1 FROM event_users WHERE event_id = ? AND chat_id = ? LIMIT 1",
-                    (event_id, main_chat_id),
-                )
-                if cursor.fetchone() is None:
-                    kicked_usernames = set(kicked)
-                    migrated_usernames = set()
-                    for entry in going:
-                        m_username = entry.split(" (")[0]
-                        m_id = entry.split("(")[-1].rstrip(")") if "(" in entry else None
-                        if not m_id or not str(m_id).lstrip("-").isdigit():
-                            continue  # unresolvable legacy entry - nothing to migrate an ID for
-                        status = "kicked" if m_username in kicked_usernames else "going"
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, ?, ?)",
-                            (event_id, main_chat_id, m_id, m_username, status, counters.get(m_username, 0)),
-                        )
-                        migrated_usernames.add(m_username)
-                    for entry in not_going:
-                        m_username = entry.split(" (")[0]
-                        m_id = entry.split("(")[-1].rstrip(")") if "(" in entry else None
-                        if not m_id or not str(m_id).lstrip("-").isdigit():
-                            continue
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notgoing', ?)",
-                            (event_id, main_chat_id, m_id, m_username, counters.get(m_username, 0)),
-                        )
-                        migrated_usernames.add(m_username)
-                    # Guest-only entries in counters with no going/not_going
-                    # status of their own become 'notselected' - matches the
-                    # NEW behavior going forward (see the "add" action below).
-                    for c_username, c_count in counters.items():
-                        if c_username in migrated_usernames or c_count <= 0:
-                            continue
-                        cursor.execute(
-                            "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
-                            (main_chat_id, c_username),
-                        )
-                        mg_row = cursor.fetchone()
-                        if not mg_row or not mg_row[0]:
-                            continue  # unresolvable - can't migrate without a real user_id
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notselected', ?)",
-                            (event_id, main_chat_id, mg_row[0], c_username, c_count),
-                        )
+                # See db.migrate_event_to_event_users for the full explanation -
+                # shared with handlers.py's /editevent, which also needs an
+                # accurate event_users state before button_handler ever runs.
+                migrate_event_to_event_users(cursor, event_id, main_chat_id, going, not_going, counters, kicked)
                 waitlist  = json.loads(waitlist_data_raw or "[]")
 
                 def _current_headcount():
@@ -1076,6 +1027,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # verification, Add Extra Member) fall through to the
                 # admin-only section below instead.
                 if action in ["going", "notgoing", "add", "sub", "dropall"]:
+                    # Heal a stale unresolvable-entry placeholder (keyed by
+                    # username-as-id, from a legacy Add Extra Member
+                    # addition) - a real click always carries a genuine,
+                    # numeric user_id, so any OTHER row for this same
+                    # username with a non-matching, non-numeric id is
+                    # superseded. "Rename" it to the real id (preserving
+                    # its guests/status) rather than deleting it outright,
+                    # unless a row under the real id already exists too -
+                    # then that one is authoritative and the placeholder
+                    # is simply discarded to avoid a primary-key clash.
+                    cursor.execute(
+                        "SELECT user_id FROM event_users WHERE event_id = ? AND chat_id = ? AND username = ?",
+                        (event_id, click_chat_id, username_raw),
+                    )
+                    for (existing_uid,) in cursor.fetchall():
+                        if str(existing_uid) != str(user_id) and not str(existing_uid).lstrip("-").isdigit():
+                            cursor.execute(
+                                "SELECT 1 FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (event_id, click_chat_id, str(user_id)),
+                            )
+                            if cursor.fetchone() is None:
+                                cursor.execute(
+                                    "UPDATE event_users SET user_id = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                    (str(user_id), event_id, click_chat_id, existing_uid),
+                                )
+                            else:
+                                cursor.execute(
+                                    "DELETE FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                    (event_id, click_chat_id, existing_uid),
+                                )
+
                     cursor.execute(
                         "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
                         (event_id, click_chat_id, str(user_id)),
@@ -1406,8 +1388,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         data_changed = True
 
                 cursor.execute(
-                    "UPDATE events SET event_status = ?, going_data = ?, notgoing_data = ?, counters_data = ?, kicked_data = ?, waitlist_data = ? WHERE event_id = ?",
-                    (event_status, json.dumps(going), json.dumps(list(not_going)), json.dumps(counters), json.dumps(kicked), json.dumps(waitlist), event_id),
+                    "UPDATE events SET event_status = ?, waitlist_data = ? WHERE event_id = ?",
+                    (event_status, json.dumps(waitlist), event_id),
                 )
                 conn.commit()
 
@@ -1468,39 +1450,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         all_rows = cursor_eu.fetchall()
 
+                    # Migration (which already ran at the start of this
+                    # transaction) migrates even unresolvable Add Extra
+                    # Member entries into event_users, using their
+                    # username as a fallback identifying key - so a
+                    # single query here already covers everyone, no
+                    # separate scan of the frozen `going` list needed.
                     all_going_ids = [r[0] for r in all_rows if r[1] == "going"]
 
-                    # 2. Entries with NO resolvable numeric id (e.g.
-                    #    unresolvable "Add Extra Member" additions) are
-                    #    deliberately skipped by migration - they never
-                    #    make it into event_users at all. Preserve the
-                    #    existing fallback behavior for these: identify
-                    #    them by username instead of a real user_id, by
-                    #    scanning the frozen `going` list (still holds
-                    #    whatever was loaded at the start of this
-                    #    transaction, untouched by migration).
-                    for entry in going:
-                        m = re.search(r'\(([^)]+)\)', entry)
-                        entry_id = m.group(1) if m else None
-                        if not entry_id or not str(entry_id).lstrip("-").isdigit():
-                            username = entry.split(" (")[0]
-                            all_going_ids.append(username)
-
-                    # 3. Compute total for Events sheet - going users plus
-                    #    every guest (including from non-going/notselected
-                    #    users), summed once across the whole event_id.
+                    # Compute total for Events sheet - going users plus
+                    # every guest (including from non-going/notselected
+                    # users), summed once across the whole event_id.
                     total_going = sum(
                         (1 if status == "going" else 0) + (guests or 0)
                         for _uid, status, guests in all_rows
                     )
-                    # Same unresolvable-entry fallback as above, for the
-                    # rare "Add Extra Member" person who was never
-                    # migrated into event_users at all.
-                    for entry in going:
-                        m = re.search(r'\(([^)]+)\)', entry)
-                        entry_id = m.group(1) if m else None
-                        if not entry_id or not str(entry_id).lstrip("-").isdigit():
-                            total_going += 1
 
                     # 4. Update Events sheet row
                     ws      = await ss.worksheet("Events")

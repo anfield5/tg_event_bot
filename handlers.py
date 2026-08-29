@@ -25,7 +25,7 @@ from config import (
     ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_STANDBY,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist
+from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, migrate_event_to_event_users
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet,
@@ -527,18 +527,32 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             if validated is None:
                 return
 
+            # Ensure this event's state is migrated to event_users before
+            # computing headcount below - an event nobody has clicked on
+            # since Variant B was deployed wouldn't have any event_users
+            # rows yet otherwise, undercounting its real headcount.
+            cursor.execute(
+                "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?",
+                (event_id,),
+            )
+            going_raw, notgoing_raw, counters_raw, kicked_raw = cursor.fetchone()
+            migrate_event_to_event_users(
+                cursor, event_id, chat_id,
+                json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
+            )
+
             # Reject lowering the limit below the event's current combined
             # headcount (main group + every share) - the old limit is kept
             # unchanged rather than silently accepting an inconsistent state.
-            cursor.execute("SELECT going_data, counters_data FROM events WHERE event_id = ?", (event_id,))
-            going_data_raw, counters_data_raw = cursor.fetchone()
-            main_headcount = len(json.loads(going_data_raw)) + sum(json.loads(counters_data_raw).values())
+            # Single unified query across the whole event_id - Variant B
+            # means the master hub's own participants live in event_users
+            # too (chat_id=main_chat_id), so this one query already covers
+            # everyone with no separate going_data/counters_data reads.
             cursor.execute(
                 "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
                 (event_id,),
             )
-            child_headcount = cursor.fetchone()[0]
-            current_headcount = main_headcount + child_headcount
+            current_headcount = cursor.fetchone()[0]
 
             if validated < current_headcount:
                 await update.message.reply_text(
@@ -555,10 +569,8 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             # empty or headcount reaches the new limit.
             free_slots = updated_limit - current_headcount
             if free_slots > 0:
-                cursor.execute("SELECT going_data, counters_data, waitlist_data FROM events WHERE event_id = ?", (event_id,))
-                going_raw, counters_raw, waitlist_raw = cursor.fetchone()
-                going = json.loads(going_raw)
-                counters = json.loads(counters_raw)
+                cursor.execute("SELECT waitlist_data FROM events WHERE event_id = ?", (event_id,))
+                (waitlist_raw,) = cursor.fetchone()
                 waitlist = json.loads(waitlist_raw or "[]")
                 waitlist.sort(key=lambda e: e.get("timestamp", ""))
 
@@ -572,44 +584,36 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
                     p_user_id = entry["user_id"]
 
                     if entry.get("is_guest"):
-                        if str(p_chat_id) == str(chat_id):
-                            still_going = any(g.split(" (")[0] == p_username for g in going)
-                            if still_going:
-                                counters[p_username] = counters.get(p_username, 0) + 1
-                        else:
+                        cursor.execute(
+                            "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                            (event_id, p_chat_id, p_user_id),
+                        )
+                        owner_row = cursor.fetchone()
+                        still_going = bool(owner_row and owner_row[0] == "going")
+                        if still_going:
                             cursor.execute(
-                                "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                                (event_id, p_chat_id, p_user_id),
+                                "UPDATE event_users SET guests = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                                (owner_row[1] + 1, event_id, p_chat_id, p_user_id),
                             )
-                            owner_row = cursor.fetchone()
-                            still_going = bool(owner_row and owner_row[0] == "going")
-                            if still_going:
-                                cursor.execute(
-                                    "UPDATE event_users SET guests = ? WHERE event_id = ? AND chat_id = ? AND user_id = ?",
-                                    (owner_row[1] + 1, event_id, p_chat_id, p_user_id),
-                                )
-                        if not still_going:
+                        else:
                             # Owner is no longer going - discard this stale
                             # guest-slot entry WITHOUT spending a slot from
                             # the budget, and move on to the next candidate.
                             remaining_waitlist.remove(entry)
                             continue
                     else:
-                        if str(p_chat_id) == str(chat_id):
-                            going.append(f"{p_username} ({p_user_id})")
-                        else:
-                            cursor.execute(
-                                "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', 0)",
-                                (event_id, p_chat_id, p_user_id, p_username),
-                            )
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) VALUES (?, ?, ?, ?, ?, ?, 'going', 0)",
+                            (event_id, p_chat_id, p_user_id, p_username, entry.get("first_name"), entry.get("last_name")),
+                        )
 
                     remaining_waitlist.remove(entry)
                     promotions_to_announce.append((p_chat_id, p_username, p_user_id, entry.get("is_guest", False)))
                     slots_left -= 1
 
                 cursor.execute(
-                    "UPDATE events SET going_data = ?, counters_data = ?, waitlist_data = ? WHERE event_id = ?",
-                    (json.dumps(going), json.dumps(counters), json.dumps(remaining_waitlist), event_id),
+                    "UPDATE events SET waitlist_data = ? WHERE event_id = ?",
+                    (json.dumps(remaining_waitlist), event_id),
                 )
 
         cursor.execute(
@@ -676,7 +680,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT event_id, name, going_data, notgoing_data
+            SELECT event_id, name, going_data, notgoing_data, counters_data, kicked_data
             FROM events
             WHERE chat_id = ? AND event_status = 0
             ORDER BY ROWID DESC LIMIT 1
@@ -690,10 +694,18 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
             )
             return
 
-        event_id, event_name, going_data, notgoing_data = event_row
-        going_users   = {u.split(" (")[0] for u in json.loads(going_data)}
-        notgoing_users = set(json.loads(notgoing_data))
-        decided_users  = going_users | notgoing_users
+        event_id, event_name, going_raw, notgoing_raw, counters_raw, kicked_raw = event_row
+        migrate_event_to_event_users(
+            cursor, event_id, chat_id,
+            json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
+        )
+        conn.commit()
+
+        cursor.execute(
+            "SELECT username FROM event_users WHERE event_id = ? AND chat_id = ? AND status IN ('going', 'notgoing')",
+            (event_id, chat_id),
+        )
+        decided_users = {r[0] for r in cursor.fetchall()}
 
         cursor.execute(
             "SELECT username, user_id FROM main_group_users WHERE chat_id = ? AND status = 'active'", (chat_id,)
@@ -722,7 +734,15 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
     else:
         header = f"{ICON_NOTIFY} {escape_markdown(event_name)}\n_Please submit your status_\n\n"
     users_list = "\n".join(pending)
-    await message.reply_text(header + users_list, parse_mode="MarkdownV2")
+    await context.bot.send_message(chat_id=chat_id, text=header + users_list, parse_mode="MarkdownV2")
+
+    # If called from a DM, the ping above went to the group, not here -
+    # give the caller SOME confirmation in their own DM, otherwise
+    # they'd see nothing happen at all from their end.
+    if update.effective_chat.type == "private":
+        await message.reply_text(
+            f"✅ Pinged {len(pending)} pending user\\(s\\) in the group\\.", parse_mode="MarkdownV2"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1182,10 +1202,10 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         lines.append("✅ Nothing to change \\- list already matches the group\\.")
 
     # ── 2b. Surface unresolvable "Add Extra Member" entries ─────────────────
-    # These live only in the active event's going_data (added via Verification
-    # Mode -> Add Extra Member, resolved against main_group_users at the time),
-    # never in main_group_users itself if no user_id could be found for them.
-    # They can NEVER be synced to the Users sheet (every row there is keyed
+    # Someone added via Verification Mode -> Add Extra Member with no
+    # resolvable real Telegram user_id gets their username used as a
+    # fallback identifying key instead (see handle_extra_player_input) -
+    # they can NEVER be synced to the Users sheet (every row there is keyed
     # by a real numeric USER_ID) - surfaced here so the admin knows to
     # manually resolve them, e.g. by asking the person to message the bot
     # once so a real user_id gets captured, then re-adding them.
@@ -1193,13 +1213,23 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         with get_connection() as fresh_conn:
             fresh_cursor = fresh_conn.cursor()
             fresh_cursor.execute(
-                "SELECT going_data FROM events WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
+                "SELECT event_id, going_data, notgoing_data, counters_data, kicked_data FROM events WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
                 (chat_id,),
             )
             active_event_row = fresh_cursor.fetchone()
-        if active_event_row:
-            going_list = json.loads(active_event_row[0])
-            unresolved = [g.split(" (")[0] for g in going_list if g.endswith("(no_id_in_main_group)")]
+            unresolved = []
+            if active_event_row:
+                ev_id, going_raw, notgoing_raw, counters_raw, kicked_raw = active_event_row
+                migrate_event_to_event_users(
+                    fresh_cursor, ev_id, chat_id,
+                    json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
+                )
+                fresh_conn.commit()
+                fresh_cursor.execute(
+                    "SELECT username FROM event_users WHERE event_id = ? AND chat_id = ? AND status = 'going' AND user_id = username",
+                    (ev_id, chat_id),
+                )
+                unresolved = [r[0] for r in fresh_cursor.fetchall()]
             if unresolved:
                 mentions = ", ".join(f"@{escape_markdown(u)}" for u in unresolved)
                 lines.append(
@@ -1481,15 +1511,22 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         event_id, name, event_status, going_icon, notgoing_icon, total_limit = event_row
 
         if total_limit is not None:
-            cursor.execute("SELECT going_data, counters_data FROM events WHERE event_id = ?", (event_id,))
-            going_data_raw, counters_data_raw = cursor.fetchone()
-            main_headcount = len(json.loads(going_data_raw)) + sum(json.loads(counters_data_raw).values())
+            cursor.execute(
+                "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?",
+                (event_id,),
+            )
+            going_raw, notgoing_raw, counters_raw, kicked_raw = cursor.fetchone()
+            migrate_event_to_event_users(
+                cursor, event_id, str(main_hub_chat_id),
+                json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
+            )
+            conn.commit()
             cursor.execute(
                 "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
                 (event_id,),
             )
-            child_headcount = cursor.fetchone()[0]
-            if main_headcount + child_headcount >= total_limit:
+            current_headcount = cursor.fetchone()[0]
+            if current_headcount >= total_limit:
                 await context.bot.send_message(
                     chat_id=main_hub_chat_id,
                     text=f"{ICON_WARNING} This event is already at its `\\-limit` capacity \\({total_limit}\\) "
@@ -1737,15 +1774,23 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
             with get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT going_data, counters_data, notgoing_data FROM events WHERE event_id = ?", (event_id,)
+                    "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?", (event_id,)
                 )
                 row = cursor.fetchone()
                 if not row:
                     return
 
-                going, counters = json.loads(row[0]), json.loads(row[1])
-                not_going       = json.loads(row[2])
-                if target_username not in {u.split(" (")[0] for u in going}:
+                migrate_event_to_event_users(
+                    cursor, event_id, chat_id,
+                    json.loads(row[0]), json.loads(row[1]), json.loads(row[2]), json.loads(row[3] or "[]"),
+                )
+
+                cursor.execute(
+                    "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND username = ?",
+                    (event_id, chat_id, target_username),
+                )
+                existing = cursor.fetchone()
+                if not existing or existing[0] != "going":
                     # Resolve the real Telegram user_id via main_group_users (the
                     # /listusers table) - this is the only reliable source we have,
                     # since Telegram's getChatMember requires a numeric user_id and
@@ -1757,24 +1802,21 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
                     user_row = cursor.fetchone()
                     user_id = user_row[0] if user_row and user_row[0] else None
 
-                    if user_id:
-                        going.append(f"{target_username} ({user_id})")
-                    else:
-                        # No known id for this username - mark it explicitly rather
-                        # than fabricating a fake one, so this is easy to spot and
-                        # fix later (e.g. via /refreshusers) in EventUsers.
-                        going.append(f"{target_username} (no_id_in_main_group)")
+                    if not user_id:
+                        # No known id for this username - fall back to using
+                        # the username itself as the identifying key, same
+                        # precedent as the Save & Close export's own
+                        # unresolvable-entry fallback. _mention_link already
+                        # renders a non-numeric "user_id" as plain text, so
+                        # this displays correctly without a real Telegram id.
+                        user_id = target_username
 
-                # If this person had previously been marked Not Going, being added
-                # as an extra player means they're going now - they must not remain
-                # in the not-going list too.
-                if target_username in not_going:
-                    not_going.remove(target_username)
+                    existing_guests = existing[1] if existing else 0
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
+                        (event_id, chat_id, user_id, target_username, existing_guests if existing else 0),
+                    )
 
-                cursor.execute(
-                    "UPDATE events SET going_data = ?, counters_data = ?, notgoing_data = ? WHERE event_id = ?",
-                    (json.dumps(going), json.dumps(counters), json.dumps(not_going), event_id),
-                )
                 conn.commit()
         except Exception as e:
             logger.error(f"Extra player DB failure: {e}")
@@ -1892,32 +1934,36 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
         cursor.execute("SELECT COUNT(*) FROM events WHERE chat_id = ? AND event_status = 2", (chat_id,))
         events_closed = cursor.fetchone()[0]
 
-        cursor.execute(
-            "SELECT event_id, going_data, counters_data FROM events WHERE chat_id = ? AND event_status = 2",
-            (chat_id,),
-        )
-        closed_rows = cursor.fetchall()
+        cursor.execute("SELECT event_id FROM events WHERE chat_id = ? AND event_status = 2", (chat_id,))
+        closed_event_ids = [r[0] for r in cursor.fetchall()]
 
-        # Matches the EXACT same total_going formula used when writing the
-        # "Amount" column in the Events sheet at save/close time (see
-        # event_engine.py's save pipeline) - master going+guests PLUS every
-        # child-chat share's own going+guests, not just the master hub's
-        # own numbers, so this number always agrees with what's actually
-        # recorded in the sheet.
+        # Single unified query per event_id (no chat_id filter within
+        # event_users) - a closed event has already gone through Save &
+        # Close, which migrates the master hub's own contribution into
+        # event_users too (chat_id=main_chat_id), the same as any child
+        # chat's. Summing a separate master-only count on top of this
+        # would double-count anyone already represented there.
         total_members = 0
-        for event_id, going_data_raw, counters_data_raw in closed_rows:
-            going_count = len(json.loads(going_data_raw or "[]"))
-            guest_count = sum(json.loads(counters_data_raw or "{}").values())
-
+        for event_id in closed_event_ids:
             cursor.execute(
                 "SELECT status, guests FROM event_users WHERE event_id = ?",
                 (event_id,),
             )
-            child_rows = cursor.fetchall()
-            child_going_count  = sum(1 for status, guests in child_rows if status == "going")
-            child_guests_total = sum(guests for status, guests in child_rows)
-
-            total_members += going_count + guest_count + child_going_count + child_guests_total
+            rows = cursor.fetchall()
+            if rows:
+                going_count = sum(1 for status, guests in rows if status == "going")
+                guests_total = sum(guests for status, guests in rows)
+                total_members += going_count + guests_total
+            else:
+                # Historical event closed before Save & Close wrote into
+                # event_users at all - fall back to its own frozen
+                # going_data/counters_data for just this one event.
+                cursor.execute(
+                    "SELECT going_data, counters_data FROM events WHERE event_id = ?",
+                    (event_id,),
+                )
+                going_raw, counters_raw = cursor.fetchone()
+                total_members += len(json.loads(going_raw or "[]")) + sum(json.loads(counters_raw or "{}").values())
 
     average_members = round(total_members / events_closed, 1) if events_closed > 0 else 0
     average_members_text = str(average_members).replace(".", "\\.")
