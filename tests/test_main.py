@@ -308,6 +308,9 @@ class TestLockGate:
         db.set_bot_locked(True)
         upd = MagicMock()
         upd.effective_user = MagicMock(id=42)
+        upd.callback_query = None
+        upd.message = MagicMock()
+        upd.message.reply_text = AsyncMock()
 
         with patch("main.OWNER_USER_IDS", {999}):
             with pytest.raises(Exception) as exc_info:
@@ -332,6 +335,9 @@ class TestLockGate:
         db.set_bot_locked(True)
         upd = MagicMock()
         upd.effective_user = None
+        upd.callback_query = None
+        upd.message = MagicMock()
+        upd.message.reply_text = AsyncMock()
 
         with pytest.raises(Exception) as exc_info:
             await main.lock_gate(upd, MagicMock())
@@ -376,6 +382,7 @@ class TestLockGateNotifiesNonOwners:
         upd.effective_user = MagicMock(id=42)
         upd.message = None
         upd.callback_query = MagicMock()
+        upd.callback_query.data = "help_users"
         upd.callback_query.answer = AsyncMock()
 
         with patch("main.OWNER_USER_IDS", {999}):
@@ -402,3 +409,67 @@ class TestLockGateNotifiesNonOwners:
             await main.lock_gate(upd, MagicMock())  # must NOT raise for an owner
 
         assert not upd.message.reply_text.called
+
+
+class TestLockGateVotingExemption:
+    """New requirement: if an owner already posted an event, outside
+    (non-owner) users should still be able to vote (Going/Not Going)
+    and add guests (ADD/Drop/ALL) on that existing post while the bot
+    is otherwise locked - everything else (admin-only verification
+    actions, Add Extra Member, help buttons, all commands) stays
+    blocked."""
+
+    @pytest.mark.parametrize("action", ["going_ev1", "notgoing_ev1", "add_ev1", "sub_ev1", "dropall_ev1"])
+    async def test_voting_actions_pass_through_for_non_owner(self, db_path, action):
+        import db
+        db.set_bot_locked(True)
+
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=42)
+        upd.message = None
+        upd.callback_query = MagicMock()
+        upd.callback_query.data = action
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            # Must NOT raise - voting is exempt from the lock
+            await main.lock_gate(upd, MagicMock())
+
+    @pytest.mark.parametrize("action", [
+        "kick_ev1", "return_ev1", "incgst_ev1", "decgst_ev1",
+        "close_ev1", "save_ev1", "cancel_ev1", "addext_ev1",
+        "help_users", "hubpick_123", "upgrade_info_aliases",
+    ])
+    async def test_non_voting_actions_still_blocked_for_non_owner(self, db_path, action):
+        import db
+        db.set_bot_locked(True)
+
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=42)
+        upd.message = None
+        upd.callback_query = MagicMock()
+        upd.callback_query.data = action
+        upd.callback_query.answer = AsyncMock()
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            with pytest.raises(Exception) as exc_info:
+                await main.lock_gate(upd, MagicMock())
+            assert type(exc_info.value).__name__ == "ApplicationHandlerStop"
+
+    async def test_addext_is_not_accidentally_exempted_by_add_prefix(self, db_path):
+        """Specific collision check: 'addext_ev1' must NOT be treated
+        as the 'add_' (guest) action just because it also starts with
+        'add' - Add Extra Member is admin-only and must stay blocked."""
+        import db
+        db.set_bot_locked(True)
+
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=42)
+        upd.message = None
+        upd.callback_query = MagicMock()
+        upd.callback_query.data = "addext_ev1"
+        upd.callback_query.answer = AsyncMock()
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            with pytest.raises(Exception) as exc_info:
+                await main.lock_gate(upd, MagicMock())
+            assert type(exc_info.value).__name__ == "ApplicationHandlerStop"

@@ -239,7 +239,8 @@ def render_flags_detail(command_key: str) -> str:
     for _key, flag in flags_of(command_key):
         names = " \\| ".join(f"\\-{n.lstrip('-')}" for n in flag["names"])
         values_part = f" {escape_markdown(flag['values'])}" if flag["values"] else ""
+        default_part = f"\\(default: {escape_markdown(flag['default'])}\\) " if flag["default"] else ""
         desc = escape_markdown(flag["description"])
         gating = " Requires a higher tier\\." if flag["gated_by_feature"] else ""
-        lines.append(f"{names}{values_part} \\- {desc}\\.{gating}")
+        lines.append(f"{names}{values_part} \\- {default_part}{desc}\\.{gating}")
     return "\n".join(lines) + ("\n" if lines else "")

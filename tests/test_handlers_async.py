@@ -1194,7 +1194,7 @@ class TestHelpTierAwareKeyboard:
         keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
         rows = keyboard.inline_keyboard
         assert len(rows) == 5
-        assert any("More" in b.text for b in rows[0])
+        assert any("MORE" in b.text for b in rows[0])
         row1_texts = [b.text for b in rows[1]]
         row2_texts = [b.text for b in rows[2]]
         assert any("Users" in t for t in row1_texts)
@@ -8240,7 +8240,7 @@ class TestNeweventInlineFlagsToggle:
 
         text = msg.reply_text.call_args.args[0]
         kb = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
-        more_btn = next(b for row in kb.inline_keyboard for b in row if "More" in b.text)
+        more_btn = next(b for row in kb.inline_keyboard for b in row if "MORE" in b.text)
         assert more_btn.callback_data == "help_expand_newevent"
         assert "Event Lifecycle" in text
         assert "\\-wl \\| \\-waitlist" not in text  # detailed flag text not inline yet
@@ -8284,7 +8284,7 @@ class TestNeweventInlineFlagsToggle:
 
         text = query.edit_message_text.call_args.args[0]
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
-        more_btn = next(b for row in kb.inline_keyboard for b in row if "More" in b.text)
+        more_btn = next(b for row in kb.inline_keyboard for b in row if "MORE" in b.text)
         assert more_btn.callback_data == "help_expand_newevent"
         assert "Event Lifecycle" in text
         assert "\\-wl \\| \\-waitlist" not in text
@@ -8370,7 +8370,7 @@ class TestUsersAndDistributionFlagToggles:
 
         text = query.edit_message_text.call_args.args[0]
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
-        more_btn = next(b for row in kb.inline_keyboard for b in row if "More" in b.text)
+        more_btn = next(b for row in kb.inline_keyboard for b in row if "MORE" in b.text)
         assert more_btn.callback_data == "help_flags_users_expand"
         assert "\\-active" not in text
 
@@ -8496,7 +8496,7 @@ class TestOwnerHelpSingleToggle:
             assert "the minimum tier required to use this feature" not in text
             assert "filters the list to PRO\\-tier groups only" not in text
             keyboard = query.edit_message_text.call_args.kwargs.get("reply_markup")
-            assert "More about Flags" in keyboard.inline_keyboard[0][0].text
+            assert "MORE about Flags" in keyboard.inline_keyboard[0][0].text
 
     async def test_non_owner_blocked_from_toggle(self, db_path):
         with patch("help_system.OWNER_USER_IDS", [1]):

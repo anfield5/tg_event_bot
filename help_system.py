@@ -142,9 +142,9 @@ def _build_main_help_keyboard(chat_id, expanded: bool = False) -> InlineKeyboard
         return InlineKeyboardButton(text, callback_data=callback)
 
     toggle_button = (
-        InlineKeyboardButton("Hide Flags", callback_data="help_collapse_newevent")
+        InlineKeyboardButton("🔼 Hide Flags", callback_data="help_collapse_newevent")
         if expanded else
-        InlineKeyboardButton("More about Flags", callback_data="help_expand_newevent")
+        InlineKeyboardButton("🔽 MORE about Flags", callback_data="help_expand_newevent")
     )
 
     return InlineKeyboardMarkup([
@@ -242,7 +242,7 @@ def _build_owner_help_text(expanded: bool = False) -> str:
 def _build_owner_help_keyboard(expanded: bool = False) -> InlineKeyboardMarkup:
     """One toggle for the whole screen, always the topmost button."""
     toggle_button = InlineKeyboardButton(
-        "Hide Flags" if expanded else "More about Flags",
+        "🔼 Hide Flags" if expanded else "🔽 MORE about Flags",
         callback_data="help_owner_collapse" if expanded else "help_owner_expand",
     )
     return InlineKeyboardMarkup([[toggle_button]])
@@ -421,12 +421,12 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     toggle_row = []
     if effective_query_data == "help_users":
         toggle_row = [InlineKeyboardButton(
-            "Hide Flags" if users_expanded else "More about Flags",
+            "🔼 Hide Flags" if users_expanded else "🔽 MORE about Flags",
             callback_data="help_flags_users_collapse" if users_expanded else "help_flags_users_expand",
         )]
     elif effective_query_data == "help_distribution":
         toggle_row = [InlineKeyboardButton(
-            "Hide Flags" if distribution_expanded else "More about Flags",
+            "🔼 Hide Flags" if distribution_expanded else "🔽 MORE about Flags",
             callback_data="help_flags_distribution_collapse" if distribution_expanded else "help_flags_distribution_expand",
         )]
 

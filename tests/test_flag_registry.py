@@ -107,3 +107,21 @@ class TestRenderFlagsDetailOutput:
 
     def test_unknown_command_returns_empty_string(self):
         assert fr.render_flags_detail("not_a_real_command") == ""
+
+
+class TestDefaultValuePrefixInRenderedOutput:
+    """Flags with a real default value show "(default: value)" right
+    before the description; flags with no default (default=None,
+    purely optional) don't get this prefix at all."""
+
+    def test_flag_with_default_shows_prefix(self):
+        text = fr.render_flags_detail("shareevent")
+        assert "\\(default: onlycount\\) Going list visibility" in text
+        assert "\\(default: on\\) whether names in the post" in text
+
+    def test_flag_without_default_has_no_prefix(self):
+        text = fr.render_flags_detail("newevent")
+        # -date has no default - must not show a stray "(default: ...)"
+        for line in text.split("\n"):
+            if "\\-date" in line:
+                assert "default:" not in line

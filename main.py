@@ -59,6 +59,16 @@ async def lock_gate(update, context):
     if user is not None and user.id in OWNER_USER_IDS:
         return
 
+    # Exemption: voting on an event an owner already posted still works
+    # for everyone while locked - Going/Not Going/ADD/Drop/ALL. Every
+    # OTHER callback (admin-only verification actions, Add Extra
+    # Member, help/upgrade_info buttons) and every command remain
+    # blocked below.
+    VOTING_PREFIXES = ("going_", "notgoing_", "add_", "sub_", "dropall_")
+    if update.callback_query is not None and update.callback_query.data is not None:
+        if update.callback_query.data.startswith(VOTING_PREFIXES):
+            return
+
     contact_label, contact_url = get_admin_contact()
     if update.callback_query is not None:
         try:
