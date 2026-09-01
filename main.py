@@ -1,3 +1,4 @@
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     ApplicationHandlerStop,
@@ -10,6 +11,7 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
 from db import init_db, track_user, register_chat_added, register_chat_removed, log_command_usage, is_bot_locked
+from utils import get_admin_contact
 from hub_resolver import hub_pick_callback_handler, start_command, switchgroup_command
 from handlers import (
     help_command, help_callback_handler, help_back_handler, upgrade_info_callback_handler, userid, chatid,
@@ -39,18 +41,42 @@ async def lock_gate(update, context):
     log_command_usage_handler below, so a locked bot doesn't even track
     or log interactions from non-owners while locked.
 
-    When /lockbot on is active, silently stops all further processing
-    (via ApplicationHandlerStop) for anyone not in OWNER_USER_IDS - no
-    reply, no error, the bot simply doesn't respond at all, same as
-    being offline. Owners themselves are completely unaffected: every
-    command and button (including /lockbot off itself) keeps working
-    normally for them regardless of lock state.
+    When /lockbot on is active, stops all further processing (via
+    ApplicationHandlerStop) for anyone not in OWNER_USER_IDS - but,
+    unlike earlier, now actually tells them why: a command gets a
+    reply with a button to message the bot owner directly; a button
+    click gets a show_alert popup with the same contact info as plain
+    text (Telegram alerts can't contain clickable links). Both use the
+    same get_admin_contact() the premium-upgrade flow already uses, so
+    there's one place to update this contact info, not two copies
+    quietly drifting apart. Owners themselves are completely
+    unaffected: every command and button (including /lockbot off
+    itself) keeps working normally for them regardless of lock state.
     """
     if not is_bot_locked():
         return
     user = update.effective_user
     if user is not None and user.id in OWNER_USER_IDS:
         return
+
+    contact_label, contact_url = get_admin_contact()
+    if update.callback_query is not None:
+        try:
+            await update.callback_query.answer(
+                f"🔒 This bot is currently locked. For questions: {contact_url}",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+    elif update.message is not None:
+        try:
+            await update.message.reply_text(
+                "🔒 This bot is currently locked and unavailable\\.",
+                parse_mode="MarkdownV2",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(contact_label, url=contact_url)]]),
+            )
+        except Exception:
+            pass
     raise ApplicationHandlerStop
 
 

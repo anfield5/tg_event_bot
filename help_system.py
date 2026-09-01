@@ -19,7 +19,7 @@ from config import (
 from subscription import is_premium, has_feature
 from hub_resolver import _get_known_candidate_chats
 from db import get_all_features, get_shareevent_remaining_for_chat
-from utils import escape_markdown
+from utils import escape_markdown, get_admin_contact
 import flag_registry
 
 
@@ -148,11 +148,11 @@ def _build_main_help_keyboard(chat_id, expanded: bool = False) -> InlineKeyboard
     )
 
     return InlineKeyboardMarkup([
+        [toggle_button],
         [_make_button("users"), _make_button("utility")],
         [_make_button("lifecycle"), _make_button("distribution")],
         [_make_button("aliases"), _make_button("monitoring")],
         [_make_button("dm_access")],
-        [toggle_button],
     ])
 
 
@@ -211,15 +211,15 @@ def _build_main_help_text(has_event_limit: bool = False, expanded: bool = False)
     return text
 
 
-def _build_owner_help_text(expanded_key: str = None) -> str:
+def _build_owner_help_text(expanded: bool = False) -> str:
     """
-    expanded_key is one of "updatefeature", "allgroups", or None - only
-    ONE of the two flag-bearing owner commands can be expanded at a
-    time (true accordion, unlike the single-toggle sections elsewhere,
-    since this screen has 2 independent flag-bearing commands on it).
+    Single toggle for the whole screen (not a per-command accordion) -
+    expanding shows BOTH updatefeature's and allgroups' flag details at
+    once, matching every other /help screen's "always exactly one
+    toggle, shows every flagged command's details together" behavior.
     """
-    allgroups_detail = "\\-pro \\- filters the list to PRO\\-tier groups only\n" if expanded_key == "allgroups" else ""
-    updatefeature_detail = _updatefeature_flags_detail_text() if expanded_key == "updatefeature" else ""
+    allgroups_detail = "\\-pro \\- filters the list to PRO\\-tier groups only\n" if expanded else ""
+    updatefeature_detail = _updatefeature_flags_detail_text() if expanded else ""
     return (
         "🔑 *Owner\\-Only Commands*\n\n"
         "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
@@ -239,19 +239,13 @@ def _build_owner_help_text(expanded_key: str = None) -> str:
     )
 
 
-def _build_owner_help_keyboard(expanded_key: str = None) -> InlineKeyboardMarkup:
-    """True accordion: expanding one of these two always implies the
-    other is collapsed, regardless of its own prior state - each button
-    unconditionally targets "make me the (only) expanded one"."""
-    allgroups_btn = InlineKeyboardButton(
-        "Hide Flags" if expanded_key == "allgroups" else "More about Flags",
-        callback_data="help_owner_collapse" if expanded_key == "allgroups" else "help_owner_expand_allgroups",
+def _build_owner_help_keyboard(expanded: bool = False) -> InlineKeyboardMarkup:
+    """One toggle for the whole screen, always the topmost button."""
+    toggle_button = InlineKeyboardButton(
+        "Hide Flags" if expanded else "More about Flags",
+        callback_data="help_owner_collapse" if expanded else "help_owner_expand",
     )
-    updatefeature_btn = InlineKeyboardButton(
-        "Hide Flags" if expanded_key == "updatefeature" else "More about Flags",
-        callback_data="help_owner_collapse" if expanded_key == "updatefeature" else "help_owner_expand_updatefeature",
-    )
-    return InlineKeyboardMarkup([[allgroups_btn], [updatefeature_btn]])
+    return InlineKeyboardMarkup([[toggle_button]])
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -304,19 +298,15 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(new_text, parse_mode="MarkdownV2", reply_markup=new_keyboard)
         return
 
-    if query.data in ("help_owner_expand_updatefeature", "help_owner_expand_allgroups", "help_owner_collapse"):
+    if query.data in ("help_owner_expand", "help_owner_collapse"):
         if update.effective_user.id not in OWNER_USER_IDS:
             await query.answer("This section is owner-only.", show_alert=True)
             return
-        expanded_key = (
-            "updatefeature" if query.data == "help_owner_expand_updatefeature" else
-            "allgroups" if query.data == "help_owner_expand_allgroups" else
-            None
-        )
+        expanded = query.data == "help_owner_expand"
         await query.edit_message_text(
-            _build_owner_help_text(expanded_key),
+            _build_owner_help_text(expanded),
             parse_mode="MarkdownV2",
-            reply_markup=_build_owner_help_keyboard(expanded_key),
+            reply_markup=_build_owner_help_keyboard(expanded),
         )
         return
 
@@ -440,9 +430,9 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             callback_data="help_flags_distribution_collapse" if distribution_expanded else "help_flags_distribution_expand",
         )]
 
-    keyboard_rows = [
+    keyboard_rows = ([toggle_row] if toggle_row else []) + [
         [InlineKeyboardButton("🔙 Back", callback_data="help_back")],
-    ] + ([toggle_row] if toggle_row else [])
+    ]
     keyboard = InlineKeyboardMarkup(keyboard_rows)
     
     await query.edit_message_text(section_text, parse_mode="MarkdownV2", reply_markup=keyboard)
@@ -496,8 +486,9 @@ async def upgrade_info_callback_handler(update: Update, context: ContextTypes.DE
         f"{escape_markdown(features_text)}\n\n"
         f"Currently: {current_tier}"
     )
+    contact_label, contact_url = get_admin_contact()
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Message the bot owner", url="https://t.me/anefex")],
+        [InlineKeyboardButton(contact_label, url=contact_url)],
         [InlineKeyboardButton("◀️ Back to /help", callback_data="help_back")],
     ])
     await query.edit_message_text(text, parse_mode="MarkdownV2", reply_markup=keyboard)

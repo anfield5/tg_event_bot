@@ -7,7 +7,7 @@ or fixtures are needed — just call and assert.
 
 import re
 import pytest
-from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS, require_dm_only, COMMAND_DESTINATION_TYPE
+from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS, require_dm_only, COMMAND_DESTINATION_TYPE, get_admin_contact
 
 
 # ---------------------------------------------------------------------------
@@ -251,3 +251,17 @@ class TestCommandDestinationTypeMatchesRealCode:
             f"/{command_key} is listed as Type 3 (DM-only) in COMMAND_DESTINATION_TYPE, "
             f"but its function {function_name}() in {filename} never calls require_dm_only()"
         )
+
+
+class TestGetAdminContact:
+    """The single shared source of the bot owner's contact info, used
+    by both the premium-upgrade flow and /lockbot's non-owner
+    notification."""
+
+    def test_returns_a_label_and_url_tuple(self):
+        result = get_admin_contact()
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        label, url = result
+        assert isinstance(label, str) and isinstance(url, str)
+        assert url.startswith("https://t.me/")

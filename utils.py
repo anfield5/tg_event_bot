@@ -46,6 +46,18 @@ COMMAND_DESTINATION_TYPE = {
 }
 
 
+def get_admin_contact() -> tuple:
+    """
+    Returns (button_label, url) for messaging the bot owner directly -
+    the single source of this contact info. Used both when a hub taps
+    a locked /help section (help_system.py's upgrade_info flow) and
+    when the bot is locked via /lockbot and a non-owner wants to know
+    more (main.py's lock_gate) - one place to update if this ever
+    changes, instead of two copies quietly drifting apart.
+    """
+    return ("💬 Message the bot owner", "https://t.me/anefex")
+
+
 async def require_dm_only(update, command_name: str) -> bool:
     """
     Type 3 enforcement: call at the very start of a DM-only command.

@@ -336,3 +336,69 @@ class TestLockGate:
         with pytest.raises(Exception) as exc_info:
             await main.lock_gate(upd, MagicMock())
         assert type(exc_info.value).__name__ == "ApplicationHandlerStop"
+
+
+class TestLockGateNotifiesNonOwners:
+    """Real behavior change: lock_gate used to be pure silence for
+    non-owners when the bot was locked - now it actually tells them
+    why, using the same get_admin_contact() the premium-upgrade flow
+    uses. A command gets a reply with a clickable contact button; a
+    button click gets a show_alert popup with the contact URL as plain
+    text (Telegram alerts can't contain clickable links/buttons)."""
+
+    async def test_command_from_non_owner_gets_reply_with_contact_button(self, db_path):
+        import db
+        db.set_bot_locked(True)
+
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=42)
+        upd.callback_query = None
+        upd.message = MagicMock()
+        upd.message.reply_text = AsyncMock()
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            with pytest.raises(Exception) as exc_info:
+                await main.lock_gate(upd, MagicMock())
+            assert type(exc_info.value).__name__ == "ApplicationHandlerStop"
+
+        upd.message.reply_text.assert_awaited_once()
+        assert "locked" in upd.message.reply_text.call_args.args[0].lower()
+        keyboard = upd.message.reply_text.call_args.kwargs.get("reply_markup")
+        assert keyboard is not None
+        button = keyboard.inline_keyboard[0][0]
+        assert button.url == "https://t.me/anefex"
+
+    async def test_callback_from_non_owner_gets_alert_with_contact_url_as_text(self, db_path):
+        import db
+        db.set_bot_locked(True)
+
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=42)
+        upd.message = None
+        upd.callback_query = MagicMock()
+        upd.callback_query.answer = AsyncMock()
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            with pytest.raises(Exception) as exc_info:
+                await main.lock_gate(upd, MagicMock())
+            assert type(exc_info.value).__name__ == "ApplicationHandlerStop"
+
+        upd.callback_query.answer.assert_awaited_once()
+        alert_text = upd.callback_query.answer.call_args.args[0]
+        assert "https://t.me/anefex" in alert_text
+        assert upd.callback_query.answer.call_args.kwargs.get("show_alert") is True
+
+    async def test_owner_gets_no_message_at_all(self, db_path):
+        import db
+        db.set_bot_locked(True)
+
+        upd = MagicMock()
+        upd.effective_user = MagicMock(id=999)
+        upd.message = MagicMock()
+        upd.message.reply_text = AsyncMock()
+        upd.callback_query = None
+
+        with patch("main.OWNER_USER_IDS", {999}):
+            await main.lock_gate(upd, MagicMock())  # must NOT raise for an owner
+
+        assert not upd.message.reply_text.called

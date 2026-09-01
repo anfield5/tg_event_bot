@@ -1181,8 +1181,9 @@ class TestHelpTierAwareKeyboard:
         assert monitor_btn.callback_data == "help_monitoring"
 
     async def test_row_layout_lifecycle_distribution_first_aliases_monitoring_second(self, db_path):
-        """Row 1: Users + Utility. Row 2: Event Lifecycle + Distribution.
-        Row 3: Aliases + Monitoring. Row 4: DM Access. Row 5: More/Hide Flags toggle."""
+        """Row 1: More/Hide Flags toggle (topmost). Row 2: Users + Utility.
+        Row 3: Event Lifecycle + Distribution. Row 4: Aliases + Monitoring.
+        Row 5: DM Access."""
         chat = make_chat(chat_id=-100123)
         msg  = make_message(chat=chat)
         upd  = make_update(chat=chat, message=msg)
@@ -1193,17 +1194,17 @@ class TestHelpTierAwareKeyboard:
         keyboard = msg.reply_text.call_args.kwargs.get("reply_markup") or msg.reply_text.call_args.args[-1]
         rows = keyboard.inline_keyboard
         assert len(rows) == 5
-        assert any("More" in b.text for b in rows[4])
-        row1_texts = [b.text for b in rows[0]]
-        row2_texts = [b.text for b in rows[1]]
+        assert any("More" in b.text for b in rows[0])
+        row1_texts = [b.text for b in rows[1]]
+        row2_texts = [b.text for b in rows[2]]
         assert any("Users" in t for t in row1_texts)
         assert any("Utility" in t for t in row1_texts)
         assert any("Lifecycle" in t for t in row2_texts)
         assert any("Distribution" in t for t in row2_texts)
-        row3_texts = [b.text for b in rows[2]]
+        row3_texts = [b.text for b in rows[3]]
         assert any("Alias" in t for t in row3_texts)
         assert any("Monitoring" in t for t in row3_texts)
-        row4_texts = [b.text for b in rows[3]]
+        row4_texts = [b.text for b in rows[4]]
         assert any("DM Access" in t for t in row4_texts)
 
     async def test_distribution_button_always_active(self, db_path):
@@ -8433,14 +8434,13 @@ class TestUsersAndDistributionFlagToggles:
         assert "\\-maingoinglist" in text
 
 
-class TestOwnerHelpAccordion:
-    """Item 2: the owner-only screen (only reachable via /help -a, and
-    which previously had NO keyboard at all) now has a real accordion
-    between /updatefeature and /allgroups - expanding one always
-    implies the other collapses, since only one of the two can be
-    expanded at a time by definition (stateless: each button always
-    targets 'make me the one expanded region', never toggling based on
-    prior state)."""
+class TestOwnerHelpSingleToggle:
+    """The owner-only screen (only reachable via /help -a) now has a
+    SINGLE toggle for the whole screen, not a 2-way accordion between
+    /updatefeature and /allgroups - expanding shows BOTH commands'
+    flag details together, matching the requirement that every screen
+    has exactly one "More about Flags" button regardless of how many
+    flagged commands it covers."""
 
     async def test_owner_help_now_has_a_keyboard(self, db_path):
         with patch("help_system.OWNER_USER_IDS", [1]):
@@ -8454,13 +8454,13 @@ class TestOwnerHelpAccordion:
 
             assert msg.reply_text.call_args.kwargs.get("reply_markup") is not None
 
-    async def test_expanding_updatefeature_shows_its_detail_only(self, db_path):
+    async def test_expanding_shows_both_details_together(self, db_path):
         with patch("help_system.OWNER_USER_IDS", [1]):
             chat = make_chat(chat_id=-1)
             user = make_user(user_id=1)
             msg = make_message(chat=chat)
             query = MagicMock()
-            query.data = "help_owner_expand_updatefeature"
+            query.data = "help_owner_expand"
             query.message = msg
             query.answer = AsyncMock()
             query.edit_message_text = AsyncMock()
@@ -8471,29 +8471,11 @@ class TestOwnerHelpAccordion:
 
             text = query.edit_message_text.call_args.args[0]
             assert "the minimum tier required to use this feature" in text
-            assert "filters the list to PRO\\-tier groups only" not in text
-
-    async def test_expanding_allgroups_collapses_updatefeature(self, db_path):
-        """The core accordion behavior: switching to allgroups must
-        remove updatefeature's own detail, even though updatefeature
-        was never explicitly told to collapse."""
-        with patch("help_system.OWNER_USER_IDS", [1]):
-            chat = make_chat(chat_id=-1)
-            user = make_user(user_id=1)
-            msg = make_message(chat=chat)
-            query = MagicMock()
-            query.data = "help_owner_expand_allgroups"
-            query.message = msg
-            query.answer = AsyncMock()
-            query.edit_message_text = AsyncMock()
-            upd = make_update(chat=chat, user=user, message=msg)
-            upd.callback_query = query
-
-            await help_system.help_callback_handler(upd, make_context())
-
-            text = query.edit_message_text.call_args.args[0]
             assert "filters the list to PRO\\-tier groups only" in text
-            assert "the minimum tier required to use this feature" not in text
+            keyboard = query.edit_message_text.call_args.kwargs.get("reply_markup")
+            # Exactly one toggle button, not two separate ones
+            assert len(keyboard.inline_keyboard) == 1
+            assert "Hide Flags" in keyboard.inline_keyboard[0][0].text
 
     async def test_collapse_hides_both_details(self, db_path):
         with patch("help_system.OWNER_USER_IDS", [1]):
@@ -8513,6 +8495,8 @@ class TestOwnerHelpAccordion:
             text = query.edit_message_text.call_args.args[0]
             assert "the minimum tier required to use this feature" not in text
             assert "filters the list to PRO\\-tier groups only" not in text
+            keyboard = query.edit_message_text.call_args.kwargs.get("reply_markup")
+            assert "More about Flags" in keyboard.inline_keyboard[0][0].text
 
     async def test_non_owner_blocked_from_toggle(self, db_path):
         with patch("help_system.OWNER_USER_IDS", [1]):
@@ -8520,7 +8504,7 @@ class TestOwnerHelpAccordion:
             user = make_user(user_id=999)  # not in OWNER_USER_IDS
             msg = make_message(chat=chat)
             query = MagicMock()
-            query.data = "help_owner_expand_updatefeature"
+            query.data = "help_owner_expand"
             query.message = msg
             query.answer = AsyncMock()
             query.edit_message_text = AsyncMock()
