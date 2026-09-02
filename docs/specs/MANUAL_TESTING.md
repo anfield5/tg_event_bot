@@ -64,6 +64,19 @@ nobody thought the change touched.
   "More about Flags"), tapping it expands the full `-newevent`/
   `-editevent` flag breakdown in place, tapping "Hide Flags" collapses
   it back to the exact original text.
+- [ ] **S15.** `/editevent -limit <higher number>` on an event that has
+  **never been clicked on since the last deploy** → still correctly
+  computes headcount and promotes from the waitlist (verifies the
+  migration-on-touch step also runs from `/editevent`, not just button
+  clicks).
+- [ ] **S16.** Add someone via **Add Extra Member** (verification mode)
+  on an event that's **already been interacted with** (at least one
+  Going/Not Going click happened first) → the added person is
+  immediately visible in the post, not silently missing.
+- [ ] **S17.** `/lockbot on` (as an owner) → any other person's command
+  or button click gets **zero response** (not an error message — total
+  silence, same as the bot being offline). Owner's own commands and
+  buttons keep working normally. `/lockbot off` restores everyone.
 
 ---
 
@@ -144,6 +157,48 @@ executing all ~130 detailed scenarios every time isn't realistic.
   added via Add Extra Member) once they become an admin or click
   something themselves.
 
+### Variant B unification (event_users)
+- [ ] Any headcount-dependent command (`/editevent -limit`,
+  `/shareevent`'s capacity check, `/stats`) gives the **same number**
+  regardless of whether it's called before or after someone clicks a
+  button on the event - no double-counting between the master hub and
+  child chats.
+- [ ] Someone added via **Add Extra Member** with no resolvable
+  Telegram user_id (never interacted with the bot, not an admin)
+  renders as plain, non-clickable text, but is still visible in the
+  post and correctly counted.
+- [ ] That same unresolvable person, if they LATER click any button
+  for real, becomes clickable — and their existing guest count (if
+  any) survives the transition, without creating a duplicate entry.
+- [ ] `/notify` correctly identifies who hasn't responded yet, even on
+  an event that's had many clicks since it was created (not stuck
+  showing stale data from before the first click after a deploy).
+
+### /lockbot
+- [ ] Locking affects **every chat at once** — a group unrelated to
+  wherever `/lockbot on` was run also stops responding to non-owners.
+- [ ] A non-owner's attempt at `/lockbot on`/`off` itself does nothing
+  and gets no reply (the command's existence isn't revealed to them).
+- [ ] Restarting the bot while locked keeps it locked (the state is
+  persisted, not just held in memory).
+
+### Command destination classification (Type 1/2/3)
+- [ ] Every Type 3 command (`switchgroup`, `start`, `lockbot`,
+  `allgroups`, `allchannels`, `updatefeature`, `setsub`, `setsheet`)
+  called **from a group** gives the explicit `⛔️ /<command> only works
+  in a DM...` error — not silence.
+- [ ] For the 5 owner-only Type 3 commands specifically
+  (`lockbot`/`allgroups`/`allchannels`/`updatefeature`/`setsub`): a
+  **non-owner** calling from a group still gets total silence (the
+  owner check runs first) — only an **owner** calling from the wrong
+  place sees the DM-only error.
+- [ ] `/setsheet` called from a DM correctly resolves which group to
+  bind to (via the sticky-group selection), rather than needing the
+  group's own chat_id passed manually.
+- [ ] `/notify` called from a DM: the actual ping lands in the group
+  (visible to the people who need to respond), and the caller
+  separately gets a short confirmation in their own DM.
+
 ---
 
 ## Part 3 — Regression Watch List
@@ -160,3 +215,8 @@ checklist above already covers the general area.
 | `/help`'s PRO-lock check | Used a blunt tier check instead of the same per-feature check the button itself used | `help_system.py::help_callback_handler` |
 | Stale `going_data` entries | A real click's valid user_id was discarded if the person already had an unresolvable placeholder entry | `event_engine.py` (going-click handler) |
 | Master vs child post clickability | Master's `edit_message_text` could fail transiently and get permanently stuck stale while children updated fine | `event_engine.py::_edit_message_text_with_retry` |
+| `/editevent -limit`, `/shareevent` capacity check, `/stats` | Double-counted headcount: summed a stale Python-variable count PLUS a fresh `event_users` query that, post-Variant-B-migration, ALSO included the master hub's own contribution | `handlers.py` (multiple sites), `event_engine.py::_current_headcount` |
+| Add Extra Member | Wrote directly into the frozen `going_data`/`counters_data`/`notgoing_data` columns after Variant B — a newly-added person would be completely invisible in rendering, which reads exclusively from `event_users` | `handlers.py::handle_extra_player_input` |
+| `/notify`, `/refreshusers` | Read/checked the frozen `going_data`/`notgoing_data` columns directly, missing anyone whose state changed after the first migration | `handlers.py::notify`, `handlers.py::refreshusers` |
+| Legacy unresolvable Add Extra Member entries | Migration silently skipped them (no valid numeric id) — they'd vanish from `event_users` entirely instead of staying visible/surfaceable | `db.py::migrate_event_to_event_users` |
+| Placeholder-to-real-id transition | Fixing the above then risked a genuine click creating a SECOND, duplicate row alongside the stale placeholder | `event_engine.py` (unified going/notgoing/add/sub/dropall block) |

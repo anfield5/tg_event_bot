@@ -232,6 +232,8 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "/updatefeature \\[feature\\_key\\] \\[\\-minlevel free\\|pro\\|admin\\] \\[\\-limit N\\] "
         "\\- Change a feature's tier and/or its usage limit\\. At least one of the two flags is required\\.\n"
         f"{updatefeature_detail}\n"
+        "/showtable \\[table\\_name\\] \\[sheet\\_name\\] \\- Dumps `SELECT * FROM table_name` into the "
+        "named tab of EventBot\\_Config \\(must already exist there\\)\\.\n"
         "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
         "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
         "can't be verified and will be rejected\\. All of these also only work from a DM "

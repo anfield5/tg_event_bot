@@ -38,6 +38,7 @@ COMMAND_DESTINATION_TYPE = {
     "updatefeature":  3,
     "setsub":         3,
     "setsheet":       3,
+    "showtable":      3,
     # Everything else not listed here is Type 1 (the default) - e.g.
     # adduser, updateuser, listusers, refreshusers, refreshusersall,
     # help, waitlist, userid, chatid, setalias, removealias,
@@ -56,6 +57,32 @@ def get_admin_contact() -> tuple:
     changes, instead of two copies quietly drifting apart.
     """
     return ("💬 Message the bot owner", "https://t.me/anefex")
+
+
+async def require_owner(update, owner_ids) -> bool:
+    """
+    Owner-only command gating: returns True if the caller is in
+    owner_ids. If not, shows an explicit message when the sender is
+    genuinely anonymous (their identity can't be verified either way,
+    so "please disable Remain anonymous and try again" is the only
+    actionable thing to tell them) - anyone else who isn't an owner
+    gets total silence, so the command's existence isn't revealed to
+    non-owners. Pass OWNER_USER_IDS as owner_ids (not imported directly
+    here to avoid a config.py <-> utils.py import cycle).
+    """
+    if update.effective_user.id in owner_ids:
+        return True
+    is_anonymous = (
+        update.effective_user.id == GROUP_ANONYMOUS_BOT_ID
+        or getattr(update.message, "sender_chat", None) is not None
+    )
+    if is_anonymous:
+        await update.message.reply_text(
+            "⛔️ Owner\\-only commands can't be verified while posting anonymously \\- "
+            "please disable \"Remain anonymous\" and try again\\.",
+            parse_mode="MarkdownV2",
+        )
+    return False
 
 
 async def require_dm_only(update, command_name: str) -> bool:

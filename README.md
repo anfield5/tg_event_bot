@@ -116,3 +116,26 @@ SQLite is the source of truth and the only thing the bot ever *reads* back
    SQLite-driven action (a button click, `/refreshusers`, Save & Close) -
    nothing about how the bot behaves is ever decided by what's currently
    in the Sheet.
+
+## Global lock and command destination classification
+
+`/lockbot on` (owner-only) is a single-row switch (`bot_lock` table) checked
+by a dedicated handler (`main.py`'s `lock_gate`) registered *before every
+other handler in the application* - when active, every command and button
+click from anyone outside `OWNER_USER_IDS` is stopped immediately, with one
+deliberate exception: Going/Not Going/ADD/Drop/ALL clicks on an
+already-posted event still work for everyone, so a lockdown doesn't strand
+people mid-RSVP on an event an owner already put up. Every other action
+(admin verification buttons, Add Extra Member, all commands) is blocked.
+
+Separately, every command falls into one of three categories describing
+*where its result lands* relative to *where it was typed* (a group directly,
+or a DM with the bot) - tracked explicitly in `utils.COMMAND_DESTINATION_TYPE`
+and enforced for the DM-only category via `utils.require_dm_only()`:
+1. **Dual-callable, result follows the caller** (the default - most commands).
+2. **Dual-callable, but the result always lands in the group** (`/newevent`,
+   `/editevent`, `/shareevent`, `/notify`) - e.g. `/notify`'s ping always
+   goes to the group via `send_message`, since pinging people from inside a
+   DM wouldn't reach them where they need to respond.
+3. **DM only** (`/switchgroup`, `/start`, and every owner-only command) -
+   calling one of these from a group gets an explicit rejection, not silence.

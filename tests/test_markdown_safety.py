@@ -5,9 +5,12 @@ must be escaped with the preceding '\\'").
 
 Rather than mocking every single reply_text() call and checking its exact
 text (which only catches messages someone thought to write a test for), this
-statically walks handlers.py's AST and finds every call that passes
-parse_mode="MarkdownV2", then checks the literal (non-interpolated) parts of
-its text argument for unescaped '.' or '!' characters.
+statically walks every .py file in the project root (not just handlers.py -
+event_engine.py, subscription.py, help_system.py, hub_resolver.py,
+monitors.py, aliases.py, and main.py all use parse_mode="MarkdownV2" too) and
+finds every call that passes parse_mode="MarkdownV2", then checks the literal
+(non-interpolated) parts of its text argument for unescaped '.' or '!'
+characters.
 
 Why only '.' and '!' and not the other MarkdownV2 reserved characters
 (_ * [ ] ( ) ~ ` > # + - = | { })? Because those others are legitimately used
@@ -80,16 +83,23 @@ class MarkdownV2Finder(ast.NodeVisitor):
 
 
 def test_no_unescaped_periods_or_exclamations_in_markdownv2_messages():
-    handlers_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "handlers.py")
-    source = open(handlers_path, encoding="utf-8").read()
-    tree = ast.parse(source)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    all_violations = []
+    for filename in sorted(os.listdir(project_root)):
+        if not filename.endswith(".py"):
+            continue
+        filepath = os.path.join(project_root, filename)
+        source = open(filepath, encoding="utf-8").read()
+        tree = ast.parse(source)
 
-    finder = MarkdownV2Finder()
-    finder.visit(tree)
+        finder = MarkdownV2Finder()
+        finder.visit(tree)
+        for lineno, text in finder.violations:
+            all_violations.append((filename, lineno, text))
 
-    if finder.violations:
-        details = "\n".join(f"  line {lineno}: {text!r}" for lineno, text in finder.violations)
+    if all_violations:
+        details = "\n".join(f"  {fname}:{lineno}: {text!r}" for fname, lineno, text in all_violations)
         raise AssertionError(
-            f"Found {len(finder.violations)} MarkdownV2 message(s) with an unescaped "
+            f"Found {len(all_violations)} MarkdownV2 message(s) with an unescaped "
             f"'.' or '!' - these will crash with 'Can't parse entities' in production:\n{details}"
         )

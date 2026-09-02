@@ -99,7 +99,7 @@ async def get_sheet_for_chat(chat_id):
     return sheet_id or None
 
 
-async def sync_users_sheet(chat_id, current_members: list):
+async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=None):
     """
     Syncs the "Users" worksheet for a given chat/place with its current
     (best-known) membership.
@@ -114,6 +114,15 @@ async def sync_users_sheet(chat_id, current_members: list):
     DATE_start, DATE_end, ARCHIVED_USER_NAME.
     A row is uniquely identified by (USER_ID, CHAT_ID) - the same person can
     have separate rows for separate places/groups managed by this bot.
+
+    `sheet_owner_chat_id`: which hub's spreadsheet to write to, if
+    different from `chat_id` itself - needed for a monitored child chat
+    (see /addmonitor), which is never independently registered in
+    all_groups with its own PRO subscription/sheet_id. Rows are still
+    correctly tagged with `chat_id` (the actual place these people are
+    members of); only the SHEET LOOKUP uses `sheet_owner_chat_id`.
+    Defaults to `chat_id` itself, matching every other caller (a plain
+    hub calling this about its own membership).
 
     Behavior:
       - Member not yet in the sheet for this place -> append a new row with
@@ -130,7 +139,7 @@ async def sync_users_sheet(chat_id, current_members: list):
         STATUS is set to "LEFT" and DATE_end is set to current date
         (their row/history is kept, not deleted).
     """
-    sheet_target = await get_sheet_for_chat(chat_id)
+    sheet_target = await get_sheet_for_chat(sheet_owner_chat_id or chat_id)
     ss = await open_spreadsheet(sheet_target)
     if not ss:
         return  # free tier / no sheet configured / subscription expired - nothing to write

@@ -25,7 +25,7 @@ from config import (
     ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_STANDBY,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
-from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, migrate_event_to_event_users
+from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet,
@@ -531,15 +531,7 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             # computing headcount below - an event nobody has clicked on
             # since Variant B was deployed wouldn't have any event_users
             # rows yet otherwise, undercounting its real headcount.
-            cursor.execute(
-                "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?",
-                (event_id,),
-            )
-            going_raw, notgoing_raw, counters_raw, kicked_raw = cursor.fetchone()
-            migrate_event_to_event_users(
-                cursor, event_id, chat_id,
-                json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
-            )
+            ensure_event_migrated(cursor, event_id, chat_id)
 
             # Reject lowering the limit below the event's current combined
             # headcount (main group + every share) - the old limit is kept
@@ -680,7 +672,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT event_id, name, going_data, notgoing_data, counters_data, kicked_data
+            SELECT event_id, name
             FROM events
             WHERE chat_id = ? AND event_status = 0
             ORDER BY ROWID DESC LIMIT 1
@@ -694,11 +686,8 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
             )
             return
 
-        event_id, event_name, going_raw, notgoing_raw, counters_raw, kicked_raw = event_row
-        migrate_event_to_event_users(
-            cursor, event_id, chat_id,
-            json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
-        )
+        event_id, event_name = event_row
+        ensure_event_migrated(cursor, event_id, chat_id)
         conn.commit()
 
         cursor.execute(
@@ -1213,17 +1202,14 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         with get_connection() as fresh_conn:
             fresh_cursor = fresh_conn.cursor()
             fresh_cursor.execute(
-                "SELECT event_id, going_data, notgoing_data, counters_data, kicked_data FROM events WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
+                "SELECT event_id FROM events WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
                 (chat_id,),
             )
             active_event_row = fresh_cursor.fetchone()
             unresolved = []
             if active_event_row:
-                ev_id, going_raw, notgoing_raw, counters_raw, kicked_raw = active_event_row
-                migrate_event_to_event_users(
-                    fresh_cursor, ev_id, chat_id,
-                    json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
-                )
+                ev_id = active_event_row[0]
+                ensure_event_migrated(fresh_cursor, ev_id, chat_id)
                 fresh_conn.commit()
                 fresh_cursor.execute(
                     "SELECT username FROM event_users WHERE event_id = ? AND chat_id = ? AND status = 'going' AND user_id = username",
@@ -1285,12 +1271,15 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
     # group the command was run in PLUS every monitored child under it,
     # not just the children. Resolved via a live API call so this works
     # the same whether called directly from the hub or via a DM override.
+    # The middle tuple field (chat_type) is never actually read anywhere
+    # in the loop below - it's only there so this entry has the same
+    # shape as the sub_chats query result above it gets prepended to.
     try:
         hub_chat_obj = await context.bot.get_chat(int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id)
         hub_chat_name = hub_chat_obj.title or chat_id
     except Exception:
         hub_chat_name = chat_id
-    monitors = [(chat_id, "group", hub_chat_name)] + list(monitors)
+    monitors = [(chat_id, None, hub_chat_name)] + list(monitors)
 
 
 
@@ -1362,7 +1351,7 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
             }.values())
 
             # Sync to sheets with chat_id (each monitor gets its own chat_id)
-            await sync_users_sheet(monitor_chat_id, monitor_present)
+            await sync_users_sheet(monitor_chat_id, monitor_present, sheet_owner_chat_id=chat_id)
 
             status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"
             if monitor_removed:
@@ -1511,15 +1500,7 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         event_id, name, event_status, going_icon, notgoing_icon, total_limit = event_row
 
         if total_limit is not None:
-            cursor.execute(
-                "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?",
-                (event_id,),
-            )
-            going_raw, notgoing_raw, counters_raw, kicked_raw = cursor.fetchone()
-            migrate_event_to_event_users(
-                cursor, event_id, str(main_hub_chat_id),
-                json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
-            )
+            ensure_event_migrated(cursor, event_id, str(main_hub_chat_id))
             conn.commit()
             cursor.execute(
                 "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
@@ -1773,17 +1754,11 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?", (event_id,)
-                )
-                row = cursor.fetchone()
-                if not row:
+                cursor.execute("SELECT 1 FROM events WHERE event_id = ?", (event_id,))
+                if cursor.fetchone() is None:
                     return
 
-                migrate_event_to_event_users(
-                    cursor, event_id, chat_id,
-                    json.loads(row[0]), json.loads(row[1]), json.loads(row[2]), json.loads(row[3] or "[]"),
-                )
+                ensure_event_migrated(cursor, event_id, chat_id)
 
                 cursor.execute(
                     "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND username = ?",

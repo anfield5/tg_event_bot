@@ -7,7 +7,7 @@ or fixtures are needed — just call and assert.
 
 import re
 import pytest
-from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS, require_dm_only, COMMAND_DESTINATION_TYPE, get_admin_contact
+from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS, require_dm_only, COMMAND_DESTINATION_TYPE, get_admin_contact, require_owner, GROUP_ANONYMOUS_BOT_ID
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +150,11 @@ class TestCommandDestinationClassification:
         type_2 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 2}
         assert type_2 == {"newevent", "editevent", "shareevent", "notify"}
 
-    def test_type_3_commands_are_exactly_these_eight(self):
+    def test_type_3_commands_are_exactly_these_nine(self):
         type_3 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 3}
         assert type_3 == {
             "switchgroup", "start", "lockbot", "allgroups",
-            "allchannels", "updatefeature", "setsub", "setsheet",
+            "allchannels", "updatefeature", "setsub", "setsheet", "showtable",
         }
 
     def test_no_command_is_both_type_2_and_type_3(self):
@@ -222,6 +222,7 @@ class TestCommandDestinationTypeMatchesRealCode:
         "updatefeature": ("updatefeature", "subscription.py"),
         "setsub": ("setsub", "subscription.py"),
         "setsheet": ("setsheet", "subscription.py"),
+        "showtable": ("showtable", "subscription.py"),
     }
 
     def _get_function_source(self, filename, function_name):
@@ -242,7 +243,7 @@ class TestCommandDestinationTypeMatchesRealCode:
 
     @pytest.mark.parametrize("command_key", [
         "switchgroup", "start", "lockbot", "allgroups",
-        "allchannels", "updatefeature", "setsub", "setsheet",
+        "allchannels", "updatefeature", "setsub", "setsheet", "showtable",
     ])
     def test_type_3_command_actually_calls_require_dm_only(self, command_key):
         function_name, filename = self.TYPE_3_FUNCTIONS[command_key]
@@ -265,3 +266,64 @@ class TestGetAdminContact:
         label, url = result
         assert isinstance(label, str) and isinstance(url, str)
         assert url.startswith("https://t.me/")
+
+
+class TestRequireOwner:
+    """Direct unit tests for require_owner - extracted from an
+    identical owner+anonymous-check pattern duplicated across
+    setsub/lockbot/updatefeature, and now also used by
+    allgroups/allchannels (which previously had NO anonymous-specific
+    message at all, unlike the other 3)."""
+
+    @pytest.mark.asyncio
+    async def test_owner_passes_silently(self):
+        from unittest.mock import MagicMock, AsyncMock
+        update = MagicMock()
+        update.effective_user.id = 555
+        update.message.reply_text = AsyncMock()
+
+        result = await require_owner(update, {555})
+
+        assert result is True
+        assert not update.message.reply_text.called
+
+    @pytest.mark.asyncio
+    async def test_non_owner_gets_silence(self):
+        from unittest.mock import MagicMock, AsyncMock
+        update = MagicMock()
+        update.effective_user.id = 42
+        update.message.sender_chat = None
+        update.message.reply_text = AsyncMock()
+
+        result = await require_owner(update, {555})
+
+        assert result is False
+        assert not update.message.reply_text.called
+
+    @pytest.mark.asyncio
+    async def test_anonymous_bot_id_gets_explicit_message(self):
+        from unittest.mock import MagicMock, AsyncMock
+        update = MagicMock()
+        update.effective_user.id = GROUP_ANONYMOUS_BOT_ID
+        update.message.reply_text = AsyncMock()
+
+        result = await require_owner(update, {555})
+
+        assert result is False
+        update.message.reply_text.assert_awaited_once()
+        assert "anonymously" in update.message.reply_text.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_sender_chat_present_gets_explicit_message(self):
+        """A channel/group posting as itself (sender_chat set) is
+        another form of anonymity, distinct from GROUP_ANONYMOUS_BOT_ID."""
+        from unittest.mock import MagicMock, AsyncMock
+        update = MagicMock()
+        update.effective_user.id = 42
+        update.message.sender_chat = MagicMock()
+        update.message.reply_text = AsyncMock()
+
+        result = await require_owner(update, {555})
+
+        assert result is False
+        update.message.reply_text.assert_awaited_once()

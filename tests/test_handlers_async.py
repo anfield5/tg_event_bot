@@ -2935,6 +2935,23 @@ class TestAllgroupsAllchannels:
 
             msg.reply_text.assert_not_awaited()
 
+    async def test_anonymous_sender_gets_an_explicit_message(self, db_path):
+        """Real inconsistency fixed: allgroups previously gave ZERO
+        feedback to an anonymous owner - unlike setsub/lockbot/
+        updatefeature, which already asked them to disable Remain
+        Anonymous. Now unified via the shared require_owner helper."""
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            bot = make_bot()
+            chat = make_chat(chat_id=-999, chat_type="supergroup")
+            user = make_user(user_id=1087968824)  # GROUP_ANONYMOUS_BOT_ID
+            msg = make_message(chat=chat)
+            upd = make_update(chat=chat, user=user, message=msg)
+            ctx = make_context(bot=bot, args=[])
+
+            await subscription.allgroups_command(upd, ctx)
+
+            assert "anonymously" in msg.reply_text.call_args.args[0].lower()
+
     async def test_pagination_next_and_prev_buttons(self, db_path):
         conn = sqlite3.connect(db_path)
         for i in range(15):
@@ -5071,7 +5088,7 @@ class TestChildChatClickTracksUserForSheetsSync:
         ctx2 = make_context(bot=bot, args=[])
 
         sync_calls = []
-        async def fake_sync(cid, members):
+        async def fake_sync(cid, members, sheet_owner_chat_id=None):
             sync_calls.append((cid, members))
 
         with patch("handlers.sync_users_sheet", side_effect=fake_sync):
@@ -5431,8 +5448,8 @@ class TestRefreshusersallCoversHubItself:
         ctx = make_context(bot=bot, args=[])
 
         sync_calls = []
-        async def fake_sync(cid, members):
-            sync_calls.append((cid, [m[1] for m in members]))
+        async def fake_sync(cid, members, sheet_owner_chat_id=None):
+            sync_calls.append((cid, [m[1] for m in members], sheet_owner_chat_id))
 
         with patch("handlers.sync_users_sheet", side_effect=fake_sync):
             await handlers.refreshusersall(upd, ctx)
@@ -5440,8 +5457,14 @@ class TestRefreshusersallCoversHubItself:
         reply = msg.reply_text.call_args.args[0]
         assert "Real Hub Name" in reply
         assert "Monitored Child" in reply
-        assert any(cid == "-100" and "hubperson" in members for cid, members in sync_calls)
-        assert any(cid == "-200" and "childperson" in members for cid, members in sync_calls)
+        assert any(cid == "-100" and "hubperson" in members for cid, members, _ in sync_calls)
+        assert any(cid == "-200" and "childperson" in members for cid, members, _ in sync_calls)
+        # The real bug: the monitored child's sheet lookup must use the
+        # HUB's own chat_id (-100), not the child's own (-200) - a
+        # monitored child is never independently registered in
+        # all_groups with its own PRO subscription/sheet_id.
+        child_call = next(c for c in sync_calls if c[0] == "-200")
+        assert child_call[2] == "-100"
 
 
 class TestAddmonitorRequiresBotAdmin:
@@ -9117,6 +9140,156 @@ class TestVariantBUnification:
         assert waitlist[0]["first_name"] == "Ivan"
         assert waitlist[0]["last_name"] == "Petrov"
         assert waitlist[0]["chat_id"] == MAIN_CHAT
+
+
+class TestShowtableCommand:
+    """New /showtable command - owner-only, DM-only diagnostic that
+    dumps SELECT * FROM <table_name> into a named tab of the Control
+    Sheet. table_name is checked against sqlite_master's real table
+    list before ever touching a raw SQL string - this IS the actual
+    SQL-injection safety boundary here, not optional hardening."""
+
+    class _FakeWorksheet:
+        def __init__(self, title):
+            self.title = title
+            self.updates = []
+            self.cleared = []
+
+        async def get_all_values(self):
+            return [["old", "data"]]
+
+        async def update(self, ref, grid):
+            self.updates.append((ref, grid))
+
+        async def batch_clear(self, ranges):
+            self.cleared.append(ranges)
+
+    class _FakeSpreadsheet:
+        def __init__(self, tabs):
+            self._tabs = {t.title: t for t in tabs}
+
+        async def worksheets(self):
+            return list(self._tabs.values())
+
+        async def worksheet(self, name):
+            return self._tabs[name]
+
+    async def test_non_owner_gets_silence(self, db_path):
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=999)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["events", "Events"])
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            await subscription.showtable(upd, ctx)
+
+        assert not msg.reply_text.called
+
+    async def test_owner_from_group_gets_dm_only_error(self, db_path):
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=555)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["events", "Events"])
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            await subscription.showtable(upd, ctx)
+
+        assert "only works in a DM" in msg.reply_text.call_args.args[0]
+
+    async def test_missing_arguments_shows_syntax(self, db_path):
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=555)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["events"])  # only one arg, needs two
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            await subscription.showtable(upd, ctx)
+
+        assert "Syntax" in msg.reply_text.call_args.args[0]
+
+    async def test_unknown_table_name_is_rejected(self, db_path):
+        """The core safety boundary: an arbitrary/malicious table_name
+        must never reach the raw SQL string."""
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=555)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["events; DROP TABLE events--", "Events"])
+
+        with patch("subscription.OWNER_USER_IDS", {555}):
+            await subscription.showtable(upd, ctx)
+
+        assert "No such table" in msg.reply_text.call_args.args[0]
+        # The events table must still exist - nothing was executed
+        conn = sqlite3.connect(db_path)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "events" in tables
+
+    async def test_unknown_sheet_tab_gives_warning(self, db_path):
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=555)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["events", "NoSuchTab"])
+
+        fake_ss = self._FakeSpreadsheet([self._FakeWorksheet("Events")])
+
+        with patch("subscription.OWNER_USER_IDS", {555}), \
+             patch("subscription.CONTROL_SHEET_ID", "fake_sheet_id"), \
+             patch("subscription.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await subscription.showtable(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "No tab named" in reply
+        assert "NoSuchTab" in reply
+
+    async def test_no_control_sheet_configured(self, db_path):
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=555)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["events", "Events"])
+
+        with patch("subscription.OWNER_USER_IDS", {555}), \
+             patch("subscription.CONTROL_SHEET_ID", None):
+            await subscription.showtable(upd, ctx)
+
+        assert "CONTROL_SHEET_ID" in msg.reply_text.call_args.args[0]
+
+    async def test_successful_dump_writes_headers_and_rows(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]')"""
+        )
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=1, chat_type="private")
+        user = make_user(user_id=555)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["events", "Events"])
+
+        events_tab = self._FakeWorksheet("Events")
+        fake_ss = self._FakeSpreadsheet([events_tab])
+
+        with patch("subscription.OWNER_USER_IDS", {555}), \
+             patch("subscription.CONTROL_SHEET_ID", "fake_sheet_id"), \
+             patch("subscription.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await subscription.showtable(upd, ctx)
+
+        assert len(events_tab.updates) == 1
+        ref, grid = events_tab.updates[0]
+        assert ref == "A1"
+        assert "event_id" in grid[0]  # header row present
+        assert any("ev1" in row for row in grid[1:])  # our inserted row present
+        reply = msg.reply_text.call_args.args[0]
+        assert "1 rows" in reply or "written" in reply.lower()
 
 
 class TestLockbotCommand:

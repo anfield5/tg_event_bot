@@ -6,6 +6,48 @@ Navigation index + full data model. Commands with rich, multi-step behavior (`/n
 
 # COMMANDS
 
+## Where results go: DM vs group
+
+Every command falls into exactly one of 3 categories, tracked explicitly
+in `utils.COMMAND_DESTINATION_TYPE` (a plain dict, not a DB table — this
+is a fixed architectural classification, not something that needs
+runtime reconfiguration) and enforced for Type 3 via `utils.require_dm_only()`.
+
+**Type 1 — dual-callable, result goes wherever it was called from**
+(the default — not listed explicitly in the dict, everything absent
+from it is Type 1): `/help`, `/userid`, `/chatid`, `/status`, `/stats`,
+`/listusers`, `/listaliases`, `/listmonitors`, `/updateuser`,
+`/adduser`, `/setalias`, `/removealias`, `/addmonitor`,
+`/removemonitor`, `/refreshusers`, `/refreshusersall`, `/waitlist`.
+
+**Type 2 — dual-callable, but the substantive result always lands in
+the group**, regardless of where the command was typed:
+`/newevent`/`/editevent` (the event post itself is always
+`send_message`d to the hub; only errors/confirmations reply to the
+caller), `/shareevent` (every message, including errors, goes to the
+hub — a DM caller gets nothing back in their own DM at all), `/notify`
+(the actual ping always goes to the group via `send_message`, since
+pinging people from inside a DM wouldn't reach them where they need to
+respond — a DM caller gets a brief separate confirmation in their own
+DM instead, so they're not left wondering if anything happened).
+
+**Type 3 — DM only, explicit error if called from a group**:
+`/switchgroup`, `/start`, `/lockbot`, `/allgroups`, `/allchannels`,
+`/updatefeature`, `/setsub`, `/setsheet`. Enforced by `require_dm_only()`
+at the top of each — replies with `⛔️ /<command> only works in a DM
+with the bot...` and returns, rather than silently doing nothing (the
+older convention `/start`/`/switchgroup` used before this was made
+explicit). For the 5 owner-only commands here (`lockbot`, `allgroups`,
+`allchannels`, `updatefeature`, `setsub`), the DM-only check runs
+**after** the owner check, not before — a non-owner calling from a
+group must still get silence (the command's existence isn't revealed
+to them); only an owner calling from the wrong place sees the DM-only
+error. `/setsheet` keeps its own `resolve_hub_chat_id` call for
+picking which group to bind (a DM alone doesn't know which group), but
+the DM-only check runs before that resolution even starts.
+
+# COMMANDS
+
 ## /start
 No flags. First-touch onboarding — no group context yet, shows a welcome/help pointer.
 
@@ -78,6 +120,9 @@ No flags. Lists monitored chats.
 
 ## /setsub
 No flags. *(owner-only)* Sets/changes a group/channel's subscription tier and expiry.
+
+## /lockbot
+`on`/`off` argument, no flags. *(owner-only)* Global emergency switch — `on` makes the bot ignore every command and button click from anyone not in `OWNER_USER_IDS`, across every chat at once (not scoped to one group). `off` restores normal availability. Enforced by a dedicated gate handler that runs before every other handler, silently stopping all further processing for non-owners while locked — no reply, same as being offline.
 
 ## /updatefeature
 **-minlevel**, **-limit** — *(owner-only)* changes a feature's own tier requirement and/or per-tier usage cap. **Note:** unrelated to `/newevent`'s `-limit` (event headcount) despite the identical flag string.
@@ -181,6 +226,19 @@ Append-only historical trail. Never updated or deleted — only ever grows.
 
 Never updated or deleted by the bot itself (a pure usage log).
 
+### `bot_lock`
+**Columns:** `id` (PK, fixed to `1` via CHECK constraint — always exactly one row), `locked` (0/1)
+
+Backs the `/lockbot` global emergency switch. A single-row table by design — there's only ever one lock state for the whole bot, not per-chat.
+
+| Trigger | Operation |
+|---|---|
+| Startup / any `init_db()` run | INSERT OR IGNORE the single row with `locked=0` if it doesn't exist yet — never resets an already-set lock state on restart |
+| `/lockbot on` | UPDATE `locked=1` |
+| `/lockbot off` | UPDATE `locked=0` |
+
+Read on every single incoming command and callback query (`main.py`'s `lock_gate` handler, registered before every other handler) — deliberately a fast, index-free single-row lookup.
+
 ### `all_features`
 **Columns:** `feature_key` (PK), `feature_label`, `min_tier` (FREE/PRO/ADMIN), `limit_count`, `sort_order`, `description`
 
@@ -195,19 +253,19 @@ The single source of truth for what's available at each tier. Seeded at startup 
 | One-time legacy migration (old per-tier limit columns) | UPDATE `limit_count` from whichever of the 3 old columns matched the row's current tier, then those 3 old columns are dropped |
 
 ### `events`
-**Columns:** `event_id` (PK), `chat_id`, `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `going_data` (JSON), `notgoing_data` (JSON), `counters_data` (JSON — guest counts), `event_date`, `kicked_data` (JSON), `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON), `waitlist_open`, `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`
+**Columns:** `event_id` (PK), `chat_id`, `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `going_data` (JSON, **frozen/vestigial** — see below), `notgoing_data` (JSON, **frozen/vestigial**), `counters_data` (JSON, **frozen/vestigial**), `event_date`, `kicked_data` (JSON, **frozen/vestigial**), `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON — still live, see below), `waitlist_open`, `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`
 
-The single busiest table — most button clicks and event commands touch it.
+**Variant B note:** `going_data`/`notgoing_data`/`counters_data`/`kicked_data` were the master hub's own source of truth *before* Variant B unified the master hub and every child chat under the single `event_users` table (see that table's own section below). These four columns are no longer written to by any button click or command — they're read exactly once per event, the very first time ANY code path touches that event after the Variant B deploy, to migrate their contents into `event_users` (see `db.migrate_event_to_event_users()`). After that one-time migration, they sit frozen, kept only so that an event nobody has touched yet doesn't render as empty (a fallback path in `update_all_shared_views` reads them directly if `event_users` has no rows yet for that event).
 
 | Trigger | Operation |
 |---|---|
-| `/newevent` | INSERT (all fields set from flags/defaults) |
+| `/newevent` | INSERT (all fields set from flags/defaults; the four frozen columns start as empty JSON) |
 | `/newevent`, right after the message is sent | UPDATE `message_id` only (the real Telegram message ID wasn't known at INSERT time) |
 | `/editevent` | UPDATE `name`/`going_icon`/`notgoing_icon`/`event_date`/`total_limit`/`waitlist_visibility`/`notgoing_visibility`/`clickability` — one combined UPDATE at the end, only for fields whose flag was actually given |
-| `/editevent -limit` raising the cap and promoting from the Waitlist | A separate, earlier UPDATE of `going_data`/`counters_data`/`waitlist_data` only, **before** the combined field UPDATE above |
-| Going/Not Going/ADD/Drop/ALL/Kick/Return/±guest/Save/Cancel button clicks (master hub) | UPDATE `event_status`, `going_data`, `notgoing_data`, `counters_data`, `kicked_data`, `waitlist_data` together, once per click, only if the click actually changed something (`data_changed`) |
-| Add Extra Member (verification mode) | UPDATE `going_data`/`counters_data`/`notgoing_data` only |
-| A person joining the Waitlist (event at capacity) | UPDATE `waitlist_data` only (helper function, called from the going-click path) |
+| `/editevent -limit` raising the cap and promoting from the Waitlist | UPDATE `waitlist_data` only (the promoted person's own going/guest state goes into `event_users`, not this table) |
+| Going/Not Going/ADD/Drop/ALL/Kick/Return/±guest/Save/Cancel button clicks | UPDATE `event_status`, `waitlist_data` only, once per click, only if the click actually changed something (`data_changed`) — the participant's own state goes into `event_users` |
+| Add Extra Member (verification mode) | No write to this table at all — goes directly into `event_users` |
+| A person joining the Waitlist (event at capacity) | UPDATE `waitlist_data` only |
 | A person being promoted from the Waitlist (slot freed by Drop/ALL/Not Going/limit raise) | UPDATE `waitlist_data` only |
 | `/waitlist` finding stale duplicate entries in the queue on read | UPDATE `waitlist_data` only (persists a one-time dedup cleanup) |
 | Startup migrations (older DBs missing newer columns) | UPDATE `waitlist_visibility`/`notgoing_visibility`/`clickability` to their default value where `NULL` |
@@ -248,21 +306,33 @@ One row per (hub, related chat) relationship — a chat can be an alias target, 
 | `/addmonitor` on a chat that already has a row (e.g. already aliased) | UPDATE `is_monitored=1`/`chat_type`/`chat_name`, on the existing row |
 | `/removemonitor` | UPDATE `is_monitored=0` (row **kept** if it still has an alias) **or** DELETE the row entirely if it was monitor-only |
 
-### `event_users`
-**Columns:** `event_id`, `chat_id`, `user_id`, `username`, `status`, `guests` — composite PK `(event_id, chat_id, user_id)`
+### `event_users` — the unified participant table (Variant B)
+**Columns:** `event_id`, `chat_id`, `user_id`, `username`, `first_name`, `last_name`, `status` (`going`/`notgoing`/`kicked`/`notselected`), `guests` — composite PK `(event_id, chat_id, user_id)`
 
-Per-child-chat participation, mirroring what `going_data`/`notgoing_data` do for the master hub itself.
+**The single source of truth for who's participating in an event, from ANY chat it exists in** — the master hub included. Before Variant B, the master hub's own going/notgoing/guest state lived in the `events` table's own JSON columns (see above), completely separate from child chats, which always used this table. Variant B unified both under this one table: the master hub is simply `chat_id = <the hub's own chat_id>`, same as any child share.
+
+`first_name`/`last_name` are stored directly on the row (not resolved via a separate `main_group_users` lookup at render time) — this is deliberate: a display name that travels with the row can never go stale or fail to resolve if `main_group_users` doesn't have a matching entry for any reason.
+
+`status = 'notselected'` is for someone who's only ever adjusted their own guest count (via ADD) without personally clicking Going or Not Going at all — distinct from `'kicked'` so the verification-mode keyboard can tell the two apart (only a genuinely-kicked person gets a Return button).
+
+An unresolvable person (e.g. added via Add Extra Member with no real Telegram user_id available) uses their **username itself** as the `user_id` value — a deliberate fallback, not a bug: `_mention_link()` already renders a non-numeric `user_id` as plain text, so this displays correctly without ever needing a real Telegram id. If that same person later performs a genuine click (which always carries a real numeric id), the stale placeholder row is **renamed** (its `user_id` updated in place, preserving `guests`/`status`) rather than left to duplicate alongside a fresh row.
 
 | Trigger | Operation |
 |---|---|
-| Going/Not Going click in a child chat | INSERT OR REPLACE with the new `status`/`guests` |
-| Not Going click clearing a previous Going record entirely | DELETE (rather than INSERT OR REPLACE with `status='notgoing'`) when guests were already 0 |
-| ADD/Drop click in a child chat | UPDATE `guests` only |
-| ALL click in a child chat | UPDATE `guests = 0` |
-| Kick (verification mode, child participant) | UPDATE `status = 'kicked'` |
+| The FIRST click/command that touches an event since the Variant B deploy | One-time migration (`db.migrate_event_to_event_users()`) converts the event's old `going_data`/`notgoing_data`/`counters_data`/`kicked_data` into rows here for `chat_id = <the hub's own chat_id>`. Detected by "does this event have ANY row here yet" — safe to call repeatedly, a no-op once migrated |
+| Going click (master hub or any child chat — identical code path) | INSERT OR REPLACE with `status='going'` |
+| Going click while the event is at capacity | No row written here — the person goes to the event-wide Waitlist instead (`events.waitlist_data`) |
+| Not Going click | INSERT OR REPLACE with `status='notgoing'` — **never deleted**, regardless of guest count (a permanent record of anyone who ever clicked, independent of whether they currently have guests) |
+| ADD (guest) click, person has no prior status | INSERT with `status='notselected'`, `guests=1` |
+| ADD (guest) click, person already has a status | UPDATE `guests` only — their own going/notgoing/kicked status is untouched |
+| Drop (guest) click | UPDATE `guests = guests - 1` |
+| ALL (drop all guests) click | UPDATE `guests = 0` |
+| Kick (verification mode) | UPDATE `status = 'kicked'` |
 | Return (verification mode) | UPDATE `status = 'going'` |
 | ±guest buttons (verification mode) | UPDATE `guests = guests + 1` / `guests - 1` |
-| `/editevent -limit` raise, promoting a child-chat waiter | INSERT OR REPLACE with `status='going'`, `guests=0` |
+| Add Extra Member (verification mode) | INSERT OR REPLACE with `status='going'` — a real `user_id` if resolvable via `main_group_users`, otherwise the username itself as a fallback |
+| A genuine click by someone who has a stale unresolvable placeholder row (username-as-id, from a legacy Add Extra Member) | UPDATE, renaming that row's `user_id` to the real one (preserving `guests`/`status`) — or DELETE it if a row under the real id already exists too |
+| `/editevent -limit` raise, promoting someone from the Waitlist | INSERT OR REPLACE with `status='going'`, `guests=0` (or `guests + 1` for a promoted guest-slot entry) — works identically whether the target is the master hub or a child chat |
 
 ---
 

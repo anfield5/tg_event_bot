@@ -829,6 +829,32 @@ def migrate_event_to_event_users(cursor, event_id: str, main_chat_id: str, going
         )
 
 
+def ensure_event_migrated(cursor, event_id: str, main_chat_id: str):
+    """
+    Convenience wrapper around migrate_event_to_event_users: loads an
+    event's frozen going_data/notgoing_data/counters_data/kicked_data
+    columns and runs the migration on them - the "select + parse +
+    migrate" sequence every command that touches event_users needs to
+    repeat before that table is guaranteed populated. Uses the SAME
+    cursor/connection the caller already has open (an active
+    transaction) - never opens its own connection here. Safe to call
+    on an already-migrated event (a fast single-row SELECT, no-op) or
+    a nonexistent event_id (silently does nothing).
+    """
+    cursor.execute(
+        "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?",
+        (event_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return
+    going_raw, notgoing_raw, counters_raw, kicked_raw = row
+    migrate_event_to_event_users(
+        cursor, event_id, main_chat_id,
+        json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
+    )
+
+
 def track_user(chat_id: str, username: str, status: str = "active",
                user_id: str = None, first_name: str = None, last_name: str = None,
                db_path: str = None):

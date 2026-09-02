@@ -27,7 +27,7 @@ from handlers import (
 )
 from subscription import (
     setsub, setsheet, status_command, allgroups_command, allgroups_page_callback_handler,
-    allchannels_command, allchannels_page_callback_handler, updatefeature, lockbot,
+    allchannels_command, allchannels_page_callback_handler, updatefeature, lockbot, showtable,
     _push_control_sheet_main, _push_control_sheet_channels, _push_control_sheet_botconfig,
     _push_control_sheet_chats_log,
 )
@@ -360,6 +360,7 @@ def main():
     # 6. Subscription control (owner-only, checked inside setsub itself)
     app.add_handler(CommandHandler("setsub", setsub))
     app.add_handler(CommandHandler("lockbot", lockbot))
+    app.add_handler(CommandHandler("showtable", showtable))
     app.add_handler(CommandHandler("updatefeature", updatefeature))
     app.add_handler(CommandHandler("setsheet", setsheet))
     app.add_handler(CommandHandler("status", status_command))

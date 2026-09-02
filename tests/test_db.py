@@ -16,7 +16,7 @@ from db import (
     get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
     register_chat_added, register_chat_removed, get_feature_limit_for_chat, get_display_name,
     dedupe_waitlist, get_shareevent_remaining_for_chat, migrate_event_to_event_users,
-    is_bot_locked, set_bot_locked,
+    is_bot_locked, set_bot_locked, ensure_event_migrated,
 )
 
 
@@ -1314,3 +1314,66 @@ class TestBotLockState:
 
         init_db(db_path=path)  # simulates a restart
         assert is_bot_locked() is True
+
+
+class TestEnsureEventMigrated:
+    """Direct unit tests for the new ensure_event_migrated wrapper -
+    extracted from a "SELECT the 4 frozen columns, json.loads each,
+    call migrate_event_to_event_users" sequence that was repeated
+    identically across 5 call sites in handlers.py."""
+
+    def _setup_event(self, path, going="[]", not_going="[]", counters="{}", kicked="[]"):
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,?,?,?)""",
+            (going, not_going, counters, kicked),
+        )
+        conn.commit()
+        return conn
+
+    def test_migrates_correctly_from_frozen_columns(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path, going='["alice (1)"]', counters='{"alice": 2}')
+        cursor = conn.cursor()
+
+        ensure_event_migrated(cursor, "ev1", "-100")
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT status, guests FROM event_users WHERE event_id='ev1' AND username='alice'"
+        ).fetchone()
+        assert row == ("going", 2)
+        conn.close()
+
+    def test_nonexistent_event_is_a_safe_noop(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = sqlite3.connect(path)
+        cursor = conn.cursor()
+
+        # Must not raise for an event_id that doesn't exist at all
+        ensure_event_migrated(cursor, "nonexistent_ev", "-100")
+
+        rows = conn.execute("SELECT * FROM event_users WHERE event_id='nonexistent_ev'").fetchall()
+        assert rows == []
+        conn.close()
+
+    def test_already_migrated_event_is_a_noop(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = self._setup_event(path, going='["alice (1)"]')
+        cursor = conn.cursor()
+        ensure_event_migrated(cursor, "ev1", "-100")
+        conn.commit()
+
+        conn.execute("UPDATE event_users SET guests = 99 WHERE event_id='ev1' AND username='alice'")
+        conn.commit()
+        ensure_event_migrated(cursor, "ev1", "-100")
+        conn.commit()
+
+        row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND username='alice'").fetchone()
+        assert row == (99,), "second call must not overwrite already-migrated state"
+        conn.close()

@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, logger
-from utils import escape_markdown, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_dm_only
+from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, CONTROL_SHEET_ID, logger
+from utils import escape_markdown, is_real_admin, require_dm_only, require_owner
 from db import get_connection, get_all_features, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE, is_bot_locked, set_bot_locked
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
@@ -161,18 +161,8 @@ async def lockbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else who isn't an owner gets silence, so the command's existence
     isn't revealed to non-owners.
     """
-    if update.effective_user.id not in OWNER_USER_IDS:
-        is_anonymous = (
-            update.effective_user.id == GROUP_ANONYMOUS_BOT_ID
-            or getattr(update.message, "sender_chat", None) is not None
-        )
-        if is_anonymous:
-            await update.message.reply_text(
-                "⛔️ Owner\\-only commands can't be verified while posting anonymously \\- "
-                "please disable \"Remain anonymous\" and try again\\.",
-                parse_mode="MarkdownV2",
-            )
-        return  # otherwise silent - don't reveal this command exists to non-owners
+    if not await require_owner(update, OWNER_USER_IDS):
+        return
 
     if not await require_dm_only(update, "lockbot"):
         return
@@ -200,6 +190,94 @@ async def lockbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def showtable(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only diagnostic: /showtable <table_name> <sheet_name> runs
+    SELECT * FROM <table_name> against the bot's own SQLite database
+    and writes the results into the <sheet_name> tab of the Control
+    Sheet (EventBot_Config), overwriting whatever was there before.
+
+    table_name is checked against sqlite_master's real table list
+    before it's ever interpolated into a raw SQL string - table/column
+    names can't be passed as `?` placeholder parameters in SQLite, so
+    this whitelist check IS the actual safety boundary here, not
+    optional hardening on top of parameterization.
+
+    sheet_name must already exist as a tab in EventBot_Config - this
+    command only writes into an existing tab, it never creates one -
+    an unknown sheet_name gets an explicit warning rather than silently
+    doing nothing or crashing.
+    """
+    if not await require_owner(update, OWNER_USER_IDS):
+        return
+
+    if not await require_dm_only(update, "showtable"):
+        return
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "❌ *Syntax:* `/showtable <table_name> <sheet_name>`",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    table_name, sheet_name = args[0], args[1]
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        valid_tables = {r[0] for r in cursor.fetchall()}
+        if table_name not in valid_tables:
+            await update.message.reply_text(
+                f"❌ No such table: `{escape_markdown(table_name)}`\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+
+        cursor.execute(f"SELECT * FROM {table_name}")  # safe - table_name verified against sqlite_master above
+        rows = cursor.fetchall()
+        headers = [desc[0] for desc in cursor.description]
+
+    if not CONTROL_SHEET_ID:
+        await update.message.reply_text(
+            "❌ `CONTROL_SHEET_ID` is not configured\\.", parse_mode="MarkdownV2"
+        )
+        return
+
+    try:
+        ss = await open_spreadsheet(CONTROL_SHEET_ID)
+        existing_titles = {ws.title for ws in await ss.worksheets()}
+        if sheet_name not in existing_titles:
+            await update.message.reply_text(
+                f"⚠️ No tab named `{escape_markdown(sheet_name)}` found in EventBot\\_Config\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+
+        ws = await ss.worksheet(sheet_name)
+        grid = [headers] + [[str(v) if v is not None else "" for v in row] for row in rows]
+
+        try:
+            existing_row_count = len(await ws.get_all_values())
+        except Exception:
+            existing_row_count = 0
+
+        await ws.update("A1", grid)
+        if existing_row_count > len(grid):
+            await ws.batch_clear([f"A{len(grid) + 1}:Z{existing_row_count}"])
+
+        await update.message.reply_text(
+            f"✅ `{escape_markdown(table_name)}` \\({len(rows)} rows\\) written to `{escape_markdown(sheet_name)}`\\.",
+            parse_mode="MarkdownV2",
+        )
+    except Exception as e:
+        logger.error(f"showtable failed: {e}")
+        await update.message.reply_text(
+            "❌ Failed to write to the sheet \\- check logs\\.", parse_mode="MarkdownV2"
+        )
+
+
 async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Owner-only. The simplest possible manual subscription control - no
@@ -217,18 +295,8 @@ async def setsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Sheet's "MAIN" tab, so you can see every group's status there without
     needing to run any command.
     """
-    if update.effective_user.id not in OWNER_USER_IDS:
-        is_anonymous = (
-            update.effective_user.id == GROUP_ANONYMOUS_BOT_ID
-            or getattr(update.message, "sender_chat", None) is not None
-        )
-        if is_anonymous:
-            await update.message.reply_text(
-                "⛔️ Owner\\-only commands can't be verified while posting anonymously \\- "
-                "please disable \"Remain anonymous\" and try again\\.",
-                parse_mode="MarkdownV2",
-            )
-        return  # otherwise silent - don't reveal this command exists to non-owners
+    if not await require_owner(update, OWNER_USER_IDS):
+        return
 
     if not await require_dm_only(update, "setsub"):
         return
@@ -574,7 +642,7 @@ async def allgroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     10 at a time with Prev/Next buttons. /allgroups -pro shows only PRO
     groups.
     """
-    if update.effective_user.id not in OWNER_USER_IDS:
+    if not await require_owner(update, OWNER_USER_IDS):
         return
 
     if not await require_dm_only(update, "allgroups"):
@@ -639,7 +707,7 @@ async def allgroups_page_callback_handler(update: Update, context: ContextTypes.
 
 async def allchannels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Owner-only. Lists every channel the bot is currently in (all_channels), 10 at a time."""
-    if update.effective_user.id not in OWNER_USER_IDS:
+    if not await require_owner(update, OWNER_USER_IDS):
         return
 
     if not await require_dm_only(update, "allchannels"):
@@ -733,18 +801,8 @@ async def updatefeature(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     Same OWNER_USER_IDS gating as /setsub, not chat admin status.
     """
-    if update.effective_user.id not in OWNER_USER_IDS:
-        is_anonymous = (
-            update.effective_user.id == GROUP_ANONYMOUS_BOT_ID
-            or getattr(update.message, "sender_chat", None) is not None
-        )
-        if is_anonymous:
-            await update.message.reply_text(
-                "⛔️ Owner\\-only commands can't be verified while posting anonymously \\- "
-                "please disable \"Remain anonymous\" and try again\\.",
-                parse_mode="MarkdownV2",
-            )
-        return  # otherwise silent - don't reveal this command exists to non-owners
+    if not await require_owner(update, OWNER_USER_IDS):
+        return
 
     if not await require_dm_only(update, "updatefeature"):
         return
