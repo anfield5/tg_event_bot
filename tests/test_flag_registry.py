@@ -125,3 +125,65 @@ class TestDefaultValuePrefixInRenderedOutput:
         for line in text.split("\n"):
             if "\\-date" in line:
                 assert "default:" not in line
+
+
+class TestGoingIconsHaveRealDefaults:
+    """Real gap found: -gi/-goingicon and -ni/-notgoingicon DO have
+    fixed fallback values in the code (config.py's DEFAULT_GOING_ICON/
+    DEFAULT_NOTGOING_ICON, used via "g_icon if g_icon else
+    DEFAULT_GOING_ICON" in handlers.py), but the registry incorrectly
+    said default=None, meaning /help never showed this real default."""
+
+    def test_goingicon_shows_real_default(self):
+        text = fr.render_flags_detail("newevent")
+        assert "\\(default: 👍\\) Custom Going icon" in text
+
+    def test_notgoingicon_shows_real_default(self):
+        text = fr.render_flags_detail("newevent")
+        assert "\\(default: ❌\\) Custom Not Going icon" in text
+
+    def test_defaults_match_config_constants(self):
+        """The registry's hardcoded defaults must never drift from the
+        actual fallback values used in code."""
+        import config
+        assert fr.FLAGS["goingicon"]["default"] == config.DEFAULT_GOING_ICON
+        assert fr.FLAGS["notgoingicon"]["default"] == config.DEFAULT_NOTGOING_ICON
+
+
+class TestNoFixedDefaultFlagsExplainWhy:
+    """Flags with no real default value (default=None) now explain WHY
+    in their own description, rather than silently saying nothing about
+    what happens when omitted - covers 3 genuinely distinct reasons:
+    absence-of-feature (-date/-limit), action-not-setting (-a/-p),
+    partial-update (-minlevel), presence-only-filter (-pro), and
+    dynamic-inheritance (-sngl/-swl, already covered by their own
+    pre-existing "inherits" wording)."""
+
+    def test_date_explains_absence(self):
+        text = fr.render_flags_detail("newevent")
+        assert "no date shown at all" in text
+
+    def test_limit_event_explains_no_cap(self):
+        text = fr.render_flags_detail("newevent")
+        assert "no cap applies at all" in text
+
+    def test_active_passive_explain_action_not_setting(self):
+        text = fr.render_flags_detail("updateuser")
+        assert text.count("this is an action, not a persistent setting") == 2
+
+    def test_minlevel_explains_partial_update(self):
+        text = fr.render_flags_detail("updatefeature")
+        assert "existing tier requirement is simply left unchanged" in text
+
+    def test_pro_filter_explains_presence_only(self):
+        text = fr.render_flags_detail("allgroups")
+        assert "presence\\-only filter" in text
+
+    def test_sngl_swl_already_explain_inheritance(self):
+        """Pre-existing wording, confirmed still present and correct -
+        these have NO fixed default because behavior genuinely varies
+        per event (inherits the event's own -ngl/-wl), not because of
+        an oversight."""
+        text = fr.render_flags_detail("shareevent")
+        assert "inherits the event's own \\-ngl setting" in text
+        assert "inherits the event's own \\-wl setting" in text

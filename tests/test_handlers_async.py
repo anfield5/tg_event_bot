@@ -9496,7 +9496,7 @@ class TestOwnerHelpMentionsLockbotAndDmOnly:
 
     def test_dm_only_requirement_is_mentioned(self):
         text = help_system._build_owner_help_text()
-        assert "only work from a DM" in text
+        assert "only work from a dm" in text.lower()
 
 
 class TestSetsheetHelpMarkedDmOnly:

@@ -221,7 +221,8 @@ def _build_owner_help_text(expanded: bool = False) -> str:
     allgroups_detail = "\\-pro \\- filters the list to PRO\\-tier groups only\n" if expanded else ""
     updatefeature_detail = _updatefeature_flags_detail_text() if expanded else ""
     return (
-        "🔑 *Owner\\-Only Commands*\n\n"
+        "🔑 *Owner\\-Only Commands*\n"
+        "Only work from a DM with the bot \\- running any of them inside a group is rejected\\.\n\n"
         "/setsub \\[chat\\_id\\] on \\[days\\] \\- Activate/extend PRO for a group\n"
         "/setsub \\[chat\\_id\\] off \\- Deactivate PRO for a group immediately\n"
         "/lockbot on\\|off \\- Global emergency switch \\- `on` makes the bot ignore "
@@ -231,13 +232,9 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "/allchannels \\- List every channel the bot is in, 10 at a time\n"
         "/updatefeature \\[feature\\_key\\] \\[\\-minlevel free\\|pro\\|admin\\] \\[\\-limit N\\] "
         "\\- Change a feature's tier and/or its usage limit\\. At least one of the two flags is required\\.\n"
-        f"{updatefeature_detail}\n"
+        f"{updatefeature_detail}{chr(10) if expanded else ''}"
         "/showtable \\[table\\_name\\] \\[sheet\\_name\\] \\- Dumps `SELECT * FROM table_name` into the "
-        "named tab of EventBot\\_Config \\(must already exist there\\)\\.\n"
-        "These are gated on your personal Telegram user\\_id \\(OWNER\\_USER\\_IDS\\), "
-        "not on chat admin status \\- posting anonymously \\(as the group/channel itself\\) "
-        "can't be verified and will be rejected\\. All of these also only work from a DM "
-        "with the bot \\- running any of them inside a group is rejected\\."
+        "named tab of EventBot\\_Config \\(must already exist there\\)\\."
     )
 
 

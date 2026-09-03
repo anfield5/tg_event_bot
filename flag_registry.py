@@ -60,14 +60,14 @@ FLAGS = {
         "names": ["-d", "-date"],
         "values": "dd.mm.yyyy [HH:MM]",
         "default": None,
-        "description": "Event date (and optional time)",
+        "description": "Event date (and optional time). No default - if omitted, the event simply has no date shown at all",
         "gated_by_feature": None,
         "used_in": ["newevent", "editevent"],
     },
     "goingicon": {
         "names": ["-gi", "-goingicon"],
         "values": "<emoji>",
-        "default": None,
+        "default": "👍",
         "description": "Custom Going icon",
         "gated_by_feature": None,
         "used_in": ["newevent", "editevent"],
@@ -75,7 +75,7 @@ FLAGS = {
     "notgoingicon": {
         "names": ["-ni", "-notgoingicon"],
         "values": "<emoji>",
-        "default": None,
+        "default": "❌",
         "description": "Custom Not Going icon",
         "gated_by_feature": None,
         "used_in": ["newevent", "editevent"],
@@ -86,7 +86,8 @@ FLAGS = {
         "default": None,
         "description": (
             "caps going+guests across the whole event; once full, new "
-            "Going clicks join the Waitlist instead"
+            "Going clicks join the Waitlist instead. No default - if "
+            "omitted, no cap applies at all"
         ),
         "gated_by_feature": "event_limit",
         "used_in": ["newevent", "editevent"],
@@ -147,7 +148,7 @@ FLAGS = {
         "names": ["-a", "-active"],
         "values": None,
         "default": None,
-        "description": "Mark as active",
+        "description": "Mark as active. No default - this is an action, not a persistent setting; one of -a/-p is expected on every call",
         "gated_by_feature": None,
         "used_in": ["updateuser"],
     },
@@ -155,7 +156,7 @@ FLAGS = {
         "names": ["-p", "-passive"],
         "values": None,
         "default": None,
-        "description": "Mark as passive",
+        "description": "Mark as passive. No default - this is an action, not a persistent setting; one of -a/-p is expected on every call",
         "gated_by_feature": None,
         "used_in": ["updateuser"],
     },
@@ -163,7 +164,7 @@ FLAGS = {
         "names": ["-minlevel"],
         "values": "free|pro|admin",
         "default": None,
-        "description": "the minimum tier required to use this feature at all",
+        "description": "the minimum tier required to use this feature at all. No default - this is a partial-update flag; if omitted, the existing tier requirement is simply left unchanged",
         "gated_by_feature": None,  # owner-only command, gated on OWNER_USER_IDS not a feature
         "used_in": ["updatefeature"],
     },
@@ -183,7 +184,7 @@ FLAGS = {
         "names": ["-pro"],
         "values": None,
         "default": None,
-        "description": "filters the list to PRO-tier groups only",
+        "description": "filters the list to PRO-tier groups only. No default - a presence-only filter; omitted means every group is shown, not a specific fallback value",
         "gated_by_feature": None,
         "used_in": ["allgroups"],
     },
