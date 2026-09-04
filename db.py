@@ -358,11 +358,11 @@ def init_db(db_path: str = DB_PATH):
         CREATE TABLE IF NOT EXISTS main_group_users (
             chat_id TEXT,
             username TEXT,
-            user_id TEXT DEFAULT NULL,
+            user_id TEXT NOT NULL,
             status TEXT DEFAULT 'active',
             first_name TEXT DEFAULT NULL,
             last_name TEXT DEFAULT NULL,
-            PRIMARY KEY (chat_id, username)
+            PRIMARY KEY (chat_id, user_id)
         )
     """)
 
@@ -513,6 +513,56 @@ def init_db(db_path: str = DB_PATH):
     cursor.execute("INSERT OR IGNORE INTO bot_lock (id, locked) VALUES (1, 0)")
 
     # ── Migrations ────────────────────────────────────────────────────────────
+
+    # -2. main_group_users: migrate from the old (chat_id, username)
+    # primary key to (chat_id, user_id) - username is not a stable
+    # Telegram identity (can be changed, and once released, reused by a
+    # completely different person), which caused a real bug: a stale
+    # row for a reused @username pointed to its FORMER holder's real
+    # (but now no-longer-relevant) user_id, getting the CURRENT holder
+    # incorrectly treated as departed by /refreshusers. user_id is the
+    # only permanent identity, so it's now required (NOT NULL) - rows
+    # that could never resolve one are simply not persisted at all
+    # anymore, rather than lingering as permanently-stuck stubs.
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='main_group_users'")
+    _mgu_row = cursor.fetchone()
+    if _mgu_row and "PRIMARY KEY (chat_id, username)" in (_mgu_row[0] or ""):
+        cursor.execute("ALTER TABLE main_group_users RENAME TO main_group_users_old")
+        cursor.execute("PRAGMA table_info(main_group_users_old)")
+        _old_cols = {c[1] for c in cursor.fetchall()}
+        cursor.execute("""
+            CREATE TABLE main_group_users (
+                chat_id TEXT,
+                username TEXT,
+                user_id TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                first_name TEXT DEFAULT NULL,
+                last_name TEXT DEFAULT NULL,
+                PRIMARY KEY (chat_id, user_id)
+            )
+        """)
+        if "user_id" in _old_cols:
+            # Modern-enough old schema - has user_id (possibly NULL for
+            # unresolved rows, which get dropped here) and possibly
+            # first_name/last_name too (select as NULL literals if an
+            # even-older row predates those specific columns).
+            fname_expr = "first_name" if "first_name" in _old_cols else "NULL"
+            lname_expr = "last_name" if "last_name" in _old_cols else "NULL"
+            cursor.execute(f"""
+                SELECT chat_id, username, user_id, status, {fname_expr}, {lname_expr}
+                FROM main_group_users_old
+                WHERE user_id IS NOT NULL AND user_id != ''
+            """)
+            for chat_id, username, user_id, status, first_name, last_name in cursor.fetchall():
+                cursor.execute("""
+                    INSERT OR REPLACE INTO main_group_users
+                        (chat_id, username, user_id, status, first_name, last_name)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (chat_id, username, user_id, status, first_name, last_name))
+        # else: an ancient schema with no user_id column at all - every row
+        # there was already unresolvable by definition, nothing to carry
+        # forward.
+        cursor.execute("DROP TABLE main_group_users_old")
 
     # -1. Add any of all_groups' newer columns if still missing (covers an
     # all_groups that already existed under its current name but predates
@@ -855,37 +905,53 @@ def ensure_event_migrated(cursor, event_id: str, main_chat_id: str):
     )
 
 
+GROUP_ANONYMOUS_BOT_ID = 1087968824  # same constant as utils.py - duplicated
+# here (not imported) to avoid a db.py <-> utils.py import cycle; covered by
+# a drift-detection test to keep both values in sync.
+
+
 def track_user(chat_id: str, username: str, status: str = "active",
                user_id: str = None, first_name: str = None, last_name: str = None,
                db_path: str = None):
     """
-    Upserts a single user registration record within the localized chat context.
-    Optionally stores the Telegram user_id so refreshusers can verify membership,
-    plus first_name/last_name so going/notgoing lists can show a clickable
-    "First Last" link (tg://user?id=...) instead of relying on @username,
-    which may not exist at all.
+    Upserts a single user registration record within the localized chat context,
+    keyed by (chat_id, user_id) - the only PERMANENT Telegram identity. username
+    is stored as a display convenience only and is free to change over time
+    without creating a duplicate/stale row (unlike the old (chat_id, username)
+    key, which caused a real bug: once a username is abandoned and later
+    reused by a completely different person, the OLD row's real-but-now-
+    irrelevant user_id would get matched against the NEW person's identity).
+
+    user_id is required - a call with no resolvable numeric id is a silent
+    no-op, rather than creating a permanently-unresolvable stub row the way
+    the old schema allowed. Also refuses to ever store
+    GROUP_ANONYMOUS_BOT_ID (Telegram's "Remain Anonymous" pseudo-account) as
+    anyone's personal tracking id - an anonymous sender's real identity is
+    never revealed by a plain text message, only by a genuine button click,
+    so silently accepting this pseudo-id here would create a bogus row that
+    doesn't correspond to any real, individually-trackable person.
+
+    Also stores first_name/last_name so going/notgoing lists can show a
+    clickable "First Last" link (tg://user?id=...) instead of relying on
+    @username, which may not exist at all.
     """
-    if not username:
+    if not username or not user_id:
+        return
+    if str(user_id) == str(GROUP_ANONYMOUS_BOT_ID):
         return
     if db_path is None:
         db_path = DB_PATH
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    if user_id is not None:
-        cursor.execute("""
-            INSERT INTO main_group_users (chat_id, username, user_id, status, first_name, last_name)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(chat_id, username) DO UPDATE
-                SET status = excluded.status,
-                    user_id = COALESCE(excluded.user_id, main_group_users.user_id),
-                    first_name = COALESCE(excluded.first_name, main_group_users.first_name),
-                    last_name = COALESCE(excluded.last_name, main_group_users.last_name)
-        """, (str(chat_id), username, str(user_id), status, first_name, last_name))
-    else:
-        cursor.execute("""
-            INSERT INTO main_group_users (chat_id, username, status) VALUES (?, ?, ?)
-            ON CONFLICT(chat_id, username) DO UPDATE SET status = excluded.status
-        """, (str(chat_id), username, status))
+    cursor.execute("""
+        INSERT INTO main_group_users (chat_id, username, user_id, status, first_name, last_name)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(chat_id, user_id) DO UPDATE
+            SET username = excluded.username,
+                status = excluded.status,
+                first_name = COALESCE(excluded.first_name, main_group_users.first_name),
+                last_name = COALESCE(excluded.last_name, main_group_users.last_name)
+    """, (str(chat_id), username, str(user_id), status, first_name, last_name))
     conn.commit()
     conn.close()
 

@@ -396,8 +396,8 @@ class TestNotify:
         # Insert an event + two users; neither has responded
         insert_event(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',  NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',  '2','active')")
         conn.commit()
         conn.close()
 
@@ -422,7 +422,7 @@ class TestNotify:
             going=json.dumps(["alice (111)"]),
         )
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','111','active')")
         conn.commit()
         conn.close()
 
@@ -558,7 +558,7 @@ class TestUpdateuser:
     async def _run(self, db_path, args):
         """Helper: insert a known user then run /updateuser with given args."""
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
         conn.commit()
         conn.close()
 
@@ -609,7 +609,7 @@ class TestUpdateuser:
 
     async def test_at_prefix_stripped_from_username(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
         conn.commit()
         conn.close()
 
@@ -629,8 +629,8 @@ class TestListusers:
 
     async def test_shows_all_users(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',  NULL,'passive')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',  '2','passive')")
         conn.commit()
         conn.close()
 
@@ -1419,35 +1419,6 @@ class TestRefreshusers:
         await handlers.refreshusers(upd, ctx)
 
         assert dict(get_users(db_path)).get("carol") == "active"
-
-    async def test_users_without_id_are_removed_by_default(self, db_path):
-        """
-        Regression test for the new default behavior: users with no stored
-        user_id can never be membership-checked (getChatMember requires a
-        numeric ID), so there's no way to ever confirm they're still here -
-        they're now removed outright by default (this used to require the
-        separate -purge flag; that flag no longer exists, this is just how
-        /refreshusers behaves now).
-        """
-        conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob',NULL,'active')")
-        conn.commit()
-        conn.close()
-
-        bot = make_bot()
-        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
-
-        chat = make_chat(chat_id=-100123)
-        msg  = make_message(chat=chat)
-        upd  = make_update(chat=chat, message=msg)
-        ctx  = make_context(bot=bot)
-
-        await handlers.refreshusers(upd, ctx)
-
-        users = get_users(db_path)
-        assert "bob" not in dict(users)
-        reply = msg.reply_text.call_args.args[0]
-        assert "bob" in reply
 
     async def test_adds_missing_chat_administrator_as_active(self, db_path):
         """
@@ -3628,8 +3599,8 @@ class TestTrackEveryoneMessage:
 
     async def test_mentions_only_active_tracked_users(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-100123','alice','active')")
-        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-100123','bob','passive')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob','2','passive')")
         conn.commit()
         conn.close()
 
@@ -3648,7 +3619,7 @@ class TestTrackEveryoneMessage:
 
     async def test_no_mention_trigger_does_nothing(self, db_path):
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-100123','alice','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
         conn.commit()
         conn.close()
 
@@ -6411,7 +6382,7 @@ class TestUpdateuserResolvesRealUserIdWhenPossible:
         assert any("Could not resolve" in r for r in replies)
         conn = sqlite3.connect(db_path)
         row = conn.execute("SELECT user_id, status FROM main_group_users WHERE chat_id='-1' AND username='Enes'").fetchone()
-        assert row == (None, "active")
+        assert row is None, "unresolvable entries should not create any row at all anymore"
 
     async def test_existing_valid_user_id_is_never_overwritten(self, db_path):
         """A username that ALREADY has a real user_id on file must keep
@@ -7056,65 +7027,6 @@ class TestValidateClickabilityFlagHelper:
         result = await handlers._validate_clickability_flag(msg, "-1", "off")
         assert result == "off"
         msg.reply_text.assert_not_called()
-
-
-class TestRefreshusersRetroactivelyResolvesStaleEntries:
-    """Real gap found from user screenshots: people who were tracked
-    (via /adduser, /updateuser, or an earlier code path) with only a
-    username and no real user_id remained permanently unlinkable forever
-    - /refreshusers used to just delete them outright. Now attempts the
-    same admin-list-based resolution /updateuser already uses BEFORE
-    removing, healing stale rows for anyone who's since become an admin.
-    Genuine non-admin members still can't be resolved (a fundamental
-    Telegram Bot API limitation - no endpoint exists to look up an
-    arbitrary username), so they're still removed if resolution fails."""
-
-    async def test_resolves_via_admin_list_before_removing(self, db_path):
-        conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-1','Serhiy','active')")
-        conn.commit()
-
-        bot = make_bot()
-        admin_match = MagicMock()
-        admin_match.user.username = "Serhiy"
-        admin_match.user.id = 555
-        admin_match.user.first_name = "Serhiy"
-        admin_match.user.last_name = "Real"
-        admin_match.user.is_bot = False
-        bot.get_chat_administrators = AsyncMock(return_value=[admin_match])
-        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
-        chat = make_chat(chat_id=-1, chat_type="supergroup")
-        user = make_user(user_id=1)
-        msg = make_message(chat=chat)
-        upd = make_update(chat=chat, user=user, message=msg)
-        ctx = make_context(bot=bot, args=[])
-
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
-            await handlers.refreshusers(upd, ctx)
-
-        text = msg.reply_text.call_args_list[0].args[0]
-        assert "Resolved to a real, clickable user" in text
-        row = conn.execute("SELECT user_id, first_name, last_name FROM main_group_users WHERE chat_id='-1' AND username='Serhiy'").fetchone()
-        assert row == ("555", "Serhiy", "Real")
-
-    async def test_still_removed_if_resolution_also_fails(self, db_path):
-        conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, status) VALUES ('-1','Enes','active')")
-        conn.commit()
-
-        bot = make_bot()
-        bot.get_chat_administrators = AsyncMock(return_value=[])
-        chat = make_chat(chat_id=-1, chat_type="supergroup")
-        user = make_user(user_id=1)
-        msg = make_message(chat=chat)
-        upd = make_update(chat=chat, user=user, message=msg)
-        ctx = make_context(bot=bot, args=[])
-
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
-            await handlers.refreshusers(upd, ctx)
-
-        row = conn.execute("SELECT * FROM main_group_users WHERE chat_id='-1' AND username='Enes'").fetchone()
-        assert row is None
 
 
 
@@ -9434,7 +9346,7 @@ class TestNotifyPingsGroupNotCaller:
     async def test_called_directly_in_group_pings_that_same_group(self, db_path):
         insert_event(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
-        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice',NULL,'active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
         conn.commit()
         conn.close()
 

@@ -794,7 +794,8 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             already_has_id = existing and existing[0] and str(existing[0]).lstrip("-").isdigit()
 
             if already_has_id:
-                track_user(chat_id, username, status)
+                track_user(chat_id, username, status, user_id=existing[0])
+                updated.append(username)
             else:
                 # First time this exact username is being tracked (or it
                 # was tracked before without ever resolving a real
@@ -817,10 +818,23 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
                         chat_id, username, status, user_id=str(match.id),
                         first_name=match.first_name, last_name=match.last_name,
                     )
+                    updated.append(username)
                 else:
-                    track_user(chat_id, username, status)
+                    # No resolvable user_id at all - nothing is persisted
+                    # (track_user is a no-op without one), so this person
+                    # is deliberately NOT added to `updated` below, or the
+                    # success message would falsely claim their status was
+                    # changed when nothing was actually written.
                     unresolved.append(username)
-            updated.append(username)
+
+    if not updated and unresolved:
+        mentions = ", ".join(f"@{escape_markdown(u)}" for u in unresolved)
+        await update.message.reply_text(
+            f"{ICON_WARNING} Could not resolve a user\\_id for: {mentions} \\- nothing was updated\\. "
+            f"They need to be an admin of this chat, or have already interacted with the bot at least once\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
 
     if len(updated) == 1:
         await update.message.reply_text(
@@ -831,6 +845,12 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in updated)
         await update.message.reply_text(
             f"⚙️ Status for {mentions} updated to `{status}`\\.",
+            parse_mode="MarkdownV2",
+        )
+    if updated and unresolved:
+        mentions = ", ".join(f"@{escape_markdown(u)}" for u in unresolved)
+        await update.message.reply_text(
+            f"{ICON_WARNING} Could not resolve a user\\_id for: {mentions} \\- their status was NOT changed\\.",
             parse_mode="MarkdownV2",
         )
 
@@ -1092,37 +1112,16 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
             admins = []
 
         # ── 1. Remove confirmed-departed/invalid/unverifiable users ──────────
-        removed        = []
-        resolved       = []  # usernames that were unresolved but just got a real user_id via the admin list
+        removed        = []  # user_ids confirmed departed - NOT usernames, see DELETE below
         still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
 
         for username, user_id, status in rows:
-            if not user_id:
-                # No stored user_id at all - try resolving one now via
-                # the admin list (same as /updateuser's own resolution),
-                # in case this person has since become an admin. Only
-                # remove outright if that ALSO fails - there's still no
-                # way to verify membership without a numeric ID.
-                target_username = username.lstrip("@")
-                match = next(
-                    (a.user for a in admins if a.user.username and a.user.username.lower() == target_username.lower()),
-                    None,
-                )
-                if match:
-                    track_user(
-                        chat_id, username, status, user_id=str(match.id),
-                        first_name=match.first_name, last_name=match.last_name,
-                    )
-                    resolved.append(username)
-                else:
-                    removed.append(username)
-                continue
             try:
                 m = await context.bot.get_chat_member(
                     chat_id=int(chat_id), user_id=int(user_id)
                 )
                 if m.status in ["left", "kicked"]:
-                    removed.append(username)
+                    removed.append(user_id)
                 else:
                     # Use the live Telegram username (public @handle preferred),
                     # not the possibly-stale one stored locally - this is what
@@ -1144,9 +1143,13 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
                 still_present.append((user_id, username, None, None))
 
         if removed:
+            # Deletes by user_id, NOT username - a username can be reused by a
+            # completely different, still-present person within the same
+            # refresh cycle (they just haven't been tracked under it yet), so
+            # deleting by the string alone could hit the wrong row entirely.
             cursor.executemany(
-                "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
-                [(chat_id, u) for u in removed],
+                "DELETE FROM main_group_users WHERE chat_id = ? AND user_id = ?",
+                [(chat_id, uid) for uid in removed],
             )
             conn.commit()
 
@@ -1178,11 +1181,9 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
     }.values())
 
     lines = []
-    if resolved:
-        mentions = ", ".join(f"@{escape_markdown(u)}" for u in resolved)
-        lines.append(f"🔗 Resolved to a real, clickable user \\(found in the admin list\\): {mentions}")
     if removed:
-        mentions = ", ".join(f"@{escape_markdown(u)}" for u in removed)
+        username_by_id = {uid: uname for uname, uid, _status in rows}
+        mentions = ", ".join(f"@{escape_markdown(username_by_id.get(uid, uid))}" for uid in removed)
         lines.append(f"{ICON_CLEAN} Removed \\(left, invalid, or unverifiable\\): {mentions}")
     if added:
         mentions = ", ".join(f"@{escape_markdown(u)}" for u in added)
@@ -1296,31 +1297,35 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                 )
                 monitor_rows = cursor_mon.fetchall()
 
-                monitor_removed = []
+                monitor_removed = []  # user_ids confirmed departed - NOT usernames
                 monitor_present = []
 
                 for username, user_id, status in monitor_rows:
-                    if not user_id:
-                        monitor_removed.append(username)
-                        continue
                     try:
                         m = await context.bot.get_chat_member(
                             chat_id=int(monitor_chat_id), user_id=int(user_id)
                         )
                         if m.status in ["left", "kicked"]:
-                            monitor_removed.append(username)
+                            monitor_removed.append(user_id)
                         else:
                             live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
                             monitor_present.append((user_id, live_username, m.user.first_name, m.user.last_name))
-                    except BadRequest:
-                        monitor_removed.append(username)
-                    except Exception:
-                        monitor_removed.append(username)
+                    except BadRequest as e:
+                        # Same protective handling as /refreshusers' own loop -
+                        # a transient API error is NOT confirmation of
+                        # departure, keep them rather than risk a false removal.
+                        logger.error(f"refreshusersall: BadRequest for user {username} (user_id={user_id}) in {monitor_chat_id}: {e}")
+                        monitor_present.append((user_id, username, None, None))
+                    except Exception as e:
+                        logger.error(f"refreshusersall: Exception for user {username} (user_id={user_id}) in {monitor_chat_id}: {e}")
+                        monitor_present.append((user_id, username, None, None))
 
                 if monitor_removed:
+                    # Deletes by user_id, NOT username - see /refreshusers'
+                    # own fix for the full reused-username reasoning.
                     cursor_mon.executemany(
-                        "DELETE FROM main_group_users WHERE chat_id = ? AND username = ?",
-                        [(monitor_chat_id, u) for u in monitor_removed],
+                        "DELETE FROM main_group_users WHERE chat_id = ? AND user_id = ?",
+                        [(monitor_chat_id, uid) for uid in monitor_removed],
                     )
                     conn_mon.commit()
 

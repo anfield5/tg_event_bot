@@ -159,7 +159,7 @@ class TestInitDb:
     def test_idempotent_third_call_does_not_duplicate_data(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        track_user("chat1", "alice", "active", db_path=path)
+        track_user("chat1", "alice", "active", user_id="1", db_path=path)
         init_db(db_path=path)
         init_db(db_path=path)
         rows = fetch_all(path, "SELECT COUNT(*) FROM main_group_users WHERE chat_id='chat1' AND username='alice'")
@@ -170,11 +170,11 @@ class TestInitDb:
         path = str(tmp_path / "t.db")
         run_sql(path, """
             CREATE TABLE IF NOT EXISTS main_group_users (
-                chat_id TEXT, username TEXT, status TEXT DEFAULT 'active',
+                chat_id TEXT, username TEXT, user_id TEXT, status TEXT DEFAULT 'active',
                 PRIMARY KEY (chat_id, username)
             )
         """)
-        run_sql(path, "INSERT INTO main_group_users (chat_id, username, status) VALUES ('c1','alice','frozen')")
+        run_sql(path, "INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('c1','alice','1','frozen')")
 
         init_db(db_path=path)
 
@@ -193,11 +193,11 @@ class TestMigrationChatUsersRename:
         path = str(tmp_path / "t.db")
         run_sql(path, """
             CREATE TABLE chat_users (
-                chat_id TEXT, username TEXT, status TEXT DEFAULT 'active',
+                chat_id TEXT, username TEXT, user_id TEXT, status TEXT DEFAULT 'active',
                 PRIMARY KEY (chat_id, username)
             )
         """)
-        run_sql(path, "INSERT INTO chat_users (chat_id, username, status) VALUES ('c1','alice','active')")
+        run_sql(path, "INSERT INTO chat_users (chat_id, username, user_id, status) VALUES ('c1','alice','1','active')")
 
         init_db(db_path=path)
 
@@ -456,12 +456,13 @@ class TestMigrationEventStatusRebuild:
 # ---------------------------------------------------------------------------
 
 class TestTrackUser:
-    """track_user() upserts a user record into main_group_users."""
+    """track_user() upserts a user record into main_group_users, keyed by
+    (chat_id, user_id) - user_id is required for any row to exist at all."""
 
     def test_inserts_new_user(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        track_user("chat1", "alice", "active", db_path=path)
+        track_user("chat1", "alice", "active", user_id="1", db_path=path)
         rows = fetch_all(path, "SELECT username, status FROM main_group_users WHERE chat_id='chat1'")
         assert len(rows) == 1
         assert rows[0] == ("alice", "active")
@@ -470,17 +471,27 @@ class TestTrackUser:
         # Insert active first, then update to passive
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        track_user("chat1", "alice", "active",  db_path=path)
-        track_user("chat1", "alice", "passive", db_path=path)
-        rows = fetch_all(path, "SELECT status FROM main_group_users WHERE chat_id='chat1' AND username='alice'")
+        track_user("chat1", "alice", "active",  user_id="1", db_path=path)
+        track_user("chat1", "alice", "passive", user_id="1", db_path=path)
+        rows = fetch_all(path, "SELECT status FROM main_group_users WHERE chat_id='chat1' AND user_id='1'")
         assert rows[0][0] == "passive"
 
     def test_empty_username_is_ignored(self, tmp_path):
         # track_user must silently return without inserting anything
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        track_user("chat1", "", "active", db_path=path)
-        track_user("chat1", None, "active", db_path=path)
+        track_user("chat1", "", "active", user_id="1", db_path=path)
+        track_user("chat1", None, "active", user_id="2", db_path=path)
+        rows = fetch_all(path, "SELECT * FROM main_group_users")
+        assert len(rows) == 0
+
+    def test_no_user_id_is_a_noop(self, tmp_path):
+        """user_id is required now - a call without one creates nothing
+        and updates nothing, rather than the old behavior of creating a
+        permanently-unresolvable stub row."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        track_user("chat1", "ghost", "active", db_path=path)  # no user_id
         rows = fetch_all(path, "SELECT * FROM main_group_users")
         assert len(rows) == 0
 
@@ -492,29 +503,56 @@ class TestTrackUser:
         rows = fetch_all(path, "SELECT user_id FROM main_group_users WHERE username='bob'")
         assert rows[0][0] == "99988"
 
-    def test_user_id_preserved_on_status_update(self, tmp_path):
-        # If we update status without passing user_id, the stored user_id must remain
+    def test_username_updates_in_place_on_rename(self, tmp_path):
+        """Same real person (same user_id), different username over
+        time - must update the SAME row, not create a duplicate. This
+        is the core fix: username is no longer part of the identity key."""
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        track_user("chat1", "bob", "active",  user_id="99988", db_path=path)
-        track_user("chat1", "bob", "passive",                   db_path=path)  # no user_id
-        rows = fetch_all(path, "SELECT user_id FROM main_group_users WHERE username='bob'")
-        assert rows[0][0] == "99988", "user_id must be preserved when not explicitly passed"
+        track_user("chat1", "bob_old", "active", user_id="99988", db_path=path)
+        track_user("chat1", "bob_new", "active", user_id="99988", db_path=path)
+        rows = fetch_all(path, "SELECT username FROM main_group_users WHERE chat_id='chat1' AND user_id='99988'")
+        assert len(rows) == 1
+        assert rows[0][0] == "bob_new"
+
+    def test_username_reuse_by_different_person_does_not_collide(self, tmp_path):
+        """The exact bug this refactor fixes: a NEW person taking an
+        abandoned @username must get their OWN row, never overwriting
+        or being confused with whoever held it before."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        track_user("chat1", "sergeev", "active", user_id="111", first_name="Old", db_path=path)
+        track_user("chat1", "sergeev", "active", user_id="222", first_name="New", db_path=path)
+        old_row = fetch_all(path, "SELECT first_name FROM main_group_users WHERE chat_id='chat1' AND user_id='111'")
+        new_row = fetch_all(path, "SELECT first_name FROM main_group_users WHERE chat_id='chat1' AND user_id='222'")
+        assert old_row[0][0] == "Old"
+        assert new_row[0][0] == "New"
 
     def test_multiple_users_different_chats(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        track_user("chat1", "alice", "active",  db_path=path)
-        track_user("chat2", "alice", "passive", db_path=path)
+        track_user("chat1", "alice", "active",  user_id="1", db_path=path)
+        track_user("chat2", "alice", "passive", user_id="1", db_path=path)
         rows = fetch_all(path, "SELECT chat_id, status FROM main_group_users WHERE username='alice' ORDER BY chat_id")
         assert rows == [("chat1", "active"), ("chat2", "passive")]
 
     def test_default_status_is_active(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        track_user("chat1", "carol", db_path=path)  # no explicit status
+        track_user("chat1", "carol", user_id="1", db_path=path)  # no explicit status
         rows = fetch_all(path, "SELECT status FROM main_group_users WHERE username='carol'")
         assert rows[0][0] == "active"
+
+    def test_refuses_group_anonymous_bot_id(self, tmp_path):
+        """Defensive guard: GROUP_ANONYMOUS_BOT_ID must never be stored
+        as anyone's personal tracking id - it's Telegram's shared
+        pseudo-account for anonymous message senders, not a real,
+        individually-trackable person."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        track_user("chat1", "anon", "active", user_id="1087968824", db_path=path)
+        rows = fetch_all(path, "SELECT * FROM main_group_users")
+        assert len(rows) == 0
 
 
 class TestTypeCaseNormalization:
