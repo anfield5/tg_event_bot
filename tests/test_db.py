@@ -451,6 +451,92 @@ class TestMigrationEventStatusRebuild:
         assert rows == [(0,)]
 
 
+class TestMigrationEventsChatIdNotNull:
+    """events.chat_id was missing NOT NULL, even though the application
+    code always provides it (the only INSERT point, always via
+    resolve_hub_chat_id) - the schema just wasn't enforcing what the
+    app already guarantees."""
+
+    def test_adds_not_null_constraint(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]'
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, going_data, notgoing_data, counters_data) VALUES ('ev1','-100','Party','[]','[]','{}')")
+
+        init_db(db_path=path)
+
+        conn = sqlite3.connect(path)
+        col = next(c for c in conn.execute("PRAGMA table_info(events)").fetchall() if c[1] == "chat_id")
+        assert col[3] == 1, "chat_id must be NOT NULL after migration"
+        rows = fetch_all(path, "SELECT event_id FROM events")
+        assert rows == [("ev1",)]
+
+    def test_drops_orphaned_null_chat_id_rows(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]'
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, going_data, notgoing_data, counters_data) VALUES ('ev1','-100','Real','[]','[]','{}')")
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, going_data, notgoing_data, counters_data) VALUES ('ev2',NULL,'Orphan','[]','[]','{}')")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT event_id FROM events")
+        assert rows == [("ev1",)], "orphaned NULL-chat_id row must be dropped, valid row preserved"
+
+    def test_idempotent_second_call(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]'
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, going_data, notgoing_data, counters_data) VALUES ('ev1','-100','Party','[]','[]','{}')")
+        init_db(db_path=path)
+        init_db(db_path=path)  # must not raise or duplicate/lose data
+        rows = fetch_all(path, "SELECT event_id FROM events")
+        assert rows == [("ev1",)]
+
+    def test_full_chain_from_oldest_schema(self, tmp_path):
+        """The exact ordering bug this session found: the NOT NULL
+        migration must run AFTER the older is_open/is_cancelled ->
+        event_status rebuild, not before it - otherwise the NOT NULL
+        migration's modern column list would silently drop the legacy
+        status columns before they get translated."""
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, is_open INTEGER DEFAULT 1,
+                is_cancelled INTEGER DEFAULT 0, going_data TEXT, notgoing_data TEXT,
+                counters_data TEXT, event_date TEXT DEFAULT NULL
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, is_open, is_cancelled, going_data, notgoing_data, counters_data) VALUES ('ev1','-100','Old Party',2,0,'[]','[]','{}')")
+
+        init_db(db_path=path)
+
+        row = fetch_all(path, "SELECT event_id, chat_id, event_status FROM events WHERE event_id='ev1'")[0]
+        assert row == ("ev1", "-100", 1), "is_open=2 (verification) must translate to event_status=1"
+        conn = sqlite3.connect(path)
+        col = next(c for c in conn.execute("PRAGMA table_info(events)").fetchall() if c[1] == "chat_id")
+        assert col[3] == 1, "chat_id must ALSO end up NOT NULL after the full chain"
+
+
 # ---------------------------------------------------------------------------
 # track_user
 # ---------------------------------------------------------------------------

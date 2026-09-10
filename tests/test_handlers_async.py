@@ -3565,6 +3565,109 @@ class TestHandleExtraPlayerInput:
         going = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()[0]
         assert going == "[]"
 
+    async def test_resolves_across_shared_child_chats_not_just_admins_own_chat(self, db_path):
+        """Real bug fixed: the target person is often a member of a
+        monitored/shared CHILD chat only, never the hub itself. Using
+        the admin's own chat_id (wherever they're typing from) to look
+        up main_group_users previously failed to find such a person,
+        falling back to a fake username-as-id row - creating a
+        DUPLICATE alongside their genuine event_users row from the
+        child chat, breaking guest increment/decrement (split across
+        two rows), and showing "@username" instead of "First Last"."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','channel')"
+        )
+        # Andr is tracked ONLY in the monitored channel (-200), never the hub (-100)
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, first_name, last_name) "
+            "VALUES ('-200','Andr','555','Andrew','Smith')"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")  # admin types from the HUB
+        admin = make_user(user_id=1, username="admin")
+        msg = make_message(chat=chat)
+        msg.text = "Andr"
+        msg.delete = AsyncMock()
+        upd = make_update(chat=chat, user=admin, message=msg)
+        ctx = make_context(bot=bot)
+        ctx.user_data["awaiting_extra_player_for"] = "ev1"
+
+        with patch("handlers.is_real_admin", new_callable=AsyncMock, return_value=True), \
+             patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.handle_extra_player_input(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT chat_id, user_id, username FROM event_users WHERE event_id='ev1'"
+        ).fetchall()
+        assert len(rows) == 1, f"must not create a duplicate row, got {rows}"
+        assert rows[0] == ("-200", "555", "Andr"), (
+            "must use the monitored channel's chat_id and the real numeric user_id, "
+            f"got {rows[0]}"
+        )
+
+    async def test_main_group_takes_priority_over_child_when_present_in_both(self, db_path):
+        """Explicit priority rule: if the person is tracked in BOTH the
+        hub and a child chat, the hub must win - hub_chat_id is checked
+        first in candidate_chat_ids, breaking on the first match."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','channel')"
+        )
+        # Same person tracked in BOTH the hub (-100) and the child (-200),
+        # with DIFFERENT user_ids to make it obvious which one won.
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, first_name, last_name) "
+            "VALUES ('-100','Andr','111','HubAndr','Person')"
+        )
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, first_name, last_name) "
+            "VALUES ('-200','Andr','222','ChildAndr','Person')"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin = make_user(user_id=1, username="admin")
+        msg = make_message(chat=chat)
+        msg.text = "Andr"
+        msg.delete = AsyncMock()
+        upd = make_update(chat=chat, user=admin, message=msg)
+        ctx = make_context(bot=bot)
+        ctx.user_data["awaiting_extra_player_for"] = "ev1"
+
+        with patch("handlers.is_real_admin", new_callable=AsyncMock, return_value=True), \
+             patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.schedule_view_refresh", new_callable=AsyncMock):
+            await handlers.handle_extra_player_input(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT chat_id, user_id, username FROM event_users WHERE event_id='ev1'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == ("-100", "111", "Andr"), (
+            f"main group entry must win over child chat entry, got {rows[0]}"
+        )
+
 
 class TestRequirePremium:
     """Previously had zero direct test coverage (only exercised indirectly
@@ -7255,6 +7358,148 @@ class TestClickabilityFlag:
         assert "[Bob B](tg://user?id=2)" in text
 
 
+class TestClickabilityOnMakesEverySectionClickable:
+    """Item 2/3: with clickability=on, EVERY section of a rendered post
+    must produce genuine [Name](tg://user?id=...) mentions, not just
+    have the DB flag set correctly - covering the master hub's own
+    going/not going/guests/waitlist AND its cross-reference to a child
+    chat's participants, plus a child's own separate post."""
+
+    async def test_master_post_every_section_is_clickable(self, db_path):
+        # Real people on file for every section: hub-going, hub-notgoing,
+        # hub-guest-contributor, hub-waitlist, and a CHILD chat's going
+        # participant shown via the master's own cross-reference section.
+        db.track_user("-100", "alice",   "active", user_id="1", first_name="Alice",   last_name="A")
+        db.track_user("-100", "bob",     "active", user_id="2", first_name="Bob",     last_name="B")
+        db.track_user("-100", "carol",   "active", user_id="3", first_name="Carol",   last_name="C")
+        db.track_user("-200", "dave",    "active", user_id="4", first_name="Dave",    last_name="D")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data,
+               waitlist_data, waitlist_open, waitlist_visibility, clickability)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'["alice (1)"]','["bob (2)"]','{"carol":2}','[]',
+               '[{"chat_id":"-100","user_id":"3","username":"carol","first_name":"Carol","last_name":"C",
+               "timestamp":"2026-01-01 00:00:00"}]',1,'visible','on')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','group')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-200','4','dave','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Child Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        master_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        text = master_call.kwargs["text"]
+
+        assert "[Alice A](tg://user?id=1)" in text, "hub going entry must be clickable"
+        assert "[Bob B](tg://user?id=2)" in text, "hub not-going entry must be clickable"
+        assert "[Carol C](tg://user?id=3)" in text, "hub waitlist entry must be clickable"
+        assert "[Dave D](tg://user?id=4)" in text, "child chat's cross-referenced going entry must ALSO be clickable"
+
+    async def test_master_clc_off_makes_every_section_plain(self, db_path):
+        """The inverse - clc=off must remove links from every one of
+        the same sections, not just some of them."""
+        db.track_user("-100", "alice", "active", user_id="1", first_name="Alice", last_name="A")
+        db.track_user("-200", "dave",  "active", user_id="4", first_name="Dave",  last_name="D")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, clickability)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'["alice (1)"]','[]','{}','[]','off')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','group')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-200','4','dave','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Child Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        master_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        text = master_call.kwargs["text"]
+
+        assert "tg://user?id=" not in text, "clc=off must produce zero clickable links anywhere in the master post"
+        assert "Alice A" in text and "Dave D" in text, "names must still be shown, just as plain text"
+
+    async def test_child_own_post_every_section_is_clickable(self, db_path):
+        """The child chat's OWN separate post (not the master's
+        cross-reference) must also be fully clickable when its
+        effective clickability (inherited from the event, since no
+        per-share override here) is on."""
+        db.track_user("-200", "eve",   "active", user_id="5", first_name="Eve",   last_name="E")
+        db.track_user("-200", "frank", "active", user_id="6", first_name="Frank", last_name="F")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data, clickability)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,'[]','[]','{}','[]','on')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','group')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-200','5','eve','going',0)"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-200','6','frank','notgoing',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Child Group"))
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        child_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -200)
+        text = child_call.kwargs["text"]
+
+        assert "[Eve E](tg://user?id=5)" in text, "child's own going entry must be clickable"
+        assert "[Frank F](tg://user?id=6)" in text, "child's own not-going entry must be clickable"
+
+
 class TestHelpMentionsClickabilityFlag:
     """Item 3, help update: /help reflects the new -clc/-clickability
     flag across /newevent, /editevent, and /shareevent."""
@@ -9409,6 +9654,15 @@ class TestOwnerHelpMentionsLockbotAndDmOnly:
     def test_dm_only_requirement_is_mentioned(self):
         text = help_system._build_owner_help_text()
         assert "only work from a dm" in text.lower()
+
+    def test_lockbot_describes_current_notification_and_voting_exemption(self):
+        """Item 4 (help audit): the old wording said the bot 'ignores'
+        non-owners while locked, which is stale - it now sends an
+        explicit notice, and Going/Not Going/ADD/Drop/ALL still work
+        for everyone on an already-posted event."""
+        text = help_system._build_owner_help_text()
+        assert "explicit notice, not silence" in text
+        assert "Going/Not Going/ADD/Drop/ALL" in text
 
 
 class TestSetsheetHelpMarkedDmOnly:
