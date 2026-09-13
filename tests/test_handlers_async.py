@@ -4863,6 +4863,162 @@ class TestEventCreatorCanClose:
         assert row == (0,)
 
 
+class TestAnonymousAdminButtonClicksAcrossChatTypes:
+    """Verifies an anonymous admin (GROUP_ANONYMOUS_BOT_ID as the
+    clicking user's id) is correctly recognized as admin across every
+    realistic chat-type/location combination this bot supports: the
+    hub is always a group (by this bot's own architecture - channels
+    have no sheet_id/subscription fields, so they're never hubs), but
+    a shared/monitored CHILD chat can be either a group or a channel.
+    Covers: group hub verification action, group child verification
+    action, and channel child verification action.
+
+    Uses correctly-structured mocks (query.message.chat = MagicMock(id=...),
+    not just the flat chat_id attribute the older _make_fake_button_query
+    helper sets) - is_real_admin's own admin check reads
+    query.message.chat.id specifically, and on a bare MagicMock these
+    are two independent, unrelated attributes unless both are set."""
+
+    def _make_query(self, callback_data, chat_id, user_id):
+        query = MagicMock()
+        query.data = callback_data
+        query.message = MagicMock()
+        query.message.chat_id = chat_id
+        query.message.chat = MagicMock(id=chat_id)
+        query.from_user = MagicMock()
+        query.from_user.id = user_id
+        query.from_user.username = "anonadmin"
+        query.from_user.first_name = "Anon"
+        query.from_user.last_name = None
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        return query
+
+    def _make_ctx(self):
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.send_message = AsyncMock()
+        ctx.bot.edit_message_text = AsyncMock()
+        # get_chat_member must NEVER be reached for GROUP_ANONYMOUS_BOT_ID -
+        # forcing a rejection here would prove the anonymous-id short
+        # circuit didn't actually fire.
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="left"))
+        ctx.application = MagicMock()
+        ctx.application.chat_data = {}
+
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        return ctx
+
+    async def test_anonymous_admin_verification_action_in_group_hub(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-100','1','alice','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        query = self._make_query("kick_ev1:alice", -100, 1087968824)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = self._make_ctx()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn2 = sqlite3.connect(db_path)
+        status = conn2.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='alice'"
+        ).fetchone()[0]
+        assert status == "kicked", "anonymous admin's Kick click must have been accepted"
+
+    async def test_anonymous_admin_verification_action_in_group_child(self, db_path):
+        """Kick/Return for a child-chat participant is rendered on the
+        MASTER's own keyboard (via ch-username cross-reference
+        targeting), not on the child chat's own separate post - so the
+        click comes from the hub's own chat_id, even though the
+        TARGET references a participant tracked under the child chat."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','group')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-200','7','bob','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Click comes from the HUB's own chat_id - the ch-bob target
+        # refers to a child-chat participant, but the button itself
+        # lives on the master's own verification message.
+        query = self._make_query("kick_ev1:ch-bob", -100, 1087968824)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = self._make_ctx()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn2 = sqlite3.connect(db_path)
+        status = conn2.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-200' AND username='bob'"
+        ).fetchone()[0]
+        assert status == "kicked", "anonymous admin's Kick click on a GROUP child chat must have been accepted"
+
+    async def test_anonymous_admin_verification_action_in_channel_child(self, db_path):
+        """Same as above, but the child is a CHANNEL, not a group -
+        is_real_admin doesn't branch on chat type, so this must behave
+        identically to the group-child case."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-300','9','-visible','channel')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-300','8','carol','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        query = self._make_query("kick_ev1:ch-carol", -100, 1087968824)
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = self._make_ctx()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn2 = sqlite3.connect(db_path)
+        status = conn2.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-300' AND username='carol'"
+        ).fetchone()[0]
+        assert status == "kicked", "anonymous admin's Kick click on a CHANNEL child chat must have been accepted"
+
+
 class TestAddGuestGoesToWaitlist:
     """Add Guest at capacity creates a real waitlist entry (is_guest=True)
     for the clicking person, instead of just being blocked - each click
@@ -7579,6 +7735,7 @@ class TestVerificationModeShowsRealNames:
         ctx.bot = bot
         ctx.application = MagicMock()
         ctx.application.create_task = MagicMock()
+        ctx.application.chat_data = {}
 
         with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
             await event_engine.update_all_shared_views(ctx, "ev1")
@@ -7610,6 +7767,7 @@ class TestVerificationModeShowsRealNames:
         ctx.bot = bot
         ctx.application = MagicMock()
         ctx.application.create_task = MagicMock()
+        ctx.application.chat_data = {}
 
         with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
             await event_engine.update_all_shared_views(ctx, "ev1")
@@ -7638,6 +7796,7 @@ class TestVerificationModeShowsRealNames:
         ctx.bot = bot
         ctx.application = MagicMock()
         ctx.application.create_task = MagicMock()
+        ctx.application.chat_data = {}
 
         with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
             await event_engine.update_all_shared_views(ctx, "ev1")
@@ -7646,6 +7805,94 @@ class TestVerificationModeShowsRealNames:
         kb = master_call.kwargs["reply_markup"]
         button_texts = [b.text for row in kb.inline_keyboard for b in row]
         assert any("ghostuser" in t for t in button_texts)
+
+
+class TestVerificationPageNavigation:
+    """Integration test for the vpage action - clicking Next stores the
+    new page in context.application.chat_data (read back by
+    update_all_shared_views on re-render) and preserves it across
+    subsequent Kick/Guest actions, rather than resetting to page 0
+    every time."""
+
+    async def test_clicking_next_stores_page_and_rerenders_with_it(self, db_path):
+        going_list = [f"person{i} ({i})" for i in range(30)]
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,?,'[]','{}','[]')""",
+            (json.dumps(going_list),),
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin = make_user(user_id=1)
+
+        query = MagicMock()
+        query.data = "vpage_ev1:1"
+        query.message = MagicMock()
+        query.message.chat_id = -100
+        query.message.message_id = 1
+        query.from_user = admin
+        query.answer = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = chat
+        ctx = make_context(bot=bot)
+
+        with patch("event_engine.is_real_admin", new_callable=AsyncMock, return_value=True), \
+             patch("event_engine.schedule_view_refresh", new_callable=AsyncMock) as mock_refresh:
+            await event_engine.button_handler(upd, ctx)
+
+        assert ctx.application.chat_data[-100]["verif_page_ev1"] == 1
+        assert ctx.application.create_task.called, "must schedule a re-render after changing the page"
+        mock_refresh.assert_called_once_with(ctx, "ev1")
+
+        # Confirm event_status was NOT touched by pure navigation
+        conn2 = sqlite3.connect(db_path)
+        status = conn2.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert status == 1
+
+    async def test_page_persists_across_a_subsequent_kick_action(self, db_path):
+        """Once on page 1, kicking someone must NOT silently reset the
+        admin back to page 0."""
+        going_list = [f"person{i} ({i})" for i in range(30)]
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,?,'[]','{}','[]')""",
+            (json.dumps(going_list),),
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin = make_user(user_id=1)
+        ctx = make_context(bot=bot)
+        ctx.application.chat_data[-100] = {"verif_page_ev1": 1}
+
+        query = MagicMock()
+        query.data = "kick_ev1:person16"
+        query.message = MagicMock()
+        query.message.chat_id = -100
+        query.message.message_id = 1
+        query.from_user = admin
+        query.answer = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = chat
+
+        with patch("event_engine.is_real_admin", new_callable=AsyncMock, return_value=True), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock) as mock_render:
+            await event_engine.button_handler(upd, ctx)
+
+        assert ctx.application.chat_data[-100]["verif_page_ev1"] == 1, "page must remain 1 after an unrelated kick action"
 
 
 class TestHelpReflectsClickabilityGating:

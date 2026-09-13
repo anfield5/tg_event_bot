@@ -98,6 +98,7 @@ def make_context(bot=None, args=None, user_data=None):
     ctx.args                     = args or []
     ctx.user_data                = user_data if user_data is not None else {}
     ctx.application              = MagicMock()
+    ctx.application.chat_data    = {}  # real dict - PTB's own per-chat memory store
 
     def _discard_task(coro):
         # Background tasks (schedule_view_refresh / update_all_shared_views)

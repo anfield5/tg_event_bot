@@ -319,7 +319,7 @@ def init_db(db_path: str = DB_PATH):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS events (
             event_id TEXT PRIMARY KEY,
-            chat_id TEXT,
+            chat_id TEXT NOT NULL,
             message_id TEXT,
             name TEXT,
             going_icon TEXT,
@@ -761,6 +761,56 @@ def init_db(db_path: str = DB_PATH):
             FROM events_legacy
         """)
         cursor.execute("DROP TABLE events_legacy")
+
+    # -3. events: add NOT NULL to chat_id - the application code always
+    # provides it (the only INSERT point, always via resolve_hub_chat_id),
+    # this just makes the schema enforce what the app already guarantees.
+    # Any pre-existing row that somehow has a NULL chat_id is dropped
+    # during the rebuild (orphaned data with no valid parent chat, not
+    # usable regardless) rather than failing the whole migration - this
+    # should never actually happen in practice.
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'")
+    _events_row = cursor.fetchone()
+    if _events_row and "chat_id TEXT," in (_events_row[0] or ""):
+        cursor.execute("ALTER TABLE events RENAME TO events_old")
+        cursor.execute("""
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY,
+                chat_id TEXT NOT NULL,
+                message_id TEXT,
+                name TEXT,
+                going_icon TEXT,
+                notgoing_icon TEXT,
+                event_status INTEGER DEFAULT 0,
+                going_data TEXT,
+                notgoing_data TEXT,
+                counters_data TEXT,
+                event_date TEXT DEFAULT NULL,
+                kicked_data TEXT DEFAULT '[]',
+                feature_snapshot TEXT DEFAULT NULL,
+                total_limit INTEGER DEFAULT NULL,
+                waitlist_data TEXT DEFAULT '[]',
+                waitlist_open INTEGER DEFAULT 0,
+                waitlist_visibility TEXT DEFAULT 'hidden',
+                notgoing_visibility TEXT DEFAULT 'visible',
+                clickability TEXT DEFAULT 'on',
+                created_by_user_id TEXT DEFAULT NULL
+            )
+        """)
+        cursor.execute("PRAGMA table_info(events_old)")
+        _old_event_cols = [c[1] for c in cursor.fetchall()]
+        _common_cols = [c for c in _old_event_cols if c in {
+            "event_id", "chat_id", "message_id", "name", "going_icon", "notgoing_icon",
+            "event_status", "going_data", "notgoing_data", "counters_data", "event_date",
+            "kicked_data", "feature_snapshot", "total_limit", "waitlist_data", "waitlist_open",
+            "waitlist_visibility", "notgoing_visibility", "clickability", "created_by_user_id",
+        }]
+        _cols_sql = ", ".join(_common_cols)
+        cursor.execute(f"""
+            INSERT INTO events ({_cols_sql})
+            SELECT {_cols_sql} FROM events_old WHERE chat_id IS NOT NULL
+        """)
+        cursor.execute("DROP TABLE events_old")
 
     # 4. Rename legacy status value 'frozen' → 'passive'
     cursor.execute("UPDATE main_group_users SET status = 'passive' WHERE status = 'frozen'")

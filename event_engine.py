@@ -608,6 +608,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     is_full = total_limit is not None and global_total >= total_limit
 
+    verification_page = context.application.chat_data.get(int(main_chat_id), {}).get(f"verif_page_{event_id}", 0)
+
     master_keyboard = create_event_keyboard(
         event_id, event_status, going_icon, notgoing_icon,
         master_going, master_counters,
@@ -618,6 +620,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         add_extra_member_enabled=add_extra_member_enabled,
         is_full=is_full,
         display_names=display_names,
+        verification_page=verification_page,
     )
 
     try:
@@ -1302,6 +1305,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # ── Master verification (event_status == 1) ───────────────────
                 elif event_status == 1:
+                    if action == "vpage":
+                        try:
+                            new_page = int(target_username) if target_username is not None else 0
+                        except ValueError:
+                            new_page = 0
+                        context.application.chat_data.setdefault(int(main_chat_id), {})[f"verif_page_{event_id}"] = new_page
+                        context.application.create_task(schedule_view_refresh(context, event_id))
+                        return
+
                     if action == "addext":
                         if not add_extra_member_enabled:
                             return

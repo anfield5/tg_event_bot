@@ -7,7 +7,7 @@ or fixtures are needed — just call and assert.
 
 import re
 import pytest
-from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS, require_dm_only, COMMAND_DESTINATION_TYPE, get_admin_contact, require_owner, GROUP_ANONYMOUS_BOT_ID
+from utils import escape_markdown, now2ddmmyy, parse_event_date, DATE_FORMATS, require_dm_only, COMMAND_DESTINATION_TYPE, get_admin_contact, require_owner, GROUP_ANONYMOUS_BOT_ID, is_real_admin
 
 
 # ---------------------------------------------------------------------------
@@ -327,3 +327,115 @@ class TestRequireOwner:
 
         assert result is False
         update.message.reply_text.assert_awaited_once()
+
+
+class TestIsRealAdmin:
+    """Direct unit tests for is_real_admin() - previously had zero
+    direct tests despite its detailed docstring specifically about
+    anonymous-admin detection. Verified explicitly for BOTH group and
+    channel chat_ids, since the function is generic (doesn't branch on
+    chat type at all) - confirming the SAME logic applies uniformly
+    regardless of whether chat_id refers to a group or a channel.
+
+    Context: Telegram reveals a clicking user's REAL user_id on button
+    presses even when they have "Remain Anonymous" on for message
+    posting (confirmed via https://github.com/tdlib/telegram-bot-api/
+    issues/667 - "X presses a key. [Bot gets the user's real user.id
+    eg. 5596148289 and not 1087968824]") - so the GROUP_ANONYMOUS_BOT_ID
+    special-case here is primarily a safety net for MESSAGE-based
+    (command) interactions, not something button clicks typically hit
+    at all. Tested regardless, since the function must still behave
+    correctly if it ever did.
+    """
+
+    @pytest.mark.asyncio
+    async def test_group_anonymous_bot_id_grants_access_in_a_group_chat(self):
+        from unittest.mock import MagicMock
+        bot = MagicMock()
+        user = MagicMock()
+        user.id = GROUP_ANONYMOUS_BOT_ID
+        result = await is_real_admin(bot, "-100123", user)
+        assert result is True
+        bot.get_chat_member.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_anonymous_bot_id_grants_access_in_a_channel_chat(self):
+        """Same pseudo-id, but chat_id is a channel - the function
+        doesn't branch on chat type, so this must behave identically."""
+        from unittest.mock import MagicMock
+        bot = MagicMock()
+        user = MagicMock()
+        user.id = GROUP_ANONYMOUS_BOT_ID
+        result = await is_real_admin(bot, "-1001234567890", user)  # channel-style id
+        assert result is True
+        bot.get_chat_member.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sender_chat_grants_access_in_a_group(self):
+        from unittest.mock import MagicMock
+        bot = MagicMock()
+        user = MagicMock()
+        user.id = 42
+        message = MagicMock()
+        message.sender_chat = MagicMock()
+        result = await is_real_admin(bot, "-100123", user, message=message)
+        assert result is True
+        bot.get_chat_member.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sender_chat_grants_access_in_a_channel(self):
+        """A channel post is, by default, always attributed to the
+        channel itself (sender_chat set) - this must be recognized the
+        same way as a group's anonymous-admin sender_chat case."""
+        from unittest.mock import MagicMock
+        bot = MagicMock()
+        user = MagicMock()
+        user.id = 42
+        message = MagicMock()
+        message.sender_chat = MagicMock()
+        result = await is_real_admin(bot, "-1001234567890", user, message=message)
+        assert result is True
+        bot.get_chat_member.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_real_admin_in_a_group_via_get_chat_member(self):
+        from unittest.mock import MagicMock, AsyncMock
+        bot = MagicMock()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        user = MagicMock()
+        user.id = 42
+        result = await is_real_admin(bot, "-100123", user)
+        assert result is True
+        bot.get_chat_member.assert_awaited_once_with("-100123", 42)
+
+    @pytest.mark.asyncio
+    async def test_real_admin_in_a_channel_via_get_chat_member(self):
+        from unittest.mock import MagicMock, AsyncMock
+        bot = MagicMock()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="creator"))
+        user = MagicMock()
+        user.id = 42
+        result = await is_real_admin(bot, "-1001234567890", user)
+        assert result is True
+        bot.get_chat_member.assert_awaited_once_with("-1001234567890", 42)
+
+    @pytest.mark.asyncio
+    async def test_real_non_admin_is_rejected(self):
+        from unittest.mock import MagicMock, AsyncMock
+        bot = MagicMock()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        user = MagicMock()
+        user.id = 42
+        result = await is_real_admin(bot, "-100123", user)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_get_chat_member_exception_defaults_to_false(self):
+        """An API error must never be silently treated as admin access."""
+        from unittest.mock import MagicMock, AsyncMock
+        bot = MagicMock()
+        bot.get_chat_member = AsyncMock(side_effect=Exception("network error"))
+        user = MagicMock()
+        user.id = 42
+        result = await is_real_admin(bot, "-100123", user)
+        assert result is False

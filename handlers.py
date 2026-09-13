@@ -1759,42 +1759,58 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT 1 FROM events WHERE event_id = ?", (event_id,))
-                if cursor.fetchone() is None:
+                cursor.execute("SELECT chat_id FROM events WHERE event_id = ?", (event_id,))
+                event_row = cursor.fetchone()
+                if event_row is None:
                     return
+                hub_chat_id = event_row[0]
 
-                ensure_event_migrated(cursor, event_id, chat_id)
+                ensure_event_migrated(cursor, event_id, hub_chat_id)
+
+                # Search every chat relevant to this event (the hub itself,
+                # plus every child chat it's been shared to) for a real,
+                # resolved user_id for this username - not just wherever the
+                # admin happens to be typing from. The target person is very
+                # often a member of a monitored/shared CHILD chat only,
+                # never the hub itself - using the admin's own chat_id
+                # blindly here previously caused a fake, duplicate
+                # event_users row (keyed under the wrong chat_id) instead of
+                # correctly attaching the guest to the person's real,
+                # existing membership.
+                cursor.execute("SELECT chat_id FROM event_shares WHERE event_id = ?", (event_id,))
+                candidate_chat_ids = [hub_chat_id] + [r[0] for r in cursor.fetchall()]
+
+                resolved_chat_id = None
+                user_id = None
+                for candidate_chat_id in candidate_chat_ids:
+                    cursor.execute(
+                        "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
+                        (candidate_chat_id, target_username),
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        resolved_chat_id = candidate_chat_id
+                        user_id = row[0]
+                        break
+
+                if resolved_chat_id is None:
+                    # Not tracked in any chat relevant to this event - fall
+                    # back to the admin's own chat_id (previous behavior),
+                    # using the raw username as a fallback identifying key
+                    # since there's no real id to attach this to anywhere.
+                    resolved_chat_id = chat_id
+                    user_id = target_username
 
                 cursor.execute(
                     "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND username = ?",
-                    (event_id, chat_id, target_username),
+                    (event_id, resolved_chat_id, target_username),
                 )
                 existing = cursor.fetchone()
                 if not existing or existing[0] != "going":
-                    # Resolve the real Telegram user_id via main_group_users (the
-                    # /listusers table) - this is the only reliable source we have,
-                    # since Telegram's getChatMember requires a numeric user_id and
-                    # has no "look up by username" mode to fall back on.
-                    cursor.execute(
-                        "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
-                        (chat_id, target_username),
-                    )
-                    user_row = cursor.fetchone()
-                    user_id = user_row[0] if user_row and user_row[0] else None
-
-                    if not user_id:
-                        # No known id for this username - fall back to using
-                        # the username itself as the identifying key, same
-                        # precedent as the Save & Close export's own
-                        # unresolvable-entry fallback. _mention_link already
-                        # renders a non-numeric "user_id" as plain text, so
-                        # this displays correctly without a real Telegram id.
-                        user_id = target_username
-
                     existing_guests = existing[1] if existing else 0
                     cursor.execute(
                         "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
-                        (event_id, chat_id, user_id, target_username, existing_guests if existing else 0),
+                        (event_id, resolved_chat_id, user_id, target_username, existing_guests if existing else 0),
                     )
 
                 conn.commit()

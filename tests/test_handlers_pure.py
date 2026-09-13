@@ -488,6 +488,167 @@ class TestCreateEventKeyboardFeatureSnapshot:
         assert any("Add Extra Member" in b.text for b in flat)
 
 
+class TestVerificationKeyboardPagination:
+    """Real bug found and fixed: each verification-mode participant
+    renders as 2 rows / 5 buttons. With enough participants, the total
+    button count exceeds Telegram's practical ~100-button-per-keyboard
+    limit, causing Telegram to silently reject every re-render
+    (Kick/Guest/Add Extra Member/Save & Close all stop visibly working,
+    though the underlying data is untouched) - reported incident: an
+    event with 21 going participants (105+ buttons) got permanently
+    stuck in verification mode. Fixed via pagination: 15 people/page
+    keeps every page comfortably under the limit regardless of total
+    roster size, with Prev/Next navigation to cycle through pages."""
+
+    EVENT_ID   = "ev1"
+    GOING_ICON = "👍"
+    NOT_GOING_ICON = "❌"
+
+    def _total_buttons(self, kb):
+        return sum(len(row) for row in kb.inline_keyboard)
+
+    def test_page_size_is_exactly_10(self):
+        """Explicit pin, per request - 11 people must split into 2
+        pages (10 + 1), not fit on one page."""
+        from keyboard import VERIFICATION_PAGE_SIZE
+        assert VERIFICATION_PAGE_SIZE == 10
+
+        # Zero-padded so alphabetical sort (which the code uses) matches
+        # numeric order - avoids "person10" sorting before "person2".
+        going_list = [f"person{i:02d} ({i})" for i in range(11)]
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            verification_page=0,
+        )
+        flat = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("Next" in t for t in flat), "11 people must not fit on a single page of 10"
+        joined = " ".join(flat)
+        assert "person09" in joined   # 10th person (index 9) still on page 0
+        assert "person10" not in joined  # 11th person (index 10) pushed to page 1
+
+    def test_21_participants_the_exact_reported_incident_stays_under_limit(self):
+        going_list = [f"person{i} ({i})" for i in range(21)]
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+        )
+        assert self._total_buttons(kb) < 100
+
+    def test_1000_participants_stays_under_limit_on_every_page(self):
+        going_list = [f"person{i} ({i})" for i in range(1000)]
+        total_pages = (1000 + 14) // 15
+        for page in (0, 1, total_pages // 2, total_pages - 1):
+            kb = create_event_keyboard(
+                self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+                going_list=going_list, counters={}, kicked_users=set(),
+                verification_page=page,
+            )
+            assert self._total_buttons(kb) < 100, f"page {page} exceeded the limit"
+
+    def test_small_roster_has_no_navigation_row(self):
+        """Under one page's worth of people - no Prev/Next clutter."""
+        going_list = [f"person{i} ({i})" for i in range(5)]
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+        )
+        flat = [b.text for row in kb.inline_keyboard for b in row]
+        assert not any("Prev" in t or "Next" in t for t in flat)
+
+    def test_first_page_has_next_but_not_prev(self):
+        going_list = [f"person{i} ({i})" for i in range(30)]
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            verification_page=0,
+        )
+        flat = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("Next" in t for t in flat)
+        assert not any("Prev" in t for t in flat)
+
+    def test_last_page_has_prev_but_not_next(self):
+        going_list = [f"person{i} ({i})" for i in range(20)]
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            verification_page=1,  # 20 people / 10 per page = exactly 2 pages
+        )
+        flat = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("Prev" in t for t in flat)
+        assert not any("Next" in t for t in flat)
+
+    def test_middle_page_has_both_prev_and_next(self):
+        going_list = [f"person{i} ({i})" for i in range(50)]  # 5 pages
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            verification_page=1,
+        )
+        flat = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("Prev" in t for t in flat)
+        assert any("Next" in t for t in flat)
+
+    def test_page_content_is_actually_different_across_pages(self):
+        going_list = [f"person{i} ({i})" for i in range(30)]
+        kb_page0 = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            verification_page=0,
+        )
+        kb_page1 = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            verification_page=1,
+        )
+        names_page0 = {b.text for row in kb_page0.inline_keyboard for b in row}
+        names_page1 = {b.text for row in kb_page1.inline_keyboard for b in row}
+        assert names_page0 != names_page1
+        assert "person0" in " ".join(names_page0)
+        assert "person0" not in " ".join(names_page1)
+
+    def test_out_of_range_page_clamps_to_last_valid_page(self):
+        """Kicking people can shrink the roster below the admin's
+        current page - must clamp rather than showing an empty page
+        or crashing."""
+        going_list = [f"person{i} ({i})" for i in range(20)]  # 2 pages
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            verification_page=99,
+        )
+        assert self._total_buttons(kb) > 0, "must clamp to a valid page, not render empty"
+
+    def test_add_extra_member_and_save_close_visible_on_every_page(self):
+        going_list = [f"person{i} ({i})" for i in range(30)]
+        for page in (0, 1):
+            kb = create_event_keyboard(
+                self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+                going_list=going_list, counters={}, kicked_users=set(),
+                add_extra_member_enabled=True,
+                verification_page=page,
+            )
+            flat = [b.text for row in kb.inline_keyboard for b in row]
+            assert any("Add Extra Member" in t for t in flat), f"missing on page {page}"
+            assert any("Save" in t for t in flat), f"missing on page {page}"
+
+    def test_child_and_master_participants_combine_into_one_paginated_list(self):
+        """Pagination must cap the COMBINED total across master +
+        child chat participants, not paginate each source
+        independently (which wouldn't bound the actual button count)."""
+        going_list = [f"master{i} ({i})" for i in range(10)]
+        child_rows = [(f"child{i}", 0, "going") for i in range(10)]
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICON,
+            going_list=going_list, counters={}, kicked_users=set(),
+            child_users_rows=child_rows,
+            verification_page=0,
+        )
+        flat = [b.text for row in kb.inline_keyboard for b in row]
+        # 20 combined people, 15/page -> page 0 shows exactly 15, spanning both sources
+        assert any("Next" in t for t in flat)
+
+
 class TestParseShareeventArgs:
     """Refactor: extracted from shareevent()'s own body (previously
     inline, matching parse_event_args' established pattern for

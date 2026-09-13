@@ -15,6 +15,17 @@ from config import (
     ICON_CANCEL_EVENT, ICON_SAVE,
 )
 
+# Each verification-mode participant renders as 2 rows / 5 buttons (name+Kick,
+# guest-count+minus+plus). Telegram's own practical limit is ~100 buttons per
+# keyboard - real incident: an event with 21+ going participants (105+
+# buttons, before even counting Add Extra Member/Save&Close) silently failed
+# to re-render on every Kick/Guest/Add-Extra-Member action, since Telegram
+# rejects the oversized edit_message_text call. 10 people/page keeps every
+# page comfortably under the limit (10*5=50 + ~6 for controls = 56) with
+# generous margin, however many total participants there are - Prev/Next
+# lets an admin cycle through unlimited pages.
+VERIFICATION_PAGE_SIZE = 10
+
 
 def create_event_keyboard(
     event_id: str,
@@ -30,6 +41,7 @@ def create_event_keyboard(
     add_extra_member_enabled: bool = True,
     is_full: bool = False,
     display_names: dict = None,
+    verification_page: int = 0,
 ) -> InlineKeyboardMarkup:
     """
     Generates dynamic inline keyboards.
@@ -108,65 +120,61 @@ def create_event_keyboard(
         going_usernames     = {entry.split(" (")[0] for entry in going_list}
         all_relevant_users  = going_usernames | kicked_users | set(counters.keys())
 
+        # Build ONE unified list of (icon, display, action_target, guest_count,
+        # has_membership_row) entries across BOTH master and child chat
+        # participants, THEN slice by page - this is what makes pagination
+        # actually cap the button count, rather than paginating each source
+        # independently (which wouldn't bound the combined total).
+        entries = []
         for username in sorted(all_relevant_users):
             guest_count = counters.get(username, 0)
             is_going    = username in going_usernames
             is_kicked   = username in kicked_users
             display     = display_names.get(username, username)
+            if not is_going and not is_kicked and guest_count <= 0:
+                continue
+            entries.append((ICON_PERSON, display, username, guest_count, is_going, is_kicked))
 
-            if is_going:
-                buttons.append([
-                    InlineKeyboardButton(f"{ICON_PERSON} {display}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_KICK} Kick",          callback_data=f"kick_{event_id}:{username}"),
-                ])
-            elif is_kicked:
-                buttons.append([
-                    InlineKeyboardButton(f"{ICON_PERSON} {display}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_RETURN} Return",      callback_data=f"return_{event_id}:{username}"),
-                ])
-            else:
-                # Guest-only contributor - never declared Going and was
-                # never Kicked either, so there's no "membership" here for
-                # an admin to Kick/Return - only the guest count row shows.
-                if guest_count <= 0:
-                    continue
-
-            # Row B: guest count + ➖ + ➕ (➖ before ➕; these glyphs render
-            # orange by default in most emoji fonts - see docstring above)
-            # Show "2G from username" format for clarity
-            guest_label = f"{guest_count}G: {display}" if guest_count > 0 else "0G"
-            buttons.append([
-                InlineKeyboardButton(guest_label,  callback_data="noop"),
-                InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:{username}"),
-                InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:{username}"),
-            ])
-
-        # ── Child-chat participants ────────────────────────────────────────
         for ch_username, ch_guests, ch_status in child_users_rows:
             is_going    = ch_status == "going"
             is_kicked   = ch_status == "kicked"
             ch_display  = display_names.get(ch_username, ch_username)
+            if not is_going and not is_kicked and ch_guests <= 0:
+                continue
+            entries.append((ICON_CHANNEL_PERSON, ch_display, f"ch-{ch_username}", ch_guests, is_going, is_kicked))
 
+        total_pages = max(1, (len(entries) + VERIFICATION_PAGE_SIZE - 1) // VERIFICATION_PAGE_SIZE)
+        page = max(0, min(verification_page, total_pages - 1))
+        page_entries = entries[page * VERIFICATION_PAGE_SIZE:(page + 1) * VERIFICATION_PAGE_SIZE]
+
+        for icon, display, target, guest_count, is_going, is_kicked in page_entries:
             if is_going:
                 buttons.append([
-                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_display}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_KICK} Kick",                     callback_data=f"kick_{event_id}:ch-{ch_username}"),
+                    InlineKeyboardButton(f"{icon} {display}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_KICK} Kick",   callback_data=f"kick_{event_id}:{target}"),
                 ])
             elif is_kicked:
                 buttons.append([
-                    InlineKeyboardButton(f"{ICON_CHANNEL_PERSON} {ch_display}", callback_data="noop"),
-                    InlineKeyboardButton(f"{ICON_RETURN} Return",                 callback_data=f"return_{event_id}:ch-{ch_username}"),
+                    InlineKeyboardButton(f"{icon} {display}", callback_data="noop"),
+                    InlineKeyboardButton(f"{ICON_RETURN} Return", callback_data=f"return_{event_id}:{target}"),
                 ])
-            else:
-                if ch_guests <= 0:
-                    continue
-
-            guest_label = f"{ch_guests}G: {ch_display}" if ch_guests > 0 else "0G"
+            # Row B: guest count + ➖ + ➕ (➖ before ➕; these glyphs render
+            # orange by default in most emoji fonts - see docstring above)
+            guest_label = f"{guest_count}G: {display}" if guest_count > 0 else "0G"
             buttons.append([
-                InlineKeyboardButton(guest_label,  callback_data="noop"),
-                InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:ch-{ch_username}"),
-                InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:ch-{ch_username}"),
+                InlineKeyboardButton(guest_label,      callback_data="noop"),
+                InlineKeyboardButton(ICON_GUEST_MINUS, callback_data=f"decgst_{event_id}:{target}"),
+                InlineKeyboardButton(ICON_GUEST_PLUS,  callback_data=f"incgst_{event_id}:{target}"),
             ])
+
+        if total_pages > 1:
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"vpage_{event_id}:{page - 1}"))
+            nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+            if page < total_pages - 1:
+                nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"vpage_{event_id}:{page + 1}"))
+            buttons.append(nav_row)
 
         if add_extra_member_enabled:
             buttons.append([
