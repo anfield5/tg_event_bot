@@ -337,7 +337,9 @@ def init_db(db_path: str = DB_PATH):
             waitlist_visibility TEXT DEFAULT 'hidden',
             notgoing_visibility TEXT DEFAULT 'visible',
             clickability TEXT DEFAULT 'on',
-            created_by_user_id TEXT DEFAULT NULL
+            created_by_user_id TEXT DEFAULT NULL,
+            created_date TEXT DEFAULT NULL,
+            closed_date TEXT DEFAULT NULL
         )
     """)
 
@@ -542,10 +544,10 @@ def init_db(db_path: str = DB_PATH):
             )
         """)
         if "user_id" in _old_cols:
-            # Modern-enough old schema - has user_id (possibly NULL for
-            # unresolved rows, which get dropped here) and possibly
-            # first_name/last_name too (select as NULL literals if an
-            # even-older row predates those specific columns).
+            # Modern-enough old schema - has user_id (possibly NULL/non-
+            # numeric for unresolved rows, which get dropped here) and
+            # possibly first_name/last_name too (select as NULL literals
+            # if an even-older row predates those specific columns).
             fname_expr = "first_name" if "first_name" in _old_cols else "NULL"
             lname_expr = "last_name" if "last_name" in _old_cols else "NULL"
             cursor.execute(f"""
@@ -554,6 +556,17 @@ def init_db(db_path: str = DB_PATH):
                 WHERE user_id IS NOT NULL AND user_id != ''
             """)
             for chat_id, username, user_id, status, first_name, last_name in cursor.fetchall():
+                # SQLite has no built-in "is this a valid integer" check
+                # usable in a WHERE clause without an extension, so this
+                # validates in Python instead - using the SAME numeric
+                # check _mention_link() itself uses (.lstrip("-").isdigit()),
+                # so a row this migration considers "usable" always matches
+                # what the rendering code considers clickable. A non-null,
+                # non-empty but non-numeric leftover (from code even older
+                # than this session's own work) is just as broken as NULL
+                # for this table's purpose, and is dropped the same way.
+                if not str(user_id).lstrip("-").isdigit():
+                    continue
                 cursor.execute("""
                     INSERT OR REPLACE INTO main_group_users
                         (chat_id, username, user_id, status, first_name, last_name)
@@ -812,6 +825,17 @@ def init_db(db_path: str = DB_PATH):
         """)
         cursor.execute("DROP TABLE events_old")
 
+    # -3a. Add events.created_date/closed_date if still missing - runs
+    # AFTER the chat_id NOT NULL rebuild above, so it always operates on
+    # the already-modern table shape (a nullable ALTER TABLE ADD COLUMN
+    # here is safe and simple, unlike that rebuild's full-table copy).
+    cursor.execute("PRAGMA table_info(events)")
+    events_cols_check = [col[1] for col in cursor.fetchall()]
+    if "created_date" not in events_cols_check:
+        cursor.execute("ALTER TABLE events ADD COLUMN created_date TEXT DEFAULT NULL")
+    if "closed_date" not in events_cols_check:
+        cursor.execute("ALTER TABLE events ADD COLUMN closed_date TEXT DEFAULT NULL")
+
     # 4. Rename legacy status value 'frozen' → 'passive'
     cursor.execute("UPDATE main_group_users SET status = 'passive' WHERE status = 'frozen'")
 
@@ -986,6 +1010,13 @@ def track_user(chat_id: str, username: str, status: str = "active",
     @username, which may not exist at all.
     """
     if not username or not user_id:
+        return
+    if not str(user_id).lstrip("-").isdigit():
+        # Not a real, resolvable Telegram id - same numeric check
+        # _mention_link() uses for clickability. Silently rejecting
+        # here (rather than storing it anyway) prevents ever
+        # persisting a row that main_group_users' whole purpose
+        # (resolving a clickable mention) can't actually use.
         return
     if str(user_id) == str(GROUP_ANONYMOUS_BOT_ID):
         return

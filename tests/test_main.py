@@ -236,6 +236,17 @@ class TestStatsCommandRegistration:
         import_block = source[source.index("from handlers import"):source.index("from subscription import")]
         assert "stats_command" in import_block
 
+    def test_stats_period_callback_handler_registered_before_button_handler(self):
+        """Item 2: the period-switching buttons need their own prefix-
+        matched CallbackQueryHandler, registered before the catch-all
+        button_handler - otherwise statsperiod_ clicks would fall
+        through to event_engine's event-post dispatch instead."""
+        source = open("main.py", encoding="utf-8").read()
+        assert 'CallbackQueryHandler(stats_period_callback_handler, pattern="^statsperiod_")' in source
+        stats_period_pos = source.index('pattern="^statsperiod_"')
+        button_handler_pos = source.index('CallbackQueryHandler(button_handler))')
+        assert stats_period_pos < button_handler_pos
+
 
 class TestOnChatMemberUpdateCapturesRealName:
     """Real gap found: on_chat_member_update (auto-tracking someone

@@ -871,6 +871,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data_changed = False
     event_status = 0
+    closed_date = None  # only set by directclose/cancel/save below; None means "leave the existing DB value untouched"
 
     lock = get_event_lock(event_id)
     async with lock:
@@ -888,7 +889,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     """
                     SELECT chat_id, message_id, name, going_icon, notgoing_icon,
                            event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                           feature_snapshot, total_limit, waitlist_data, created_by_user_id
+                           feature_snapshot, total_limit, waitlist_data, created_by_user_id, created_date
                     FROM events WHERE event_id = ?
                     """,
                     (event_id,),
@@ -899,7 +900,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
                  event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
-                 feature_snapshot_raw, total_limit, waitlist_data_raw, created_by_user_id) = row
+                 feature_snapshot_raw, total_limit, waitlist_data_raw, created_by_user_id, created_date) = row
 
                 # NULL/malformed -> "everything enabled", matching how this
                 # event always behaved before feature_snapshot existed.
@@ -1282,7 +1283,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # more sensitive moderation actions a random creator
                 # shouldn't get unilateral power over.
                 is_creator = created_by_user_id is not None and str(created_by_user_id) == str(user_id)
-                if action in ["close", "directclose", "save"]:
+                if action in ["close", "directclose", "save", "back"]:
                     if not (is_admin or is_creator):
                         try:
                             await query.answer(
@@ -1315,13 +1316,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # members) since that state was never entered.
                         event_status = 2
                         data_changed = True
+                        closed_date = now2ddmmyy()
                     elif action == "cancel":
                         event_status = -1
                         data_changed = True
+                        closed_date = now2ddmmyy()
 
                 # ── Master verification (event_status == 1) ───────────────────
                 elif event_status == 1:
-                    if action == "vpage":
+                    if action == "back":
+                        # Accidentally clicked Verify - revert to open
+                        # without needing to go through Save & Close or
+                        # Cancel. No guest/kick data is touched; anything
+                        # already changed while in verification mode stays
+                        # as-is (kicks, guest edits, extra members added).
+                        event_status = 0
+                        data_changed = True
+
+                    elif action == "vpage":
                         try:
                             new_page = int(target_username) if target_username is not None else 0
                         except ValueError:
@@ -1414,10 +1426,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     elif action == "save":
                         event_status = 2
                         data_changed = True
+                        closed_date = now2ddmmyy()
 
                 cursor.execute(
-                    "UPDATE events SET event_status = ?, waitlist_data = ? WHERE event_id = ?",
-                    (event_status, json.dumps(waitlist), event_id),
+                    "UPDATE events SET event_status = ?, waitlist_data = ?, closed_date = COALESCE(?, closed_date) WHERE event_id = ?",
+                    (event_status, json.dumps(waitlist), closed_date, event_id),
                 )
                 conn.commit()
 
@@ -1500,13 +1513,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     found   = False
                     for idx, r in enumerate(records, start=2):
                         if str(r.get("EVENT_ID")) == str(event_id):
-                            await ws.update(f"F{idx}:H{idx}", [[now2ddmmyy(), "CLOSED", total_going]])
+                            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CLOSED", total_going]])
                             found = True
                             break
                     if not found:
                         await ws.append_row([
-                            event_id, name, now2ddmmyy(), username_raw,
-                            event_date or "", now2ddmmyy(), "CLOSED", total_going,
+                            event_id, name, created_date or "", created_by_user_id or "",
+                            event_date or "", closed_date, "CLOSED", total_going,
                         ])
 
                     # 5. Write all going user_ids to EventUsers sheet
@@ -1531,14 +1544,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for idx, r in enumerate(records, start=2):
                         if str(r.get("EVENT_ID")) == str(event_id):
                             # Update existing row to CANCELED
-                            await ws.update(f"F{idx}:H{idx}", [[now2ddmmyy(), "CANCELED", 0]])
+                            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CANCELED", 0]])
                             found = True
                             break
                     if not found:
                         # Only append if row doesn't exist
                         await ws.append_row([
-                            event_id, name, now2ddmmyy(), username_raw,
-                            event_date or "", now2ddmmyy(), "CANCELED", 0,
+                            event_id, name, created_date or "", created_by_user_id or "",
+                            event_date or "", closed_date, "CANCELED", 0,
                         ])
                     # Intentionally NOT calling sync_event_users_sheet here -
                     # a cancelled event must not write anything to EventUsers.

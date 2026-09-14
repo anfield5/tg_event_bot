@@ -5,6 +5,7 @@ from google.oauth2.service_account import Credentials
 from config import GOOGLE_CREDENTIALS_JSON, CONTROL_SHEET_ID, logger
 from utils import now2ddmmyy
 import sqlite3
+import db
 
 def get_credentials():
     credentials_info = json.loads(GOOGLE_CREDENTIALS_JSON)
@@ -72,7 +73,7 @@ async def get_sheet_for_chat(chat_id):
       - premium, no sheet_id   -> None (nothing configured yet to write to)
       - premium, has sheet_id  -> that sheet_id
     """
-    conn = sqlite3.connect("database.db")
+    conn = sqlite3.connect(db.DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
         "SELECT type, sheet_id, subs_date_end FROM all_groups WHERE chat_id = ?",

@@ -12,6 +12,7 @@ import json
 import sqlite3
 import asyncio
 import pytest
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.helpers import (
@@ -186,6 +187,52 @@ class TestNewevent:
         conn.close()
         assert len(rows) == 1
         assert rows[0][0] == "Party Night"
+
+    async def test_events_sheet_created_by_column_is_numeric_user_id(self, db_path):
+        """Real bug fixed (item 1): the Events sheet's 4th column
+        (Created By) wrote the creator's username, not their numeric
+        user_id as requested. Overrides this class's autouse Sheets
+        patch locally to inspect exactly what got appended."""
+        chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=777, username="thecreator")
+        ctx  = make_context(args=["Party", "Night"])
+        upd  = make_update(chat=chat, user=user)
+        insert_premium(db_path, chat_id="-100123")
+
+        ws = AsyncMock()
+        fake_ss = AsyncMock(worksheet=AsyncMock(return_value=ws))
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await handlers.newevent(upd, ctx)
+
+        appended_row = ws.append_row.call_args.args[0]
+        created_by_value = appended_row[3]  # 4th column (0-indexed position 3)
+        assert created_by_value == "777", f"expected the numeric user_id, got {created_by_value!r}"
+
+    async def test_created_date_written_to_db_first_then_reused_for_sheets(self, db_path):
+        """Item 2: created_date is written to the events table itself
+        (not just the Google Sheet), and the Sheets export uses that
+        SAME value rather than computing a fresh, possibly-drifted
+        timestamp at write time."""
+        chat = make_chat(chat_id=-100123)
+        user = make_user(user_id=777, username="thecreator")
+        ctx  = make_context(args=["Party", "Night"])
+        upd  = make_update(chat=chat, user=user)
+        insert_premium(db_path, chat_id="-100123")
+
+        ws = AsyncMock()
+        fake_ss = AsyncMock(worksheet=AsyncMock(return_value=ws))
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        db_created_date = conn.execute("SELECT created_date FROM events WHERE chat_id='-100123'").fetchone()[0]
+        assert db_created_date is not None, "created_date must be persisted in the DB, not just the Sheet"
+
+        appended_row = ws.append_row.call_args.args[0]
+        sheet_created_date = appended_row[2]  # 3rd column (CREATED_AT)
+        assert sheet_created_date == db_created_date, "the Sheet must reuse the exact value written to the DB"
 
     async def test_sends_message_to_chat(self, db_path):
         chat = make_chat(chat_id=-100123)
@@ -472,6 +519,52 @@ class TestAdduser:
         await handlers.adduser(upd, ctx)
 
         assert "⛔" in msg.reply_text.call_args.args[0]
+
+    async def test_negative_numeric_id_rejected_with_specific_message(self, db_path):
+        """Real bug fixed: a negative "user_id" (e.g. mixed up with a
+        group/channel chat_id, which IS negative) used to pass the
+        numeric check (.lstrip("-").isdigit()) but then get sent
+        AS-IS (still negative) to Telegram's API, which always
+        rejects it - producing a confusing generic error instead of
+        this specific, actionable one. Telegram user ids are never
+        negative, so this is now caught before ever calling Telegram."""
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=["-211500626"])
+
+        await handlers.adduser(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "never negative" in reply
+        assert "211500626" in reply
+        # Must never have attempted the Telegram call with the negative id
+        assert bot.get_chat_member.call_count == 1  # only the requester's own admin check
+
+    async def test_comma_glued_to_first_identifier_is_stripped(self, db_path):
+        """Real bug fixed: "/adduser 555, 556" (comma right after the
+        first number, no space) left "555," as the literal identifier
+        via Telegram's own whitespace-only argument splitting - failing
+        the numeric check entirely (a comma isn't a digit) and silently
+        misclassifying it as a username instead of the number it is."""
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),  # requester admin check
+            MagicMock(status="member", user=make_user(user_id=555, username="bob")),
+            MagicMock(status="member", user=make_user(user_id=556, username="carol")),
+        ])
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=["555,", "556"])
+
+        await handlers.adduser(upd, ctx)
+
+        rows = dict(get_users(db_path))
+        assert rows.get("bob") == "active"
+        assert rows.get("carol") == "active"
 
     async def test_numeric_id_currently_in_chat_is_added(self, db_path):
         bot = make_bot()
@@ -1420,6 +1513,39 @@ class TestRefreshusers:
 
         assert dict(get_users(db_path)).get("carol") == "active"
 
+    async def test_left_status_overridden_by_admin_list_for_anonymous_admins(self, db_path):
+        """Item 3 fix: get_chat_member can incorrectly report an
+        anonymous admin ("Remain Anonymous") as "left" even though
+        they're still a genuine, current administrator - the admin
+        list (get_chat_administrators, confirmed reliable for
+        anonymous admins) must take priority over a conflicting
+        get_chat_member result, not just delete them outright."""
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','dave','444','active')")
+        conn.commit()
+        conn.close()
+
+        dave_user = MagicMock()
+        dave_user.id = 444
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(
+            side_effect=[
+                MagicMock(status="administrator"),  # requester's own admin check
+                MagicMock(status="left"),  # dave - Telegram incorrectly reports departed
+            ]
+        )
+        bot.get_chat_administrators = AsyncMock(return_value=[MagicMock(user=dave_user)])
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot)
+
+        await handlers.refreshusers(upd, ctx)
+
+        rows = dict(get_users(db_path))
+        assert "dave" in rows, "must NOT be removed - the admin list still confirms them as a current admin"
+
     async def test_adds_missing_chat_administrator_as_active(self, db_path):
         """
         New behavior: any chat administrator who isn't tracked yet gets
@@ -1727,6 +1853,43 @@ class TestRefreshusersall:
 
         assert "⛔️" in msg.reply_text.call_args.args[0]
 
+    async def test_left_status_overridden_by_admin_list_for_anonymous_admins(self, db_path):
+        """Item 3 fix, monitored-chat path: same as /refreshusers' own
+        fix - a "left" result from get_chat_member must not remove
+        someone the admin list still confirms as a genuine admin."""
+        insert_premium(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO sub_chats (chat_id, chat_name, is_monitored, owner_chat_id) VALUES ('-200','Downtown',1,'-100123')"
+        )
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-200','eve','555','active')")
+        conn.commit()
+        conn.close()
+
+        eve_user = MagicMock()
+        eve_user.id = 555
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="left"))
+        bot.get_chat_administrators = AsyncMock(return_value=[MagicMock(user=eve_user, user__is_bot=False)])
+        # Ensure the admin's own is_bot attribute reads False, not an
+        # auto-generated truthy MagicMock.
+        bot.get_chat_administrators.return_value[0].user.is_bot = False
+
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        fake_ss = FakeSpreadsheet()
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await handlers.refreshusersall(upd, ctx)
+
+        conn2 = sqlite3.connect(db_path)
+        row = conn2.execute("SELECT username FROM main_group_users WHERE chat_id='-200' AND user_id='555'").fetchone()
+        assert row is not None, "must NOT be removed - the admin list still confirms them as a current admin"
+
     async def test_syncs_each_monitored_group(self, db_path):
         insert_premium(db_path, chat_id="-100123")
         conn = sqlite3.connect(db_path)
@@ -1753,6 +1916,47 @@ class TestRefreshusersall:
         reply = msg.reply_text.call_args.args[0]
         assert "Downtown" in reply
         assert "Synced" in reply
+
+    async def test_shows_progress_and_cleans_up_before_final_report(self, db_path):
+        """Item 2 (Option B): a progress message is sent immediately,
+        edited after each processed chat, then deleted before the
+        final detailed report replaces it."""
+        insert_premium(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO sub_chats (chat_id, chat_name, is_monitored, owner_chat_id) VALUES ('-200','Downtown',1,'-100123')"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+
+        chat = make_chat(chat_id=-100123)
+        msg  = make_message(chat=chat)
+        upd  = make_update(chat=chat, message=msg)
+        ctx  = make_context(bot=bot, args=[])
+
+        progress_msg = MagicMock()
+        progress_msg.edit_text = AsyncMock()
+        progress_msg.delete = AsyncMock()
+        msg.reply_text = AsyncMock(side_effect=[progress_msg, MagicMock()])
+
+        fake_ss = FakeSpreadsheet()
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await handlers.refreshusersall(upd, ctx)
+
+        assert msg.reply_text.call_count == 2, "expected one progress message + one final report"
+        first_call_text = msg.reply_text.call_args_list[0].args[0]
+        assert "0/2" in first_call_text  # hub + 1 monitored child = 2 total
+
+        assert progress_msg.edit_text.await_count == 2  # once per chat processed
+        last_edit_text = progress_msg.edit_text.call_args_list[-1].args[0]
+        assert "2/2" in last_edit_text
+
+        progress_msg.delete.assert_awaited_once()
 
 
 class TestStatusCommand:
@@ -3696,6 +3900,26 @@ class TestRequirePremium:
         assert result is False
         assert "Test Feature" in msg.reply_text.call_args.args[0]
 
+    async def test_works_from_a_callback_query_update(self, db_path):
+        """Real gap fixed: update.message is None on a callback-query-
+        triggered Update in PTB - the message to reply against is
+        update.callback_query.message instead. Needed for /stats'
+        period-switching buttons (and any future button-based premium
+        check) to not crash with AttributeError on a free hub."""
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        query_message = make_message(chat=chat)
+        upd = MagicMock()
+        upd.message = None
+        upd.callback_query = MagicMock(message=query_message)
+        upd.effective_chat = chat
+        upd.effective_user = user
+
+        result = await subscription.require_premium(upd, "Test Feature")
+
+        assert result is False
+        assert "Test Feature" in query_message.reply_text.call_args.args[0]
+
 
 class TestTrackEveryoneMessage:
     """Previously had zero test coverage."""
@@ -4851,6 +5075,52 @@ class TestEventCreatorCanClose:
         conn = sqlite3.connect(db_path)
         row = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()
         assert row != (0,)
+
+    async def test_creator_can_click_back_without_being_admin(self, db_path):
+        """Item 1: "back" (revert an accidental Verify click) carries
+        the same admin-OR-creator permission tier as close/save, since
+        it's the direct inverse of close."""
+        self._insert_event(db_path, created_by="42")
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        await self._click("back", 42, "creator_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()
+        assert row == (0,)
+
+    async def test_random_non_admin_non_creator_cannot_click_back(self, db_path):
+        self._insert_event(db_path, created_by="42")
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        await self._click("back", 99, "random_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()
+        assert row == (1,), "must still be in verification mode - back was correctly blocked"
+
+    async def test_closed_date_is_null_until_save_then_gets_set(self, db_path):
+        """Item 2: closed_date must be NULL for a fresh/open/verifying
+        event, then get set (a real timestamp, in the DB) once the
+        event is actually saved & closed."""
+        self._insert_event(db_path, created_by="42")
+        conn = sqlite3.connect(db_path)
+        before = conn.execute("SELECT closed_date FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert before is None
+
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        still_none = conn.execute("SELECT closed_date FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert still_none is None, "closed_date must stay NULL while merely in verification mode"
+
+        await self._click("save", 42, "creator_person", is_admin_member=False)
+        after = conn.execute("SELECT closed_date FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert after is not None, "closed_date must be set once the event is actually saved & closed"
+
+    async def test_back_does_not_set_closed_date(self, db_path):
+        """Reverting an accidental Verify click isn't a close - must
+        not set closed_date at all."""
+        self._insert_event(db_path, created_by="42")
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        await self._click("back", 42, "creator_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT closed_date FROM events WHERE event_id='ev1'").fetchone()
+        assert row == (None,)
 
     async def test_pre_existing_event_with_null_creator_still_requires_admin(self, db_path):
         """Migration safety: events created before this feature have
@@ -7157,6 +7427,123 @@ class TestStatsCommand:
         assert "Events amount: 0" in text
         assert "Events closed: 0" in text
 
+    async def test_reply_includes_period_keyboard(self, db_path):
+        """Item 2: /stats sends inline period-selection buttons, All
+        Time selected by default."""
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=[])
+
+        await handlers.stats_command(upd, ctx)
+
+        kb = msg.reply_text.call_args.kwargs.get("reply_markup")
+        assert kb is not None
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("✅ All Time" in l for l in labels)
+        assert any(l == "Last Year" for l in labels)
+        assert any(l == "Last 6 Months" for l in labels)
+
+    async def test_period_filtering_excludes_old_events(self, db_path):
+        """Item 2: an event created over a year ago must be excluded
+        from the "1y"/"6m" views but still counted under "all"."""
+        insert_premium(db_path, chat_id="-1")
+        conn = sqlite3.connect(db_path)
+        recent = datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+        old = (datetime.now() - timedelta(days=400)).strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data, created_date) "
+            "VALUES ('ev_recent','-1','1','Recent','👍','❌',0,'[]','[]','{}','[]',?)", (recent,)
+        )
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data, created_date) "
+            "VALUES ('ev_old','-1','2','Old','👍','❌',0,'[]','[]','{}','[]',?)", (old,)
+        )
+        conn.commit()
+
+        all_amount, _, _, _ = handlers._compute_stats("-1", "all")
+        year_amount, _, _, _ = handlers._compute_stats("-1", "1y")
+        sixmo_amount, _, _, _ = handlers._compute_stats("-1", "6m")
+
+        assert all_amount == 2
+        assert year_amount == 1
+        assert sixmo_amount == 1
+
+    async def test_event_with_no_created_date_excluded_from_periods_but_counted_in_all(self, db_path):
+        """A pre-migration event (created_date IS NULL) can't be
+        placed in any specific period, but must still count under
+        "all time"."""
+        insert_premium(db_path, chat_id="-1")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev_nodate','-1','1','NoDate','👍','❌',0,'[]','[]','{}','[]')"
+        )
+        conn.commit()
+
+        all_amount, _, _, _ = handlers._compute_stats("-1", "all")
+        year_amount, _, _, _ = handlers._compute_stats("-1", "1y")
+
+        assert all_amount == 1
+        assert year_amount == 0
+
+    async def test_period_callback_switches_and_rerenders(self, db_path):
+        """Item 2: clicking a period button re-renders the SAME
+        message with the new period's stats and an updated keyboard."""
+        insert_premium(db_path, chat_id="-100")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        query = MagicMock()
+        query.data = "statsperiod_-100:1y"
+        query.message = MagicMock()
+        query.message.chat = MagicMock(type="group")
+        query.message.sender_chat = None
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        admin = make_user(user_id=1)
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = make_chat(chat_id=-100)
+        ctx = make_context(bot=bot)
+
+        await handlers.stats_period_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "Last Year" in text
+        kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("✅ Last Year" in l for l in labels)
+
+    async def test_period_callback_rejects_non_admin(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        query = MagicMock()
+        query.data = "statsperiod_-100:1y"
+        query.message = MagicMock()
+        query.message.chat = MagicMock(type="group")
+        query.message.sender_chat = None
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        non_admin = make_user(user_id=99)
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = non_admin
+        upd.effective_chat = make_chat(chat_id=-100)
+        ctx = make_context(bot=bot)
+
+        await handlers.stats_period_callback_handler(upd, ctx)
+
+        query.edit_message_text.assert_not_called()
+
 
 class TestHelpUpdatedForNewFlagsAndStats:
     """Item 8: /help updated to reflect all the flag redesign from items
@@ -7805,6 +8192,87 @@ class TestVerificationModeShowsRealNames:
         kb = master_call.kwargs["reply_markup"]
         button_texts = [b.text for row in kb.inline_keyboard for b in row]
         assert any("ghostuser" in t for t in button_texts)
+
+
+class TestVerificationBackButton:
+    """The 'Back' button (accidentally clicked Verify) reverts
+    event_status from 1 back to 0, without needing Save & Close or
+    Cancel - already implemented, but had zero direct test coverage."""
+
+    async def test_back_reverts_verification_to_open(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'["alice (1)"]','[]','{}','[]')"""
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin = make_user(user_id=1)
+
+        query = MagicMock()
+        query.data = "back_ev1"
+        query.message = MagicMock()
+        query.message.chat_id = -100
+        query.message.chat = MagicMock(id=-100)
+        query.message.message_id = 1
+        query.from_user = admin
+        query.answer = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = chat
+        ctx = make_context(bot=bot)
+
+        with patch("event_engine.is_real_admin", new_callable=AsyncMock, return_value=True), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn2 = sqlite3.connect(db_path)
+        status = conn2.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert status == 0, "Back must revert to open (0), not stay in verification"
+
+    async def test_back_preserves_kicks_made_while_in_verification(self, db_path):
+        """Anything already changed while in verification mode (kicks,
+        guest edits, extra members) must NOT be undone by Back - only
+        the status itself reverts."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'["alice (1)"]','[]','{}','["bob"]')"""
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        admin = make_user(user_id=1)
+
+        query = MagicMock()
+        query.data = "back_ev1"
+        query.message = MagicMock()
+        query.message.chat_id = -100
+        query.message.chat = MagicMock(id=-100)
+        query.message.message_id = 1
+        query.from_user = admin
+        query.answer = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = chat
+        ctx = make_context(bot=bot)
+
+        with patch("event_engine.is_real_admin", new_callable=AsyncMock, return_value=True), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn2 = sqlite3.connect(db_path)
+        kicked_raw = conn2.execute("SELECT kicked_data FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert "bob" in kicked_raw, "a kick made while in verification must survive going Back to open"
 
 
 class TestVerificationPageNavigation:

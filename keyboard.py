@@ -181,6 +181,7 @@ def create_event_keyboard(
                 InlineKeyboardButton(f"{ICON_ADD} Add Extra Member", callback_data=f"addext_{event_id}"),
             ])
         buttons.append([
+            InlineKeyboardButton("🔙 Back", callback_data=f"back_{event_id}"),
             InlineKeyboardButton(f"{ICON_SAVE} Save & Close Event", callback_data=f"save_{event_id}"),
         ])
 

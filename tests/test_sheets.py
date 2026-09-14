@@ -139,3 +139,127 @@ class TestSyncUsersSheetColumnOrder:
         calls = {c.args[0] for c in ws.update.call_args_list}
         assert "F2" not in calls  # STATUS untouched - already MEMBER
         assert "D2" not in calls  # USER_NAME untouched - unchanged
+
+
+class TestGetSheetForChat:
+    """Direct unit tests for get_sheet_for_chat() - previously had ZERO
+    direct coverage at all, only ever exercised indirectly through
+    handlers.py-level tests that mock it away entirely. Also
+    previously untestable this way at all: the function connected via
+    a hardcoded "database.db" path instead of db.DB_PATH, ignoring the
+    project's standard isolated tmp_path fixture - fixed alongside
+    adding this coverage."""
+
+    async def test_unregistered_chat_returns_none(self, db_path):
+        result = await sheets.get_sheet_for_chat("-999")
+        assert result is None
+
+    async def test_free_tier_returns_none(self, db_path):
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, type) VALUES ('-100', 'FREE')")
+        conn.commit()
+        conn.close()
+
+        result = await sheets.get_sheet_for_chat("-100")
+        assert result is None
+
+    async def test_pro_tier_no_sheet_id_returns_none(self, db_path):
+        import sqlite3
+        from datetime import datetime, timedelta
+        conn = sqlite3.connect(db_path)
+        future = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO all_groups (chat_id, type, subs_date_end) VALUES ('-100', 'PRO', ?)",
+            (future,),
+        )
+        conn.commit()
+        conn.close()
+
+        result = await sheets.get_sheet_for_chat("-100")
+        assert result is None
+
+    async def test_pro_tier_with_sheet_id_and_active_subscription_returns_it(self, db_path):
+        import sqlite3
+        from datetime import datetime, timedelta
+        conn = sqlite3.connect(db_path)
+        future = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO all_groups (chat_id, type, sheet_id, subs_date_end) VALUES ('-100', 'PRO', 'sheet123', ?)",
+            (future,),
+        )
+        conn.commit()
+        conn.close()
+
+        result = await sheets.get_sheet_for_chat("-100")
+        assert result == "sheet123"
+
+    async def test_pro_tier_with_expired_subscription_returns_none(self, db_path):
+        """Even with a sheet_id configured, an expired PRO subscription
+        must be treated as free - no more Sheets writes."""
+        import sqlite3
+        from datetime import datetime, timedelta
+        conn = sqlite3.connect(db_path)
+        past = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO all_groups (chat_id, type, sheet_id, subs_date_end) VALUES ('-100', 'PRO', 'sheet123', ?)",
+            (past,),
+        )
+        conn.commit()
+        conn.close()
+
+        result = await sheets.get_sheet_for_chat("-100")
+        assert result is None
+
+    async def test_pro_tier_with_no_subs_date_end_returns_none(self, db_path):
+        """A PRO row with no subs_date_end at all (never actually
+        activated) must not be treated as an active subscription."""
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO all_groups (chat_id, type, sheet_id) VALUES ('-100', 'PRO', 'sheet123')"
+        )
+        conn.commit()
+        conn.close()
+
+        result = await sheets.get_sheet_for_chat("-100")
+        assert result is None
+
+    async def test_malformed_subs_date_end_returns_none(self, db_path):
+        """A corrupted/unparseable date string must fail safe (no
+        Sheets writes), not raise an unhandled exception."""
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO all_groups (chat_id, type, sheet_id, subs_date_end) VALUES ('-100', 'PRO', 'sheet123', 'not-a-date')"
+        )
+        conn.commit()
+        conn.close()
+
+        result = await sheets.get_sheet_for_chat("-100")
+        assert result is None
+
+    async def test_uses_db_path_not_a_hardcoded_file(self, db_path):
+        """Regression test for the real bug fixed alongside this
+        coverage: get_sheet_for_chat used to hardcode "database.db"
+        instead of db.DB_PATH, meaning it would silently connect to
+        the WRONG file if the bot's working directory ever differed
+        from where the real database.db lives. Confirmed by inserting
+        data via the db_path fixture's own isolated file and getting a
+        correct, non-None result back - if the hardcoded path were
+        still in place, this row would live in a completely different
+        (real) database.db file this test never touches, and the
+        result would incorrectly be None."""
+        import sqlite3
+        from datetime import datetime, timedelta
+        conn = sqlite3.connect(db_path)
+        future = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO all_groups (chat_id, type, sheet_id, subs_date_end) VALUES ('-777', 'PRO', 'isolated_sheet', ?)",
+            (future,),
+        )
+        conn.commit()
+        conn.close()
+
+        result = await sheets.get_sheet_for_chat("-777")
+        assert result == "isolated_sheet"

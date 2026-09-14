@@ -48,6 +48,30 @@ zone are chosen to minimize crossing lines.
 
 ![Database and Google Sheets schema](docs/db_sheets_schema.svg)
 
+> **Recent schema changes not yet reflected in the diagram above** (the
+> SVG is a static, hand-produced artifact with no generation script in
+> this repo, so it can't be mechanically regenerated - `db.py`'s own
+> `init_db()` is the definitive, always-current source of truth):
+> - `main_group_users`' primary key is now `(chat_id, user_id)`, not
+>   `(chat_id, username)` - a Telegram `@username` isn't a permanent
+>   identity (it can change, and a since-abandoned one can be reused by
+>   a completely different person), which caused a real incident where
+>   a still-present admin was incorrectly removed by `/refreshusers`.
+>   `user_id` is `NOT NULL` and must be numeric (both enforced by
+>   `track_user()` and by the migration that re-keys an older table).
+> - `events` gained two new columns: `created_date` and `closed_date`
+>   (both `TEXT`, `now2ddmmyy()`-formatted). Previously these values
+>   were only ever written to the bound Google Sheet, never persisted
+>   in the DB itself. Set once at `/newevent` (`created_date`) and once
+>   at Save&Close/Cancel/Directclose (`closed_date`, via
+>   `COALESCE(?, closed_date)` so unrelated actions like a kick or a
+>   guest-count edit never clear an already-set value). The Sheets
+>   Events tab export reuses these exact persisted values rather than
+>   computing a fresh timestamp at write time.
+> - `bot_lock` - a single-row table backing the `/lockbot` global
+>   emergency switch (see [Global lock](#global-lock-and-command-destination-classification)
+>   below) - was added but isn't shown in the diagram at all.
+
 - **Gray** = SQLite table (single database, source of truth)
 - **Blue** = Control Sheet - **one** spreadsheet, shared across the whole bot
 - **Green** = Per-hub Sheet - **one separate spreadsheet per hub**, bound via `/setsheet` (shown as a stacked block to indicate multiple instances)
@@ -92,7 +116,7 @@ nothing to Sheets at all):
 | Tab | Columns | Written by |
 |---|---|---|
 | `Users` | USER_ID, FIRST_NAME, LAST_NAME, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME | `/refreshusers`, `/refreshusersall` - one row per (user, chat); STATUS flips MEMBER/LEFT rather than deleting rows |
-| `Events` | EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, GOING_COUNT | row appended on `/newevent`, columns F:H updated on Save & Close |
+| `Events` | EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, GOING_COUNT | row appended on `/newevent`, columns F:H updated on Save & Close - CREATED_DATE/CLOSED_AT reuse `events.created_date`/`closed_date` (real DB columns, see the schema note above), not a timestamp computed fresh at Sheets-write time |
 | `Actions` | EVENT_ID, ACTION, USER_NAME, USER_ID, DATE | every button click (going/notgoing/kick/save/...) |
 | `EventUsers` | EVENT_ID, USER_ID | final attendee list, written once at Save & Close (main chat + every child chat combined) |
 | `UserPresenceLog` | USER_ID, CHAT_ID, DATE_start, DATE_end | logged when someone leaves a monitored/main chat |

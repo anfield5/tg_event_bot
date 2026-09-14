@@ -101,7 +101,12 @@ async def require_premium(update: Update, feature_label: str, chat_id: str = Non
         chat_id = str(update.effective_chat.id)
     if is_premium(chat_id):
         return True
-    await update.message.reply_text(
+    # A callback-query-triggered Update has update.message = None in PTB -
+    # the message to reply against is update.callback_query.message instead.
+    reply_target = update.message or (update.callback_query.message if update.callback_query else None)
+    if reply_target is None:
+        return False
+    await reply_target.reply_text(
         f"{ICON_WARNING} *{escape_markdown(feature_label)}* is a PRO\\-only feature\\. "
         f"Use /setsub info or contact the bot owner to upgrade\\.",
         parse_mode="MarkdownV2",

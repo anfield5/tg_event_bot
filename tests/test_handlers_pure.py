@@ -487,6 +487,28 @@ class TestCreateEventKeyboardFeatureSnapshot:
         flat = [btn for row in kb.inline_keyboard for btn in row]
         assert any("Add Extra Member" in b.text for b in flat)
 
+    def test_verification_mode_has_a_back_button(self):
+        """Item 1: an admin can revert an accidental Verify click back
+        to open without going through Save & Close or Cancel."""
+        kb = create_event_keyboard(
+            self.EVENT_ID, 1, self.GOING_ICON, self.NOT_GOING_ICN,
+            going_list=[], counters={}, kicked_users=set(),
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        back_btn = next((b for b in flat if "Back" in b.text), None)
+        assert back_btn is not None
+        assert back_btn.callback_data == f"back_{self.EVENT_ID}"
+
+    def test_open_state_has_no_back_button(self):
+        """The Back button only makes sense once IN verification mode -
+        the open (event_status=0) keyboard has nothing to "go back" from."""
+        kb = create_event_keyboard(
+            self.EVENT_ID, 0, self.GOING_ICON, self.NOT_GOING_ICN,
+            is_child=False,
+        )
+        flat = [btn for row in kb.inline_keyboard for btn in row]
+        assert not any("Back" in b.text for b in flat)
+
 
 class TestVerificationKeyboardPagination:
     """Real bug found and fixed: each verification-mode participant

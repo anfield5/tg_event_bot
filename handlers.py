@@ -1,8 +1,9 @@
 import json
 import re
 from uuid import uuid4
+from datetime import datetime, timedelta
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
@@ -368,18 +369,19 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         existing_active = cursor.fetchone()
 
     try:
+        created_date = now2ddmmyy()
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO events
                     (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, notgoing_visibility, clickability, created_by_user_id)
-                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?, ?, ?)
+                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, notgoing_visibility, clickability, created_by_user_id, created_date)
+                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (event_id, chat_id, str(message.message_id),
                  event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value, notgoing_visibility_value, clickability_value,
-                 str(update.effective_user.id)),
+                 str(update.effective_user.id), created_date),
             )
             conn.commit()
     except Exception as e:
@@ -434,7 +436,7 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 ss = await open_spreadsheet(sheet_target)
                 ws = await ss.worksheet("Events")
                 await ws.append_row([
-                    event_id, event_name_raw, now2ddmmyy(), user_raw, event_date or "", "", "OPEN", 0,
+                    event_id, event_name_raw, created_date, str(update.effective_user.id), event_date or "", "", "OPEN", 0,
                 ])
             except Exception as e:
                 logger.error(f"Failed to log event creation to Google Sheets: {e}")
@@ -956,7 +958,12 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
             target_chat_id = monitor_row[0]
             i += 2
         else:
-            user_identifiers.append(args[i])
+            # Strip a trailing comma - "/adduser 123, 456" (comma glued to
+            # the first number, no space before it) would otherwise leave
+            # "123," as the literal identifier, which fails the numeric
+            # check entirely (a comma isn't a digit) and gets silently
+            # misclassified as a username instead of the number it is.
+            user_identifiers.append(args[i].rstrip(","))
             i += 1
 
     added = []
@@ -966,6 +973,18 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
         try:
             # Check if identifier is a numeric user_id
             if identifier.lstrip("-").isdigit():
+                if identifier.startswith("-"):
+                    # Telegram user ids are NEVER negative - only chat ids
+                    # (groups/channels) are. A negative "user_id" here is
+                    # almost always a copy-paste mix-up with a chat_id, and
+                    # silently passing it to Telegram's API just produces a
+                    # confusing generic rejection instead of this specific,
+                    # actionable explanation.
+                    failed.append(
+                        f"{identifier}: Telegram user IDs are never negative "
+                        f"\\(only group/channel chat IDs are\\) \\- did you mean `{identifier.lstrip('-')}`\\?"
+                    )
+                    continue
                 target_user_id = identifier
                 try:
                     member = await context.bot.get_chat_member(target_chat_id, int(target_user_id))
@@ -1114,14 +1133,23 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
         # ── 1. Remove confirmed-departed/invalid/unverifiable users ──────────
         removed        = []  # user_ids confirmed departed - NOT usernames, see DELETE below
         still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
+        current_admin_ids = {str(a.user.id) for a in admins}
 
         for username, user_id, status in rows:
             try:
                 m = await context.bot.get_chat_member(
                     chat_id=int(chat_id), user_id=int(user_id)
                 )
-                if m.status in ["left", "kicked"]:
+                if m.status in ["left", "kicked"] and str(user_id) not in current_admin_ids:
                     removed.append(user_id)
+                elif m.status in ["left", "kicked"]:
+                    # get_chat_member disagrees with the admin list we just
+                    # fetched - this happens for anonymous admins (Remain
+                    # Anonymous), where get_chat_member can incorrectly
+                    # report "left" even though they're still a genuine,
+                    # current admin. get_chat_administrators is the more
+                    # reliable source here, so it wins - keep them.
+                    still_present.append((user_id, username, None, None))
                 else:
                     # Use the live Telegram username (public @handle preferred),
                     # not the possibly-stale one stored locally - this is what
@@ -1282,13 +1310,33 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
         hub_chat_name = chat_id
     monitors = [(chat_id, None, hub_chat_name)] + list(monitors)
 
-
+    total_chats = len(monitors)
+    progress_msg = None
+    try:
+        progress_msg = await update.message.reply_text(
+            f"{ICON_GLOBE} Refreshing 0/{total_chats} chats\\.\\.\\.", parse_mode="MarkdownV2"
+        )
+    except Exception as e:
+        logger.error(f"refreshusersall: could not send progress message: {e}")
 
     lines = [f"{ICON_GLOBE} *Processing monitored groups/channels:*"]
-    for monitor_chat_id, chat_type, chat_name in monitors:
+    for processed_count, (monitor_chat_id, chat_type, chat_name) in enumerate(monitors, start=1):
         try:
             with get_connection() as conn_mon:
                 cursor_mon = conn_mon.cursor()
+
+                # Fetched once up front - reused both for cross-checking a
+                # "left"/"kicked" get_chat_member result below (Telegram's
+                # own get_chat_member can incorrectly report an anonymous
+                # admin as departed - the admin list is the more reliable
+                # source for them) and for "add missing admins" further
+                # down, avoiding a duplicate API call.
+                try:
+                    monitor_admins = await context.bot.get_chat_administrators(int(monitor_chat_id))
+                except Exception as e:
+                    logger.error(f"refreshusersall: could not fetch admins for {chat_name}: {e}")
+                    monitor_admins = []
+                current_monitor_admin_ids = {str(a.user.id) for a in monitor_admins}
 
                 # Local sync for monitored group (remove departed, add admins)
                 cursor_mon.execute(
@@ -1305,8 +1353,13 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                         m = await context.bot.get_chat_member(
                             chat_id=int(monitor_chat_id), user_id=int(user_id)
                         )
-                        if m.status in ["left", "kicked"]:
+                        if m.status in ["left", "kicked"] and str(user_id) not in current_monitor_admin_ids:
                             monitor_removed.append(user_id)
+                        elif m.status in ["left", "kicked"]:
+                            # Disagrees with the admin list just fetched -
+                            # trust that over get_chat_member for the same
+                            # anonymous-admin reason as /refreshusers.
+                            monitor_present.append((user_id, username, None, None))
                         else:
                             live_username = getattr(m.user, "username", None) or getattr(m.user, "first_name", None) or username
                             monitor_present.append((user_id, live_username, m.user.first_name, m.user.last_name))
@@ -1329,10 +1382,10 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                     )
                     conn_mon.commit()
 
-                # Add missing admins for monitored group
+                # Add missing admins for monitored group - reuses
+                # monitor_admins fetched above, no second API call.
                 monitor_added = []
                 try:
-                    monitor_admins = await context.bot.get_chat_administrators(int(monitor_chat_id))
                     cursor_mon.execute("SELECT username FROM main_group_users WHERE chat_id = ?", (monitor_chat_id,))
                     monitor_tracked = {r[0] for r in cursor_mon.fetchall()}
 
@@ -1347,7 +1400,7 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                             monitor_added.append(uname)
                         monitor_present.append((str(u.id), uname, u.first_name, u.last_name))
                 except Exception as e:
-                    logger.error(f"refreshusersall: could not fetch admins for {chat_name}: {e}")
+                    logger.error(f"refreshusersall: could not process admins for {chat_name}: {e}")
 
             # Dedupe monitor_present
             monitor_present = list({
@@ -1367,6 +1420,25 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
         except Exception as e:
             logger.error(f"refreshusersall failed for {chat_name}: {e}")
             lines.append(f"  ❌ Failed: `{escape_markdown(chat_name)}`")
+
+        if progress_msg is not None:
+            try:
+                await progress_msg.edit_text(
+                    f"{ICON_GLOBE} Refreshing {processed_count}/{total_chats} chats\\.\\.\\.",
+                    parse_mode="MarkdownV2",
+                )
+            except Exception:
+                # Rate limit, message deleted by the admin, or the text
+                # happened to be identical to the last edit ("message is
+                # not modified") - none of these should ever interrupt
+                # the actual sync work still in progress.
+                pass
+
+    if progress_msg is not None:
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
 
     await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
 
@@ -1906,32 +1978,50 @@ async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
-@register_hub_command("stats")
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
-    """
-    Shows event activity stats for THIS hub group: how many events have
-    ever been created, how many were closed (Save & Close Event), and the
-    total/average headcount (going + guests) across every closed event.
-    PRO-gated (the "stats" feature) - a quick usage snapshot, not tied to
-    any single event.
-    """
-    chat_id = await resolve_hub_chat_id(update, context, "stats", override_chat_id)
-    if chat_id is None:
-        return
+STATS_PERIODS = {
+    "all": "All Time",
+    "1y":  "Last Year",
+    "6m":  "Last 6 Months",
+}
 
-    if not await require_premium(update, "Event stats", chat_id=chat_id):
-        return
+
+def _compute_stats(chat_id: str, period: str = "all"):
+    """
+    Shared by /stats and its period-switching callback. Returns
+    (events_amount, events_closed, total_members, average_members).
+
+    Period filtering uses events.created_date (a real DB column since
+    v4.3.8, DD.MM.YYYY HH:MM:SS.fff via now2ddmmyy() - NOT a format
+    that sorts correctly as a raw SQL string, so filtering happens in
+    Python after parsing each row's own created_date). An event with
+    no created_date at all (created before that column existed) is
+    excluded from "1y"/"6m" - there's no way to know when it actually
+    happened - but always included in "all".
+    """
+    cutoff = None
+    if period == "1y":
+        cutoff = datetime.now() - timedelta(days=365)
+    elif period == "6m":
+        cutoff = datetime.now() - timedelta(days=182)
+
+    def _within_period(created_date_raw):
+        if cutoff is None:
+            return True
+        if not created_date_raw:
+            return False
+        try:
+            return datetime.strptime(created_date_raw, "%d.%m.%Y %H:%M:%S.%f") >= cutoff
+        except ValueError:
+            return False
 
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM events WHERE chat_id = ?", (chat_id,))
-        events_amount = cursor.fetchone()[0]
+        cursor.execute("SELECT event_id, event_status, created_date FROM events WHERE chat_id = ?", (chat_id,))
+        all_rows = [r for r in cursor.fetchall() if _within_period(r[2])]
 
-        cursor.execute("SELECT COUNT(*) FROM events WHERE chat_id = ? AND event_status = 2", (chat_id,))
-        events_closed = cursor.fetchone()[0]
-
-        cursor.execute("SELECT event_id FROM events WHERE chat_id = ? AND event_status = 2", (chat_id,))
-        closed_event_ids = [r[0] for r in cursor.fetchall()]
+        events_amount = len(all_rows)
+        closed_event_ids = [r[0] for r in all_rows if r[1] == 2]
+        events_closed = len(closed_event_ids)
 
         # Single unified query per event_id (no chat_id filter within
         # event_users) - a closed event has already gone through Save &
@@ -1962,7 +2052,51 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
                 total_members += len(json.loads(going_raw or "[]")) + sum(json.loads(counters_raw or "{}").values())
 
     average_members = round(total_members / events_closed, 1) if events_closed > 0 else 0
+    return events_amount, events_closed, total_members, average_members
+
+
+def _stats_keyboard(chat_id: str, period: str) -> InlineKeyboardMarkup:
+    buttons = []
+    for key, label in STATS_PERIODS.items():
+        text = f"✅ {label}" if key == period else label
+        buttons.append(InlineKeyboardButton(text, callback_data=f"statsperiod_{chat_id}:{key}"))
+    return InlineKeyboardMarkup([buttons])
+
+
+def _build_stats_text(chat_id: str, period: str, group_name: str = None) -> str:
+    events_amount, events_closed, total_members, average_members = _compute_stats(chat_id, period)
     average_members_text = str(average_members).replace(".", "\\.")
+
+    header = f"{ICON_STATS} *Event Stats for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Event Stats*"
+    period_label = escape_markdown(STATS_PERIODS[period])
+
+    return (
+        f"{header}\n"
+        f"_{period_label}_\n\n"
+        f"Events amount: {events_amount}\n"
+        f"Events closed: {events_closed}\n"
+        f"Total members amount: {total_members}\n"
+        f"Average members amount: {average_members_text}"
+    )
+
+
+@register_hub_command("stats")
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+    """
+    Shows event activity stats for THIS hub group: how many events have
+    ever been created, how many were closed (Save & Close Event), and the
+    total/average headcount (going + guests) across every closed event.
+    PRO-gated (the "stats" feature) - a quick usage snapshot, not tied to
+    any single event. Defaults to "All Time"; inline buttons let the
+    admin switch to Last Year/Last 6 Months without re-running the
+    command (see stats_period_callback_handler).
+    """
+    chat_id = await resolve_hub_chat_id(update, context, "stats", override_chat_id)
+    if chat_id is None:
+        return
+
+    if not await require_premium(update, "Event stats", chat_id=chat_id):
+        return
 
     is_dm = update.effective_chat.type == "private"
     group_name = None
@@ -1972,16 +2106,41 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
             cursor.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (chat_id,))
             row = cursor.fetchone()
             group_name = row[0] if row and row[0] else chat_id
-    header = f"{ICON_STATS} *Event Stats for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Event Stats*"
 
-    text = (
-        f"{header}\n\n"
-        f"Events amount: {events_amount}\n"
-        f"Events closed: {events_closed}\n"
-        f"Total members amount: {total_members}\n"
-        f"Average members amount: {average_members_text}"
+    text = _build_stats_text(chat_id, "all", group_name)
+    await update.message.reply_text(
+        text, parse_mode="MarkdownV2", reply_markup=_stats_keyboard(chat_id, "all")
     )
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
+
+
+async def stats_period_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the period-switching buttons under /stats (statsperiod_<chat_id>:<period>)."""
+    query = update.callback_query
+    await query.answer()
+
+    chat_id, period = query.data.split("_", 1)[1].split(":", 1)
+    if period not in STATS_PERIODS:
+        return
+
+    if not await is_real_admin(context.bot, chat_id, update.effective_user, message=query.message):
+        await query.answer("⛔ Admins only.", show_alert=True)
+        return
+    if not await require_premium(update, "Event stats", chat_id=chat_id):
+        return
+
+    is_dm = query.message.chat.type == "private"
+    group_name = None
+    if is_dm:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (chat_id,))
+            row = cursor.fetchone()
+            group_name = row[0] if row and row[0] else chat_id
+
+    text = _build_stats_text(chat_id, period, group_name)
+    await query.edit_message_text(
+        text, parse_mode="MarkdownV2", reply_markup=_stats_keyboard(chat_id, period)
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -186,6 +186,39 @@ class TestInitDb:
 # init_db — migrations from pre-rename schemas
 # ---------------------------------------------------------------------------
 
+class TestMigrationDropsNonNumericUserIds:
+    """Real bug found and fixed: the main_group_users key migration
+    only filtered NULL/empty user_id values, not non-numeric ones. A
+    row from code even older than this session's own work could have
+    a non-null, non-empty, but non-numeric user_id (e.g. a stale
+    placeholder), which the migration silently carried forward -
+    perpetuating the "shows as plain @username, not a clickable
+    mention" bug in /listusers and /notify even after the key
+    migration ran, since _mention_link()'s own clickability check
+    (.lstrip("-").isdigit()) would still reject it."""
+
+    def test_drops_non_numeric_user_id_rows(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE main_group_users (
+                chat_id TEXT, username TEXT, user_id TEXT DEFAULT NULL,
+                status TEXT DEFAULT 'active', first_name TEXT DEFAULT NULL, last_name TEXT DEFAULT NULL,
+                PRIMARY KEY (chat_id, username)
+            )
+        """)
+        run_sql(path, "INSERT INTO main_group_users VALUES ('-100','Enes','Enes','active',NULL,NULL)")
+        run_sql(path, "INSERT INTO main_group_users VALUES ('-100','Serhiy','unresolved','active',NULL,NULL)")
+        run_sql(path, "INSERT INTO main_group_users VALUES ('-100','alice','555','active','Alice','A')")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT username FROM main_group_users ORDER BY username")
+        usernames = {r[0] for r in rows}
+        assert "Enes" not in usernames
+        assert "Serhiy" not in usernames
+        assert "alice" in usernames
+
+
 class TestMigrationChatUsersRename:
     """Legacy 'chat_users' table must be renamed to 'main_group_users', preserving data."""
 
@@ -537,6 +570,77 @@ class TestMigrationEventsChatIdNotNull:
         assert col[3] == 1, "chat_id must ALSO end up NOT NULL after the full chain"
 
 
+class TestMigrationEventsCreatedClosedDate:
+    """events.created_date/closed_date - added as real columns
+    (previously only ever written to the Google Sheet, never
+    persisted in the DB itself). Critically, this migration must run
+    AFTER the chat_id NOT NULL rebuild (TestMigrationEventsChatIdNotNull)
+    - that rebuild copies columns via an explicit whitelist, so if
+    these two columns existed BEFORE that rebuild ran, they'd be
+    silently dropped unless the migration order is correct."""
+
+    def test_adds_both_columns_to_a_fresh_db(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        conn = sqlite3.connect(path)
+        cols = {c[1] for c in conn.execute("PRAGMA table_info(events)").fetchall()}
+        assert "created_date" in cols
+        assert "closed_date" in cols
+
+    def test_adds_columns_to_an_old_schema_missing_them(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]'
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, going_data, notgoing_data, counters_data) VALUES ('ev1','-100','Party','[]','[]','{}')")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT event_id, created_date, closed_date FROM events WHERE event_id='ev1'")
+        assert rows == [("ev1", None, None)]
+
+    def test_idempotent_second_call(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        init_db(db_path=path)  # must not raise (duplicate column error)
+        conn = sqlite3.connect(path)
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(events)").fetchall()]
+        assert cols.count("created_date") == 1
+        assert cols.count("closed_date") == 1
+
+    def test_survives_the_chat_id_not_null_rebuild(self, tmp_path):
+        """The critical ordering test: an old schema that predates BOTH
+        the NOT NULL constraint AND these two columns must end up with
+        all three correctly applied - not have created_date/closed_date
+        silently dropped by the rebuild's own column whitelist."""
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]'
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, going_data, notgoing_data, counters_data) VALUES ('ev1','-100','Party','[]','[]','{}')")
+
+        init_db(db_path=path)
+
+        conn = sqlite3.connect(path)
+        col = next(c for c in conn.execute("PRAGMA table_info(events)").fetchall() if c[1] == "chat_id")
+        assert col[3] == 1, "chat_id must be NOT NULL"
+        cols = {c[1] for c in conn.execute("PRAGMA table_info(events)").fetchall()}
+        assert "created_date" in cols
+        assert "closed_date" in cols
+        rows = fetch_all(path, "SELECT event_id FROM events")
+        assert rows == [("ev1",)], "the original row must survive both migrations"
+
+
 # ---------------------------------------------------------------------------
 # track_user
 # ---------------------------------------------------------------------------
@@ -637,6 +741,19 @@ class TestTrackUser:
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         track_user("chat1", "anon", "active", user_id="1087968824", db_path=path)
+        rows = fetch_all(path, "SELECT * FROM main_group_users")
+        assert len(rows) == 0
+
+    def test_refuses_non_numeric_user_id(self, tmp_path):
+        """Real gap found: track_user() only checked user_id was
+        truthy, not that it was actually numeric - a non-numeric
+        string would get stored, silently producing a permanently
+        non-clickable row (_mention_link's own clickability check
+        rejects non-numeric ids). Now rejected outright, matching the
+        same numeric check the rendering code uses."""
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        track_user("chat1", "ghost", "active", user_id="not_a_real_id", db_path=path)
         rows = fetch_all(path, "SELECT * FROM main_group_users")
         assert len(rows) == 0
 
