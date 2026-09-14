@@ -20,8 +20,11 @@ to backfill just one group without touching every other hub's Sheet):
 
 Matches rows by EVENT_ID (column A) - the same identifier already used
 as the DB's own primary key, so no ambiguity in which Sheet row belongs
-to which DB row. CREATED_DATE is the Sheet's column C, CLOSED_AT is
-column F - copied as-is (already in now2ddmmyy()'s DD.MM.YYYY
+to which DB row. Reads column C under either header name - "CREATED_DATE"
+or "CREATED_AT" - since the real Sheet header (row 1, set manually when
+the template was created, never written by this bot's own code) may use
+either spelling depending on how old the template is. CLOSED_AT is
+column F. Both copied as-is (already in now2ddmmyy()'s DD.MM.YYYY
 HH:MM:SS.fff format), no reparsing/reformatting needed since the DB
 column is a plain TEXT field expecting exactly that format.
 """
@@ -57,7 +60,11 @@ async def _backfill_one_hub(chat_id: str, db_path: str) -> tuple[int, int]:
             event_id = str(row.get("EVENT_ID", "")).strip()
             if not event_id:
                 continue
-            sheet_created = str(row.get("CREATED_DATE", "")).strip() or None
+            sheet_created = (
+                str(row.get("CREATED_DATE", "")).strip()
+                or str(row.get("CREATED_AT", "")).strip()
+                or None
+            )
             sheet_closed = str(row.get("CLOSED_AT", "")).strip() or None
 
             db_row = conn.execute(

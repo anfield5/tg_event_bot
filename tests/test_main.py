@@ -236,16 +236,19 @@ class TestStatsCommandRegistration:
         import_block = source[source.index("from handlers import"):source.index("from subscription import")]
         assert "stats_command" in import_block
 
-    def test_stats_period_callback_handler_registered_before_button_handler(self):
-        """Item 2: the period-switching buttons need their own prefix-
-        matched CallbackQueryHandler, registered before the catch-all
-        button_handler - otherwise statsperiod_ clicks would fall
-        through to event_engine's event-post dispatch instead."""
+    def test_stats_callback_handlers_registered_before_button_handler(self):
+        """The Users/Back buttons need their own prefix-matched
+        CallbackQueryHandlers, registered before the catch-all
+        button_handler - otherwise statsusers_/statsback_ clicks
+        would fall through to event_engine's event-post dispatch instead."""
         source = open("main.py", encoding="utf-8").read()
-        assert 'CallbackQueryHandler(stats_period_callback_handler, pattern="^statsperiod_")' in source
-        stats_period_pos = source.index('pattern="^statsperiod_"')
+        assert 'CallbackQueryHandler(stats_users_callback_handler, pattern="^statsusers_")' in source
+        assert 'CallbackQueryHandler(stats_back_callback_handler, pattern="^statsback_")' in source
+        stats_users_pos = source.index('pattern="^statsusers_"')
+        stats_back_pos = source.index('pattern="^statsback_"')
         button_handler_pos = source.index('CallbackQueryHandler(button_handler))')
-        assert stats_period_pos < button_handler_pos
+        assert stats_users_pos < button_handler_pos
+        assert stats_back_pos < button_handler_pos
 
 
 class TestOnChatMemberUpdateCapturesRealName:

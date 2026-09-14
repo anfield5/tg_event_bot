@@ -70,6 +70,27 @@ class TestBackfillEventDates:
         row = conn.execute("SELECT created_date, closed_date FROM events WHERE event_id='ev1'").fetchone()
         assert row == ("10.05.2025 14:30:00.000", "12.05.2025 09:00:00.000")
 
+    async def test_handles_created_at_header_instead_of_created_date(self, db_path):
+        """Real bug fixed: the real Sheet header (row 1, set manually
+        when the template was created, never written by this bot's own
+        code) may say "CREATED_AT" rather than "CREATED_DATE" -
+        handlers.py's own long-standing comment about this column uses
+        "CREATED_AT". Must not silently skip backfilling just because
+        of this header-name discrepancy."""
+        _insert_pro_hub(db_path)
+        _insert_event(db_path, "ev1")
+        records = [{
+            "EVENT_ID": "ev1", "CREATED_AT": "10.05.2025 14:30:00.000",
+            "CLOSED_AT": "12.05.2025 09:00:00.000",
+        }]
+        with patch("scripts.backfill_event_dates.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+             patch("scripts.backfill_event_dates.open_spreadsheet", new_callable=AsyncMock, return_value=_mock_sheet(records)):
+            await backfill._run(db_path=db_path)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT created_date, closed_date FROM events WHERE event_id='ev1'").fetchone()
+        assert row == ("10.05.2025 14:30:00.000", "12.05.2025 09:00:00.000")
+
     async def test_never_overwrites_an_existing_value(self, db_path):
         _insert_pro_hub(db_path)
         _insert_event(db_path, "ev1", created_date="01.01.2026 00:00:00.000")

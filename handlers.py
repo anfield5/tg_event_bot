@@ -967,6 +967,7 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
             i += 1
 
     added = []
+    already_tracked = []
     failed = []
 
     for identifier in user_identifiers:
@@ -998,11 +999,19 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
                         failed.append(f"{identifier}: not currently in that chat (status={member.status})")
                     else:
                         username = member.user.username or member.user.first_name or f"user{target_user_id}"
+                        with get_connection() as conn:
+                            already = conn.execute(
+                                "SELECT 1 FROM main_group_users WHERE chat_id = ? AND user_id = ?",
+                                (target_chat_id, target_user_id),
+                            ).fetchone() is not None
                         track_user(
                             target_chat_id, username, "active", user_id=target_user_id,
                             first_name=member.user.first_name, last_name=member.user.last_name,
                         )
-                        added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
+                        if already:
+                            already_tracked.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
+                        else:
+                            added.append(f"@{escape_markdown(username)} \\({target_user_id}\\)")
                 except Exception as e:
                     # If can't get user from Telegram, fail - don't add without real user_id
                     if "Participant_id_invalid" in str(e):
@@ -1038,11 +1047,19 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
                     else:
                         resolved_user_id = str(match.id)
                         resolved_username = match.username or match.first_name or target_username
+                        with get_connection() as conn:
+                            already = conn.execute(
+                                "SELECT 1 FROM main_group_users WHERE chat_id = ? AND user_id = ?",
+                                (target_chat_id, resolved_user_id),
+                            ).fetchone() is not None
                         track_user(
                             target_chat_id, resolved_username, "active", user_id=resolved_user_id,
                             first_name=match.first_name, last_name=match.last_name,
                         )
-                        added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
+                        if already:
+                            already_tracked.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
+                        else:
+                            added.append(f"@{escape_markdown(resolved_username)} \\({resolved_user_id}\\)")
                 except Exception as e:
                     # If can't resolve, fail - don't add without real user_id
                     failed.append(f"{identifier}: {e}")
@@ -1054,6 +1071,8 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
         lines.append(f"🎯 Target chat: `{target_chat_id}`")
     if added:
         lines.append(f"✅ Added: {', '.join(added)}")
+    if already_tracked:
+        lines.append(f"ℹ️ Already in group: {', '.join(already_tracked)}")
     if failed:
         lines.append(f"❌ Failed: {', '.join(failed)}")
     if not lines:
@@ -1991,12 +2010,6 @@ STATS_PERIOD_RANGES = {
 }
 STATS_UNIT_NAMES = {"d": "day", "w": "week", "m": "month", "y": "year"}
 
-STATS_PERIOD_BUTTONS = {
-    "all": "All Time",
-    "1y":  "Last Year",
-    "6m":  "Last 6 Months",
-}
-
 
 def _parse_stats_period(text: str):
     """
@@ -2055,18 +2068,14 @@ def _stats_period_cutoff(period: str):
         return datetime.now() - timedelta(days=amount * 365)
 
 
-def _compute_stats(chat_id: str, period: str = "all"):
+def _closed_event_ids_for_period(chat_id: str, period: str):
     """
-    Shared by /stats and its period-switching callback. Returns
-    (events_amount, events_closed, total_members, average_members).
-
-    Period filtering uses events.created_date (a real DB column since
-    v4.3.8, DD.MM.YYYY HH:MM:SS.fff via now2ddmmyy() - NOT a format
-    that sorts correctly as a raw SQL string, so filtering happens in
-    Python after parsing each row's own created_date). An event with
-    no created_date at all (created before that column existed) is
-    excluded from any specific period - there's no way to know when
-    it actually happened - but always included in "all".
+    Shared by _compute_stats and _compute_top_users. Returns
+    (events_amount, closed_event_ids) for this hub within the given
+    period - see _compute_stats' own docstring for the exact
+    created_date filtering rules (Python-side parsing, events with no
+    created_date excluded from any specific period but included in
+    "all").
     """
     cutoff = _stats_period_cutoff(period)
 
@@ -2085,10 +2094,29 @@ def _compute_stats(chat_id: str, period: str = "all"):
         cursor.execute("SELECT event_id, event_status, created_date FROM events WHERE chat_id = ?", (chat_id,))
         all_rows = [r for r in cursor.fetchall() if _within_period(r[2])]
 
-        events_amount = len(all_rows)
-        closed_event_ids = [r[0] for r in all_rows if r[1] == 2]
-        events_closed = len(closed_event_ids)
+    events_amount = len(all_rows)
+    closed_event_ids = [r[0] for r in all_rows if r[1] == 2]
+    return events_amount, closed_event_ids
 
+
+def _compute_stats(chat_id: str, period: str = "all"):
+    """
+    Shared by /stats and its Users-view callback. Returns
+    (events_amount, events_closed, total_members, average_members).
+
+    Period filtering uses events.created_date (a real DB column since
+    v4.3.8, DD.MM.YYYY HH:MM:SS.fff via now2ddmmyy() - NOT a format
+    that sorts correctly as a raw SQL string, so filtering happens in
+    Python after parsing each row's own created_date). An event with
+    no created_date at all (created before that column existed) is
+    excluded from any specific period - there's no way to know when
+    it actually happened - but always included in "all".
+    """
+    events_amount, closed_event_ids = _closed_event_ids_for_period(chat_id, period)
+    events_closed = len(closed_event_ids)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
         # Single unified query per event_id (no chat_id filter within
         # event_users) - a closed event has already gone through Save &
         # Close, which migrates the master hub's own contribution into
@@ -2121,12 +2149,97 @@ def _compute_stats(chat_id: str, period: str = "all"):
     return events_amount, events_closed, total_members, average_members
 
 
+def _compute_top_users(chat_id: str, period: str = "all", top_n: int = 3):
+    """
+    Returns (top_by_total, top_by_average) - each a list of up to
+    top_n (display_name, user_id, value) tuples, sorted descending.
+    top_by_total ranks by SUM of guests invited across every closed
+    event in the period; top_by_average ranks by that same sum divided
+    by how many of those events they attended (going status), so
+    someone who came to 1 event with 5 guests doesn't automatically
+    outrank someone who consistently brings 3 guests to 10 events on
+    the "average" list, while still surfacing on the "total" list.
+    """
+    _, closed_event_ids = _closed_event_ids_for_period(chat_id, period)
+
+    # user_id -> [guests_total, events_attended, username, first_name, last_name]
+    per_user = {}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for event_id in closed_event_ids:
+            cursor.execute(
+                "SELECT user_id, username, first_name, last_name, guests FROM event_users "
+                "WHERE event_id = ? AND status = 'going'",
+                (event_id,),
+            )
+            for user_id, username, first_name, last_name, guests in cursor.fetchall():
+                if not user_id:
+                    continue
+                entry = per_user.setdefault(user_id, [0, 0, username, first_name, last_name])
+                entry[0] += guests or 0
+                entry[1] += 1
+                # Prefer a row that actually has a name over an earlier
+                # one that didn't (data quality varies row to row).
+                if not entry[2] and username:
+                    entry[2] = username
+                if not entry[3] and first_name:
+                    entry[3] = first_name
+                if not entry[4] and last_name:
+                    entry[4] = last_name
+
+    def _display(user_id, entry):
+        _, _, username, first_name, last_name = entry
+        if first_name:
+            name = f"{first_name} {last_name}".strip() if last_name else first_name
+        else:
+            name = username or f"user{user_id}"
+        return _mention_link(chat_id, username or name, user_id, display_name_override=name if first_name else None)
+
+    by_total = sorted(per_user.items(), key=lambda kv: kv[1][0], reverse=True)[:top_n]
+    top_by_total = [(_display(uid, e), e[0]) for uid, e in by_total if e[0] > 0]
+
+    by_avg = sorted(per_user.items(), key=lambda kv: kv[1][0] / kv[1][1], reverse=True)[:top_n]
+    top_by_average = [(_display(uid, e), round(e[0] / e[1], 1)) for uid, e in by_avg if e[0] > 0]
+
+    return top_by_total, top_by_average
+
+
+def _build_top_users_text(chat_id: str, period: str, group_name: str = None) -> str:
+    top_by_total, top_by_average = _compute_top_users(chat_id, period)
+
+    header = f"{ICON_STATS} *Top Users for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Top Users*"
+    period_label = escape_markdown(_stats_period_label(period))
+
+    def _section(title, rows, unit_label):
+        if not rows:
+            return f"*{title}*\n_No data for this period_"
+        lines = [f"*{title}*"]
+        for i, (name, value) in enumerate(rows, start=1):
+            value_text = str(value).replace(".", "\\.")
+            lines.append(f"{i}\\. {name} \\- {value_text} {unit_label}")
+        return "\n".join(lines)
+
+    total_section = _section("Most guests invited \\(total\\)", top_by_total, "guests")
+    average_section = _section("Most guests invited \\(average per event\\)", top_by_average, "guests/event")
+
+    return (
+        f"{header}\n"
+        f"_{period_label}_\n\n"
+        f"{total_section}\n\n"
+        f"{average_section}"
+    )
+
+
 def _stats_keyboard(chat_id: str, period: str) -> InlineKeyboardMarkup:
-    buttons = []
-    for key, label in STATS_PERIOD_BUTTONS.items():
-        text = f"✅ {label}" if key == period else label
-        buttons.append(InlineKeyboardButton(text, callback_data=f"statsperiod_{chat_id}:{key}"))
-    return InlineKeyboardMarkup([buttons])
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👥 Users", callback_data=f"statsusers_{chat_id}:{period}"),
+    ]])
+
+
+def _top_users_keyboard(chat_id: str, period: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔙 Back to Stats", callback_data=f"statsback_{chat_id}:{period}"),
+    ]])
 
 
 def _build_stats_text(chat_id: str, period: str, group_name: str = None) -> str:
@@ -2157,9 +2270,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
 
     Period: /stats [period] where period is "<number><unit>" - d(ays)
     1-99999, w(eeks) 1-9999, m(onths) 1-999, y(ears) 1-99 - or omitted/
-    "all" for no filter (e.g. /stats 30d, /stats 2y). Inline buttons
-    also let the admin switch to a few common presets without
-    re-running the command (see stats_period_callback_handler).
+    "all" for no filter (e.g. /stats 30d, /stats 2y). A "Users" button
+    under the reply shows the same period's top-3 guest-inviters (see
+    stats_users_callback_handler) without re-running the command.
     """
     chat_id = await resolve_hub_chat_id(update, context, "stats", override_chat_id)
     if chat_id is None:
@@ -2189,8 +2302,19 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
     )
 
 
-async def stats_period_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the period-switching buttons under /stats (statsperiod_<chat_id>:<period>)."""
+async def _stats_group_name(chat_id: str, is_dm: bool):
+    if not is_dm:
+        return None
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else chat_id
+
+
+async def stats_users_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the "👥 Users" button under /stats (statsusers_<chat_id>:<period>) -
+    switches the SAME message to show the period's top-3 guest-inviters."""
     query = update.callback_query
     await query.answer()
 
@@ -2205,15 +2329,30 @@ async def stats_period_callback_handler(update: Update, context: ContextTypes.DE
     if not await require_premium(update, "Event stats", chat_id=chat_id):
         return
 
-    is_dm = query.message.chat.type == "private"
-    group_name = None
-    if is_dm:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (chat_id,))
-            row = cursor.fetchone()
-            group_name = row[0] if row and row[0] else chat_id
+    group_name = await _stats_group_name(chat_id, query.message.chat.type == "private")
+    text = _build_top_users_text(chat_id, period, group_name)
+    await query.edit_message_text(
+        text, parse_mode="MarkdownV2", reply_markup=_top_users_keyboard(chat_id, period)
+    )
 
+
+async def stats_back_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the "🔙 Back to Stats" button under the Users view (statsback_<chat_id>:<period>)."""
+    query = update.callback_query
+    await query.answer()
+
+    chat_id, period = query.data.split("_", 1)[1].split(":", 1)
+    period, error = _parse_stats_period(period)
+    if error:
+        return
+
+    if not await is_real_admin(context.bot, chat_id, update.effective_user, message=query.message):
+        await query.answer("⛔ Admins only.", show_alert=True)
+        return
+    if not await require_premium(update, "Event stats", chat_id=chat_id):
+        return
+
+    group_name = await _stats_group_name(chat_id, query.message.chat.type == "private")
     text = _build_stats_text(chat_id, period, group_name)
     await query.edit_message_text(
         text, parse_mode="MarkdownV2", reply_markup=_stats_keyboard(chat_id, period)

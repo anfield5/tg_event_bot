@@ -583,6 +583,36 @@ class TestAdduser:
         assert dict(rows)["bob"] == "active"
         assert "✅ Added" in msg.reply_text.call_args.args[0]
 
+    async def test_already_tracked_user_reported_as_already_in_group_not_added(self, db_path):
+        """Real gap fixed: re-running /adduser for someone already
+        tracked used to silently report "Added" every single time,
+        indistinguishable from genuinely adding them for the first
+        time - now reports "Already in group" instead."""
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),
+            MagicMock(status="member", user=make_user(user_id=555, username="bob")),
+        ])
+        chat = make_chat(chat_id=-100123)
+        msg1 = make_message(chat=chat)
+        upd1 = make_update(chat=chat, message=msg1)
+        ctx1 = make_context(bot=bot, args=["555"])
+        await handlers.adduser(upd1, ctx1)
+        assert "✅ Added" in msg1.reply_text.call_args.args[0]
+
+        bot.get_chat_member = AsyncMock(side_effect=[
+            MagicMock(status="administrator"),
+            MagicMock(status="member", user=make_user(user_id=555, username="bob")),
+        ])
+        msg2 = make_message(chat=chat)
+        upd2 = make_update(chat=chat, message=msg2)
+        ctx2 = make_context(bot=bot, args=["555"])
+        await handlers.adduser(upd2, ctx2)
+
+        reply2 = msg2.reply_text.call_args.args[0]
+        assert "Already in group" in reply2
+        assert "✅ Added" not in reply2
+
     async def test_numeric_id_with_left_status_is_rejected(self, db_path):
         """
         Regression test: getChatMember succeeding with status=left/kicked is
@@ -7527,9 +7557,10 @@ class TestStatsCommand:
         assert "out of range" in text
         assert "Events amount" not in text
 
-    async def test_reply_includes_period_keyboard(self, db_path):
-        """Item 2: /stats sends inline period-selection buttons, All
-        Time selected by default."""
+    async def test_reply_includes_users_button(self, db_path):
+        """Item: /stats no longer has period-selection buttons (period
+        is text-argument only now) - just a single "Users" button that
+        reveals the period's top-3 guest-inviters."""
         insert_premium(db_path, chat_id="-1")
         chat = make_chat(chat_id=-1, chat_type="supergroup")
         user = make_user(user_id=1)
@@ -7542,9 +7573,7 @@ class TestStatsCommand:
         kb = msg.reply_text.call_args.kwargs.get("reply_markup")
         assert kb is not None
         labels = [b.text for row in kb.inline_keyboard for b in row]
-        assert any("✅ All Time" in l for l in labels)
-        assert any(l == "Last Year" for l in labels)
-        assert any(l == "Last 6 Months" for l in labels)
+        assert labels == ["👥 Users"]
 
     async def test_period_filtering_excludes_old_events(self, db_path):
         """Item 2: an event created over a year ago must be excluded
@@ -7592,15 +7621,31 @@ class TestStatsCommand:
         assert all_amount == 1
         assert year_amount == 0
 
-    async def test_period_callback_switches_and_rerenders(self, db_path):
-        """Item 2: clicking a period button re-renders the SAME
-        message with the new period's stats and an updated keyboard."""
+    async def test_users_button_shows_top3_and_back_button(self, db_path):
+        """Clicking "Users" switches the SAME message to show the
+        top-3 guest-inviter lists, with a Back-to-Stats button."""
         insert_premium(db_path, chat_id="-100")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev1','-100','1','Party','👍','❌',2,'[]','[]','{}','[]')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) "
+            "VALUES ('ev1','-100','1','alice','Alice','A','going',5)"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) "
+            "VALUES ('ev1','-100','2','bob','Bob','B','going',2)"
+        )
+        conn.commit()
+
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
 
         query = MagicMock()
-        query.data = "statsperiod_-100:1y"
+        query.data = "statsusers_-100:all"
         query.message = MagicMock()
         query.message.chat = MagicMock(type="group")
         query.message.sender_chat = None
@@ -7613,21 +7658,22 @@ class TestStatsCommand:
         upd.effective_chat = make_chat(chat_id=-100)
         ctx = make_context(bot=bot)
 
-        await handlers.stats_period_callback_handler(upd, ctx)
+        await handlers.stats_users_callback_handler(upd, ctx)
 
         text = query.edit_message_text.call_args.args[0]
-        assert "Last Year" in text
+        assert "Top Users" in text
+        assert "Alice" in text
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
         labels = [b.text for row in kb.inline_keyboard for b in row]
-        assert any("✅ Last Year" in l for l in labels)
+        assert labels == ["🔙 Back to Stats"]
 
-    async def test_period_callback_rejects_non_admin(self, db_path):
+    async def test_users_button_rejects_non_admin(self, db_path):
         insert_premium(db_path, chat_id="-100")
         bot = make_bot()
         bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
 
         query = MagicMock()
-        query.data = "statsperiod_-100:1y"
+        query.data = "statsusers_-100:all"
         query.message = MagicMock()
         query.message.chat = MagicMock(type="group")
         query.message.sender_chat = None
@@ -7640,9 +7686,36 @@ class TestStatsCommand:
         upd.effective_chat = make_chat(chat_id=-100)
         ctx = make_context(bot=bot)
 
-        await handlers.stats_period_callback_handler(upd, ctx)
+        await handlers.stats_users_callback_handler(upd, ctx)
 
         query.edit_message_text.assert_not_called()
+
+    async def test_back_button_returns_to_stats_view(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        query = MagicMock()
+        query.data = "statsback_-100:all"
+        query.message = MagicMock()
+        query.message.chat = MagicMock(type="group")
+        query.message.sender_chat = None
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        admin = make_user(user_id=1)
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = make_chat(chat_id=-100)
+        ctx = make_context(bot=bot)
+
+        await handlers.stats_back_callback_handler(upd, ctx)
+
+        text = query.edit_message_text.call_args.args[0]
+        assert "Event Stats" in text
+        kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        assert labels == ["👥 Users"]
 
 
 class TestHelpUpdatedForNewFlagsAndStats:

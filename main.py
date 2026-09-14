@@ -24,7 +24,8 @@ from handlers import (
     button_handler,
     global_text_router,
     stats_command,
-    stats_period_callback_handler,
+    stats_users_callback_handler,
+    stats_back_callback_handler,
 )
 from subscription import (
     setsub, setsheet, status_command, allgroups_command, allgroups_page_callback_handler,
@@ -317,7 +318,8 @@ def main():
     app.add_handler(CallbackQueryHandler(hub_pick_callback_handler, pattern="^(hubpick|switchpick)_"))
     app.add_handler(CallbackQueryHandler(allgroups_page_callback_handler, pattern="^allgroups"))
     app.add_handler(CallbackQueryHandler(allchannels_page_callback_handler, pattern="^allchannels_"))
-    app.add_handler(CallbackQueryHandler(stats_period_callback_handler, pattern="^statsperiod_"))
+    app.add_handler(CallbackQueryHandler(stats_users_callback_handler, pattern="^statsusers_"))
+    app.add_handler(CallbackQueryHandler(stats_back_callback_handler, pattern="^statsback_"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # 2. Chat member join/leave tracking
