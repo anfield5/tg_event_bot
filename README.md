@@ -67,7 +67,12 @@ zone are chosen to minimize crossing lines.
 >   `COALESCE(?, closed_date)` so unrelated actions like a kick or a
 >   guest-count edit never clear an already-set value). The Sheets
 >   Events tab export reuses these exact persisted values rather than
->   computing a fresh timestamp at write time.
+>   computing a fresh timestamp at write time. Events closed before this
+>   change has NULL `created_date`/`closed_date` in the DB (though the
+>   same values already sit in the Sheet) - `scripts/backfill_event_dates.py`
+>   is a one-time, safe-to-rerun script that copies them back from each
+>   PRO hub's Events tab into the DB, only ever filling a `NULL`, never
+>   overwriting an existing value.
 > - `bot_lock` - a single-row table backing the `/lockbot` global
 >   emergency switch (see [Global lock](#global-lock-and-command-destination-classification)
 >   below) - was added but isn't shown in the diagram at all.

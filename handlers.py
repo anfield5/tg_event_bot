@@ -1978,11 +1978,81 @@ async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
-STATS_PERIODS = {
+# Variant 4 (text argument, as requested): "<number><unit>" - d(ays)
+# 1-99999, w(eeks) 1-9999, m(onths) 1-999, y(ears) 1-99 - or "all" for
+# no filter. The 3 keyboard buttons below use "all"/"1y"/"6m", which
+# this same format already covers natively (1 year, 6 months), so one
+# parser/validator serves both the text argument and the buttons.
+STATS_PERIOD_RANGES = {
+    "d": (1, 99999),
+    "w": (1, 9999),
+    "m": (1, 999),
+    "y": (1, 99),
+}
+STATS_UNIT_NAMES = {"d": "day", "w": "week", "m": "month", "y": "year"}
+
+STATS_PERIOD_BUTTONS = {
     "all": "All Time",
     "1y":  "Last Year",
     "6m":  "Last 6 Months",
 }
+
+
+def _parse_stats_period(text: str):
+    """
+    Returns (period_key, error_message) - period_key is "all" or a
+    normalized "<number><unit>" string on success (error_message is
+    None); on failure period_key is None and error_message explains
+    why, ready to send straight to the user.
+    """
+    if not text:
+        return "all", None
+    text = text.strip().lower()
+    if text == "all":
+        return "all", None
+
+    m = re.fullmatch(r"(\d+)([dwmy])", text)
+    if not m:
+        return None, (
+            f"{ICON_WARNING} Invalid period `{escape_markdown(text)}`\\. "
+            f"Use a number \\+ `d`/`w`/`m`/`y` \\(e\\.g\\. `30d`, `4w`, `6m`, `2y`\\), or `all`\\."
+        )
+
+    amount, unit = int(m.group(1)), m.group(2)
+    low, high = STATS_PERIOD_RANGES[unit]
+    if not (low <= amount <= high):
+        return None, (
+            f"{ICON_WARNING} `{amount}{unit}` is out of range\\. "
+            f"Valid `{unit}` range is {low}\\-{high}\\."
+        )
+    return f"{amount}{unit}", None
+
+
+def _stats_period_label(period: str) -> str:
+    if period == "all":
+        return "All Time"
+    amount, unit = int(period[:-1]), period[-1]
+    name = STATS_UNIT_NAMES[unit]
+    if amount == 1:
+        return f"Last {name.capitalize()}"
+    return f"Last {amount} {name}s"
+
+
+def _stats_period_cutoff(period: str):
+    if period == "all":
+        return None
+    amount, unit = int(period[:-1]), period[-1]
+    if unit == "d":
+        return datetime.now() - timedelta(days=amount)
+    if unit == "w":
+        return datetime.now() - timedelta(weeks=amount)
+    if unit == "m":
+        # Simple, dependency-free approximation (30 days/month) -
+        # exact calendar-month arithmetic isn't worth the complexity
+        # for a usage-stats cutoff.
+        return datetime.now() - timedelta(days=amount * 30)
+    if unit == "y":
+        return datetime.now() - timedelta(days=amount * 365)
 
 
 def _compute_stats(chat_id: str, period: str = "all"):
@@ -1995,14 +2065,10 @@ def _compute_stats(chat_id: str, period: str = "all"):
     that sorts correctly as a raw SQL string, so filtering happens in
     Python after parsing each row's own created_date). An event with
     no created_date at all (created before that column existed) is
-    excluded from "1y"/"6m" - there's no way to know when it actually
-    happened - but always included in "all".
+    excluded from any specific period - there's no way to know when
+    it actually happened - but always included in "all".
     """
-    cutoff = None
-    if period == "1y":
-        cutoff = datetime.now() - timedelta(days=365)
-    elif period == "6m":
-        cutoff = datetime.now() - timedelta(days=182)
+    cutoff = _stats_period_cutoff(period)
 
     def _within_period(created_date_raw):
         if cutoff is None:
@@ -2057,7 +2123,7 @@ def _compute_stats(chat_id: str, period: str = "all"):
 
 def _stats_keyboard(chat_id: str, period: str) -> InlineKeyboardMarkup:
     buttons = []
-    for key, label in STATS_PERIODS.items():
+    for key, label in STATS_PERIOD_BUTTONS.items():
         text = f"✅ {label}" if key == period else label
         buttons.append(InlineKeyboardButton(text, callback_data=f"statsperiod_{chat_id}:{key}"))
     return InlineKeyboardMarkup([buttons])
@@ -2068,7 +2134,7 @@ def _build_stats_text(chat_id: str, period: str, group_name: str = None) -> str:
     average_members_text = str(average_members).replace(".", "\\.")
 
     header = f"{ICON_STATS} *Event Stats for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Event Stats*"
-    period_label = escape_markdown(STATS_PERIODS[period])
+    period_label = escape_markdown(_stats_period_label(period))
 
     return (
         f"{header}\n"
@@ -2087,15 +2153,25 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
     ever been created, how many were closed (Save & Close Event), and the
     total/average headcount (going + guests) across every closed event.
     PRO-gated (the "stats" feature) - a quick usage snapshot, not tied to
-    any single event. Defaults to "All Time"; inline buttons let the
-    admin switch to Last Year/Last 6 Months without re-running the
-    command (see stats_period_callback_handler).
+    any single event.
+
+    Period: /stats [period] where period is "<number><unit>" - d(ays)
+    1-99999, w(eeks) 1-9999, m(onths) 1-999, y(ears) 1-99 - or omitted/
+    "all" for no filter (e.g. /stats 30d, /stats 2y). Inline buttons
+    also let the admin switch to a few common presets without
+    re-running the command (see stats_period_callback_handler).
     """
     chat_id = await resolve_hub_chat_id(update, context, "stats", override_chat_id)
     if chat_id is None:
         return
 
     if not await require_premium(update, "Event stats", chat_id=chat_id):
+        return
+
+    period_arg = context.args[0] if context.args else None
+    period, error = _parse_stats_period(period_arg)
+    if error:
+        await update.message.reply_text(error, parse_mode="MarkdownV2")
         return
 
     is_dm = update.effective_chat.type == "private"
@@ -2107,9 +2183,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
             row = cursor.fetchone()
             group_name = row[0] if row and row[0] else chat_id
 
-    text = _build_stats_text(chat_id, "all", group_name)
+    text = _build_stats_text(chat_id, period, group_name)
     await update.message.reply_text(
-        text, parse_mode="MarkdownV2", reply_markup=_stats_keyboard(chat_id, "all")
+        text, parse_mode="MarkdownV2", reply_markup=_stats_keyboard(chat_id, period)
     )
 
 
@@ -2119,7 +2195,8 @@ async def stats_period_callback_handler(update: Update, context: ContextTypes.DE
     await query.answer()
 
     chat_id, period = query.data.split("_", 1)[1].split(":", 1)
-    if period not in STATS_PERIODS:
+    period, error = _parse_stats_period(period)
+    if error:
         return
 
     if not await is_real_admin(context.bot, chat_id, update.effective_user, message=query.message):

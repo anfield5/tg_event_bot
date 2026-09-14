@@ -7336,6 +7336,61 @@ class TestShareeventNewFlagSyntax:
         assert row == ("-visible",)
 
 
+class TestParseStatsPeriod:
+    """Variant 4 (as requested): flexible "<number><unit>" period
+    argument for /stats - d(ays) 1-99999, w(eeks) 1-9999, m(onths)
+    1-999, y(ears) 1-99, or "all"/no argument for no filter."""
+
+    @pytest.mark.parametrize("value,expected", [
+        (None, "all"),
+        ("all", "all"),
+        ("30d", "30d"),
+        ("1d", "1d"),
+        ("99999d", "99999d"),
+        ("1w", "1w"),
+        ("9999w", "9999w"),
+        ("1m", "1m"),
+        ("999m", "999m"),
+        ("1y", "1y"),
+        ("99y", "99y"),
+        ("6m", "6m"),
+    ])
+    def test_valid_periods_including_boundaries(self, value, expected):
+        period, error = handlers._parse_stats_period(value)
+        assert period == expected
+        assert error is None
+
+    @pytest.mark.parametrize("value,unit", [
+        ("100000d", "d"),
+        ("0d", "d"),
+        ("10000w", "w"),
+        ("0w", "w"),
+        ("1000m", "m"),
+        ("0m", "m"),
+        ("100y", "y"),
+        ("0y", "y"),
+    ])
+    def test_out_of_range_periods_rejected(self, value, unit):
+        period, error = handlers._parse_stats_period(value)
+        assert period is None
+        assert error is not None
+        assert f"`{unit}`" in error
+
+    @pytest.mark.parametrize("value", ["abc", "30", "30x", "-5d", "5.5d", "d30"])
+    def test_invalid_format_rejected(self, value):
+        period, error = handlers._parse_stats_period(value)
+        assert period is None
+        assert "Invalid period" in error
+
+    def test_labels_read_naturally_for_singular_amounts(self):
+        assert handlers._stats_period_label("1y") == "Last Year"
+        assert handlers._stats_period_label("1m") == "Last Month"
+        assert handlers._stats_period_label("1w") == "Last Week"
+        assert handlers._stats_period_label("1d") == "Last Day"
+        assert handlers._stats_period_label("6m") == "Last 6 months"
+        assert handlers._stats_period_label("all") == "All Time"
+
+
 class TestStatsCommand:
     """Item 7: new /stats command, gated on the "stats" PRO feature, shows
     event activity stats for the calling hub: total events ever created,
@@ -7426,6 +7481,51 @@ class TestStatsCommand:
         text = msg.reply_text.call_args.args[0]
         assert "Events amount: 0" in text
         assert "Events closed: 0" in text
+
+    async def test_text_argument_period_is_used(self, db_path):
+        """Variant 4: /stats <period> as a text argument actually
+        drives the filtering, not just the buttons."""
+        insert_premium(db_path, chat_id="-1")
+        conn = sqlite3.connect(db_path)
+        recent = datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+        old = (datetime.now() - timedelta(days=400)).strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data, created_date) "
+            "VALUES ('ev_recent','-1','1','Recent','👍','❌',0,'[]','[]','{}','[]',?)", (recent,)
+        )
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data, created_date) "
+            "VALUES ('ev_old','-1','2','Old','👍','❌',0,'[]','[]','{}','[]',?)", (old,)
+        )
+        conn.commit()
+
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["30d"])
+
+        await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Events amount: 1" in text, "only the recent event should count under 30d"
+        assert "Last 30 days" in text
+
+    async def test_invalid_text_argument_shows_error_not_stats(self, db_path):
+        insert_premium(db_path, chat_id="-1")
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["100000d"])
+
+        await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "out of range" in text
+        assert "Events amount" not in text
 
     async def test_reply_includes_period_keyboard(self, db_path):
         """Item 2: /stats sends inline period-selection buttons, All
