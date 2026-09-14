@@ -7809,10 +7809,23 @@ class TestVerificationModeShowsRealNames:
 
 class TestVerificationPageNavigation:
     """Integration test for the vpage action - clicking Next stores the
-    new page in context.application.chat_data (read back by
+    new page in event_engine._verification_pages (read back by
     update_all_shared_views on re-render) and preserves it across
     subsequent Kick/Guest actions, rather than resetting to page 0
-    every time."""
+    every time.
+
+    Real bug found and fixed here: the original implementation stored
+    this in context.application.chat_data, which PTB v20+ made
+    read-only at the top level (.setdefault()/item-assignment raises -
+    only mutating an ALREADY-EXISTING inner per-chat dict is
+    sanctioned). This broke Prev/Next in actual production while still
+    passing in tests, since the test mock used a plain, unrestricted
+    dict instead of PTB's real restricted mapping. A project-owned
+    dict (matching the existing _event_locks/_refresh_state pattern in
+    this same module) sidesteps the restriction entirely."""
+
+    def setup_method(self):
+        event_engine._verification_pages.clear()
 
     async def test_clicking_next_stores_page_and_rerenders_with_it(self, db_path):
         going_list = [f"person{i} ({i})" for i in range(30)]
@@ -7847,7 +7860,7 @@ class TestVerificationPageNavigation:
              patch("event_engine.schedule_view_refresh", new_callable=AsyncMock) as mock_refresh:
             await event_engine.button_handler(upd, ctx)
 
-        assert ctx.application.chat_data[-100]["verif_page_ev1"] == 1
+        assert event_engine._verification_pages["ev1"] == 1
         assert ctx.application.create_task.called, "must schedule a re-render after changing the page"
         mock_refresh.assert_called_once_with(ctx, "ev1")
 
@@ -7874,7 +7887,7 @@ class TestVerificationPageNavigation:
         chat = make_chat(chat_id=-100, chat_type="supergroup")
         admin = make_user(user_id=1)
         ctx = make_context(bot=bot)
-        ctx.application.chat_data[-100] = {"verif_page_ev1": 1}
+        event_engine._verification_pages["ev1"] = 1
 
         query = MagicMock()
         query.data = "kick_ev1:person16"
@@ -7892,7 +7905,7 @@ class TestVerificationPageNavigation:
              patch("event_engine.update_all_shared_views", new_callable=AsyncMock) as mock_render:
             await event_engine.button_handler(upd, ctx)
 
-        assert ctx.application.chat_data[-100]["verif_page_ev1"] == 1, "page must remain 1 after an unrelated kick action"
+        assert event_engine._verification_pages["ev1"] == 1, "page must remain 1 after an unrelated kick action"
 
 
 class TestHelpReflectsClickabilityGating:

@@ -52,6 +52,22 @@ def get_event_lock(event_id: str) -> asyncio.Lock:
     return lock
 
 # ---------------------------------------------------------------------------
+# Verification-mode pagination state
+# ---------------------------------------------------------------------------
+# Keyed by event_id -> current page number an admin last navigated to.
+# Deliberately NOT stored via context.application.chat_data: PTB v20+ made
+# that mapping read-only at the top level (.setdefault()/item-assignment on
+# it raises - only mutating an ALREADY-EXISTING inner per-chat dict is
+# sanctioned), which broke Prev/Next in production even though it passed
+# in tests that had mocked chat_data as a plain, unrestricted dict instead
+# of PTB's actual restricted mapping. A project-owned dict here needs no
+# such dance and works identically from a handler callback or a background
+# re-render task. Never persisted to the database - page position resets
+# to 0 across a bot restart, which is an acceptable, minor UX tradeoff, not
+# a place needing durability.
+_verification_pages = {}
+
+# ---------------------------------------------------------------------------
 # Shared-view renderer
 # ---------------------------------------------------------------------------
 
@@ -608,7 +624,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     is_full = total_limit is not None and global_total >= total_limit
 
-    verification_page = context.application.chat_data.get(int(main_chat_id), {}).get(f"verif_page_{event_id}", 0)
+    verification_page = _verification_pages.get(event_id, 0)
 
     master_keyboard = create_event_keyboard(
         event_id, event_status, going_icon, notgoing_icon,
@@ -1310,7 +1326,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             new_page = int(target_username) if target_username is not None else 0
                         except ValueError:
                             new_page = 0
-                        context.application.chat_data.setdefault(int(main_chat_id), {})[f"verif_page_{event_id}"] = new_page
+                        _verification_pages[event_id] = new_page
                         context.application.create_task(schedule_view_refresh(context, event_id))
                         return
 
