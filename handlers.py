@@ -2151,12 +2151,13 @@ def _compute_stats(chat_id: str, period: str = "all"):
 
 def _compute_top_users(chat_id: str, period: str = "all", top_n: int = 3):
     """
-    Returns (top_by_total, top_by_average) - each a list of up to
-    top_n (display_name, user_id, value) tuples, sorted descending.
-    top_by_total ranks by SUM of guests invited across every closed
-    event in the period; top_by_average ranks by that same sum divided
-    by how many of those events they attended (going status), so
-    someone who came to 1 event with 5 guests doesn't automatically
+    Returns (top_by_attendance, top_by_total, top_by_average) - each a
+    list of up to top_n (display_name, value) tuples, sorted
+    descending. top_by_attendance ranks by raw count of closed events
+    attended (going status) in the period, regardless of guests.
+    top_by_total ranks by SUM of guests invited across those events;
+    top_by_average ranks by that same sum divided by events attended,
+    so someone who came to 1 event with 5 guests doesn't automatically
     outrank someone who consistently brings 3 guests to 10 events on
     the "average" list, while still surfacing on the "total" list.
     """
@@ -2195,17 +2196,20 @@ def _compute_top_users(chat_id: str, period: str = "all", top_n: int = 3):
             name = username or f"user{user_id}"
         return _mention_link(chat_id, username or name, user_id, display_name_override=name if first_name else None)
 
+    by_attendance = sorted(per_user.items(), key=lambda kv: kv[1][1], reverse=True)[:top_n]
+    top_by_attendance = [(_display(uid, e), e[1]) for uid, e in by_attendance if e[1] > 0]
+
     by_total = sorted(per_user.items(), key=lambda kv: kv[1][0], reverse=True)[:top_n]
     top_by_total = [(_display(uid, e), e[0]) for uid, e in by_total if e[0] > 0]
 
     by_avg = sorted(per_user.items(), key=lambda kv: kv[1][0] / kv[1][1], reverse=True)[:top_n]
     top_by_average = [(_display(uid, e), round(e[0] / e[1], 1)) for uid, e in by_avg if e[0] > 0]
 
-    return top_by_total, top_by_average
+    return top_by_attendance, top_by_total, top_by_average
 
 
 def _build_top_users_text(chat_id: str, period: str, group_name: str = None) -> str:
-    top_by_total, top_by_average = _compute_top_users(chat_id, period)
+    top_by_attendance, top_by_total, top_by_average = _compute_top_users(chat_id, period)
 
     header = f"{ICON_STATS} *Top Users for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Top Users*"
     period_label = escape_markdown(_stats_period_label(period))
@@ -2216,23 +2220,32 @@ def _build_top_users_text(chat_id: str, period: str, group_name: str = None) -> 
         lines = [f"*{title}*"]
         for i, (name, value) in enumerate(rows, start=1):
             value_text = str(value).replace(".", "\\.")
-            lines.append(f"{i}\\. {name} \\- {value_text} {unit_label}")
+            label = unit_label
+            if value == 1 and unit_label.endswith("s") and "/" not in unit_label:
+                label = unit_label[:-1]
+            lines.append(f"{i}\\. {name} \\- {value_text} {label}")
         return "\n".join(lines)
 
+    attendance_section = _section("Most events attended", top_by_attendance, "events")
     total_section = _section("Most guests invited \\(total\\)", top_by_total, "guests")
     average_section = _section("Most guests invited \\(average per event\\)", top_by_average, "guests/event")
 
     return (
         f"{header}\n"
         f"_{period_label}_\n\n"
+        f"{attendance_section}\n\n"
         f"{total_section}\n\n"
         f"{average_section}"
     )
 
 
+STATS_DISTRIBUTION_PAGE_SIZE = 5
+
+
 def _stats_keyboard(chat_id: str, period: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("👥 Users", callback_data=f"statsusers_{chat_id}:{period}"),
+        InlineKeyboardButton("📊 Distribution", callback_data=f"statsdist_{chat_id}:{period}:0"),
     ]])
 
 
@@ -2240,6 +2253,113 @@ def _top_users_keyboard(chat_id: str, period: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🔙 Back to Stats", callback_data=f"statsback_{chat_id}:{period}"),
     ]])
+
+
+def _compute_distribution(hub_chat_id: str, period: str):
+    """
+    Returns a list of dicts, one per chat_id (the hub itself plus every
+    child chat an event was shared to) that had at least one total
+    member across every closed event in the period:
+        {"chat_id", "chat_name", "events_shared", "total", "average", "max", "min"}
+    Sorted with the hub itself always first, then by events_shared
+    descending. "Events shared" counts every closed event in the
+    period that was posted to this chat_id (hub or event_shares),
+    regardless of whether anyone from there actually attended -
+    "total/average/max/min" are computed only from event_users rows
+    that exist for that (event, chat_id) pair.
+    """
+    _, closed_event_ids = _closed_event_ids_for_period(hub_chat_id, period)
+
+    # chat_id -> {"events_shared": int, "member_counts": [int, ...]}
+    per_chat = {}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for event_id in closed_event_ids:
+            cursor.execute("SELECT chat_id FROM event_shares WHERE event_id = ?", (event_id,))
+            share_chat_ids = [hub_chat_id] + [r[0] for r in cursor.fetchall()]
+
+            for share_chat_id in share_chat_ids:
+                entry = per_chat.setdefault(share_chat_id, {"events_shared": 0, "member_counts": []})
+                entry["events_shared"] += 1
+
+                cursor.execute(
+                    "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ?",
+                    (event_id, share_chat_id),
+                )
+                rows = cursor.fetchall()
+                going_count = sum(1 for status, guests in rows if status == "going")
+                guests_total = sum(guests or 0 for _, guests in rows)
+                entry["member_counts"].append(going_count + guests_total)
+
+        results = []
+        for share_chat_id, entry in per_chat.items():
+            total = sum(entry["member_counts"])
+            if total <= 0:
+                continue  # "хоть 1" - skip chats with zero total participation
+            if share_chat_id == hub_chat_id:
+                cursor.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (hub_chat_id,))
+            else:
+                cursor.execute("SELECT chat_name FROM sub_chats WHERE chat_id = ?", (share_chat_id,))
+            row = cursor.fetchone()
+            chat_name = row[0] if row and row[0] else share_chat_id
+
+            results.append({
+                "chat_id": share_chat_id,
+                "chat_name": chat_name,
+                "events_shared": entry["events_shared"],
+                "total": total,
+                "average": round(total / len(entry["member_counts"]), 1),
+                "max": max(entry["member_counts"]),
+                "min": min(entry["member_counts"]),
+            })
+
+    results.sort(key=lambda r: (r["chat_id"] != hub_chat_id, -r["events_shared"]))
+    return results
+
+
+def _build_distribution_text(hub_chat_id: str, period: str, page: int, group_name: str = None):
+    """Returns (text, total_pages, clamped_page)."""
+    rows = _compute_distribution(hub_chat_id, period)
+
+    header = f"{ICON_STATS} *Distribution for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Distribution*"
+    period_label = escape_markdown(_stats_period_label(period))
+
+    if not rows:
+        text = f"{header}\n_{period_label}_\n\n_No data for this period_"
+        return text, 1, 0
+
+    total_pages = max(1, (len(rows) + STATS_DISTRIBUTION_PAGE_SIZE - 1) // STATS_DISTRIBUTION_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    page_rows = rows[page * STATS_DISTRIBUTION_PAGE_SIZE:(page + 1) * STATS_DISTRIBUTION_PAGE_SIZE]
+
+    blocks = []
+    for r in page_rows:
+        average_text = str(r["average"]).replace(".", "\\.")
+        blocks.append(
+            f"*{escape_markdown(r['chat_name'])}*\n"
+            f"Events shared: {r['events_shared']}\n"
+            f"Total event members amount: {r['total']}\n"
+            f"Average event members amount: {average_text}\n"
+            f"Max event members amount: {r['max']}\n"
+            f"Min event members amount: {r['min']}"
+        )
+
+    text = f"{header}\n_{period_label}_\n\n" + "\n\n".join(blocks)
+    return text, total_pages, page
+
+
+def _distribution_keyboard(chat_id: str, period: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows = []
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"statsdist_{chat_id}:{period}:{page - 1}"))
+        nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"statsdist_{chat_id}:{period}:{page + 1}"))
+        rows.append(nav_row)
+    rows.append([InlineKeyboardButton("🔙 Back to Stats", callback_data=f"statsback_{chat_id}:{period}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _build_stats_text(chat_id: str, period: str, group_name: str = None) -> str:
@@ -2333,6 +2453,37 @@ async def stats_users_callback_handler(update: Update, context: ContextTypes.DEF
     text = _build_top_users_text(chat_id, period, group_name)
     await query.edit_message_text(
         text, parse_mode="MarkdownV2", reply_markup=_top_users_keyboard(chat_id, period)
+    )
+
+
+async def stats_distribution_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the "📊 Distribution" button and its Prev/Next pagination
+    (statsdist_<chat_id>:<period>:<page>) - per-chat breakdown of event
+    members for every chat_id (hub or shared child) with at least one
+    total member in the period."""
+    query = update.callback_query
+    await query.answer()
+
+    chat_id, period, page_raw = query.data.split("_", 1)[1].split(":")
+    period, error = _parse_stats_period(period)
+    if error:
+        return
+    try:
+        page = int(page_raw)
+    except ValueError:
+        page = 0
+
+    if not await is_real_admin(context.bot, chat_id, update.effective_user, message=query.message):
+        await query.answer("⛔ Admins only.", show_alert=True)
+        return
+    if not await require_premium(update, "Event stats", chat_id=chat_id):
+        return
+
+    group_name = await _stats_group_name(chat_id, query.message.chat.type == "private")
+    text, total_pages, clamped_page = _build_distribution_text(chat_id, period, page, group_name)
+    await query.edit_message_text(
+        text, parse_mode="MarkdownV2",
+        reply_markup=_distribution_keyboard(chat_id, period, clamped_page, total_pages),
     )
 
 

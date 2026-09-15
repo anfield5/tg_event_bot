@@ -25,6 +25,7 @@ from handlers import (
     global_text_router,
     stats_command,
     stats_users_callback_handler,
+    stats_distribution_callback_handler,
     stats_back_callback_handler,
 )
 from subscription import (
@@ -319,6 +320,7 @@ def main():
     app.add_handler(CallbackQueryHandler(allgroups_page_callback_handler, pattern="^allgroups"))
     app.add_handler(CallbackQueryHandler(allchannels_page_callback_handler, pattern="^allchannels_"))
     app.add_handler(CallbackQueryHandler(stats_users_callback_handler, pattern="^statsusers_"))
+    app.add_handler(CallbackQueryHandler(stats_distribution_callback_handler, pattern="^statsdist_"))
     app.add_handler(CallbackQueryHandler(stats_back_callback_handler, pattern="^statsback_"))
     app.add_handler(CallbackQueryHandler(button_handler))
 

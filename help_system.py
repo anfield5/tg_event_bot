@@ -365,7 +365,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             + (
                 "\n/stats \\[period\\] \\- Event activity stats for this group \\(events created, closed, "
                 "total/average headcount\\)\\. period is `<number><unit>` \\- d/w/m/y \\(e\\.g\\. `30d`, `6m`, `2y`\\), "
-                "or omitted for all time\\; a Users button under the reply shows top guest\\-inviters for that period"
+                "or omitted for all time\\; Users/Distribution buttons under the reply show top "
+                "guest\\-inviters and a per\\-chat breakdown for that period"
                 if has_feature(hub_chat_id_for_limits, "stats") else ""
             )
         ),

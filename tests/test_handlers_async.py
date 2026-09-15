@@ -7559,8 +7559,8 @@ class TestStatsCommand:
 
     async def test_reply_includes_users_button(self, db_path):
         """Item: /stats no longer has period-selection buttons (period
-        is text-argument only now) - just a single "Users" button that
-        reveals the period's top-3 guest-inviters."""
+        is text-argument only now) - just "Users" and "Distribution"
+        buttons instead."""
         insert_premium(db_path, chat_id="-1")
         chat = make_chat(chat_id=-1, chat_type="supergroup")
         user = make_user(user_id=1)
@@ -7573,7 +7573,7 @@ class TestStatsCommand:
         kb = msg.reply_text.call_args.kwargs.get("reply_markup")
         assert kb is not None
         labels = [b.text for row in kb.inline_keyboard for b in row]
-        assert labels == ["👥 Users"]
+        assert labels == ["👥 Users", "📊 Distribution"]
 
     async def test_period_filtering_excludes_old_events(self, db_path):
         """Item 2: an event created over a year ago must be excluded
@@ -7662,10 +7662,42 @@ class TestStatsCommand:
 
         text = query.edit_message_text.call_args.args[0]
         assert "Top Users" in text
+        assert "Most events attended" in text
         assert "Alice" in text
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
         labels = [b.text for row in kb.inline_keyboard for b in row]
         assert labels == ["🔙 Back to Stats"]
+
+    async def test_attendance_ranking_is_distinct_from_guest_rankings(self, db_path):
+        """Requested addition: a "Top 3 by attendance" section, ranked
+        by raw events attended - distinct from total/average guests.
+        Dave attends 3 events with 0 guests each (tops attendance,
+        absent from the guest lists); Eve attends 1 event with 20
+        guests (tops total/average, but loses attendance to Dave)."""
+        insert_premium(db_path, chat_id="-100")
+        conn = sqlite3.connect(db_path)
+        for i in range(3):
+            conn.execute(
+                f"INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+                f"event_status, going_data, notgoing_data, counters_data, kicked_data) "
+                f"VALUES ('ev{i}','-100','{i}','Party{i}','👍','❌',2,'[]','[]','{{}}','[]')"
+            )
+            conn.execute(
+                f"INSERT INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) "
+                f"VALUES ('ev{i}','-100','1','dave','Dave','D','going',0)"
+            )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) "
+            "VALUES ('ev0','-100','2','eve','Eve','E','going',20)"
+        )
+        conn.commit()
+
+        top_by_attendance, top_by_total, top_by_average = handlers._compute_top_users("-100", "all")
+
+        assert "Dave" in top_by_attendance[0][0], "Dave (3 events) must top attendance"
+        assert top_by_attendance[0][1] == 3
+        assert "Eve" in top_by_total[0][0], "Eve (20 guests) must top the total-guests list"
+        assert "Eve" in top_by_average[0][0], "Eve must also top the average-guests list"
 
     async def test_users_button_rejects_non_admin(self, db_path):
         insert_premium(db_path, chat_id="-100")
@@ -7687,6 +7719,114 @@ class TestStatsCommand:
         ctx = make_context(bot=bot)
 
         await handlers.stats_users_callback_handler(upd, ctx)
+
+        query.edit_message_text.assert_not_called()
+
+    async def test_distribution_hub_first_then_by_events_shared(self, db_path):
+        """Requested: the master hub is always first, other chats
+        sorted by events_shared descending."""
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, subs_date_end) VALUES "
+                     "('-100','Main Hub','PRO','2099-01-01 00:00:00')")
+        conn.execute("INSERT INTO sub_chats (chat_id, chat_name, owner_chat_id) VALUES ('-201','Popular Child','-100')")
+        conn.execute("INSERT INTO sub_chats (chat_id, chat_name, owner_chat_id) VALUES ('-202','Rare Child','-100')")
+        for eid in range(3):
+            conn.execute(
+                f"INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+                f"event_status, going_data, notgoing_data, counters_data, kicked_data) "
+                f"VALUES ('ev{eid}','-100','{eid}','P{eid}','👍','❌',2,'[]','[]','{{}}','[]')"
+            )
+            conn.execute(f"INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                         f"VALUES ('ev{eid}','-100','1','hub','going',0)")
+            conn.execute(f"INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                         f"VALUES ('ev{eid}','-201','m{eid}','-visible','group')")
+            conn.execute(f"INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                         f"VALUES ('ev{eid}','-201','2','popular','going',1)")
+        # Rare Child only shared to 1 of the 3 events
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                     "VALUES ('ev0','-202','m9','-visible','group')")
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                     "VALUES ('ev0','-202','3','rare','going',1)")
+        conn.commit()
+
+        rows = handlers._compute_distribution("-100", "all")
+        assert rows[0]["chat_id"] == "-100", "hub must be first regardless of events_shared"
+        assert rows[1]["chat_id"] == "-201", "Popular Child (3 shares) before Rare Child (1 share)"
+        assert rows[2]["chat_id"] == "-202"
+
+    async def test_distribution_excludes_chats_with_zero_members(self, db_path):
+        """Requested filter: only chats with at least 1 total member
+        across their events appear at all."""
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name) VALUES ('-100','Main Hub')")
+        conn.execute("INSERT INTO sub_chats (chat_id, chat_name, owner_chat_id) VALUES ('-201','Empty Child','-100')")
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev0','-100','1','P','👍','❌',2,'[]','[]','{}','[]')"
+        )
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                     "VALUES ('ev0','-100','1','hub','going',0)")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                     "VALUES ('ev0','-201','m0','-visible','group')")
+        # -201 was shared to, but literally nobody from there attended
+        conn.commit()
+
+        rows = handlers._compute_distribution("-100", "all")
+        chat_ids = {r["chat_id"] for r in rows}
+        assert "-201" not in chat_ids, "a chat with zero total members must be excluded entirely"
+        assert "-100" in chat_ids
+
+    async def test_distribution_paginates_over_5_chats(self, db_path):
+        """Requested: paginate with Prev/Next when more than 5 chats."""
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name) VALUES ('-100','Main Hub')")
+        for i in range(1, 8):  # hub + 7 children = 8 total, needs 2 pages at 5/page
+            conn.execute(f"INSERT INTO sub_chats (chat_id, chat_name, owner_chat_id) VALUES ('-{200+i}','C{i}','-100')")
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev0','-100','1','P','👍','❌',2,'[]','[]','{}','[]')"
+        )
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                     "VALUES ('ev0','-100','1','hub','going',0)")
+        for i in range(1, 8):
+            cid = f"-{200+i}"
+            conn.execute(f"INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                         f"VALUES ('ev0','{cid}','m{i}','-visible','group')")
+            conn.execute(f"INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                         f"VALUES ('ev0','{cid}','{100+i}','u{i}','going',1)")
+        conn.commit()
+
+        text0, total_pages, page0 = handlers._build_distribution_text("-100", "all", 0)
+        assert total_pages == 2
+        assert page0 == 0
+        assert text0.count("Events shared:") == 5
+
+        text1, _, page1 = handlers._build_distribution_text("-100", "all", 1)
+        assert page1 == 1
+        assert text1.count("Events shared:") == 3
+
+    async def test_distribution_button_rejects_non_admin(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+        query = MagicMock()
+        query.data = "statsdist_-100:all:0"
+        query.message = MagicMock()
+        query.message.chat = MagicMock(type="group")
+        query.message.sender_chat = None
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        non_admin = make_user(user_id=99)
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = non_admin
+        upd.effective_chat = make_chat(chat_id=-100)
+        ctx = make_context(bot=bot)
+
+        await handlers.stats_distribution_callback_handler(upd, ctx)
 
         query.edit_message_text.assert_not_called()
 
@@ -7715,7 +7855,7 @@ class TestStatsCommand:
         assert "Event Stats" in text
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
         labels = [b.text for row in kb.inline_keyboard for b in row]
-        assert labels == ["👥 Users"]
+        assert labels == ["👥 Users", "📊 Distribution"]
 
 
 class TestHelpUpdatedForNewFlagsAndStats:
