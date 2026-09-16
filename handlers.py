@@ -2163,38 +2163,47 @@ def _compute_top_users(chat_id: str, period: str = "all", top_n: int = 3):
     """
     _, closed_event_ids = _closed_event_ids_for_period(chat_id, period)
 
-    # user_id -> [guests_total, events_attended, username, first_name, last_name]
+    # user_id -> [guests_total, events_attended, username, first_name, last_name, seen_chat_id]
     per_user = {}
     with get_connection() as conn:
         cursor = conn.cursor()
         for event_id in closed_event_ids:
             cursor.execute(
-                "SELECT user_id, username, first_name, last_name, guests FROM event_users "
+                "SELECT user_id, username, first_name, last_name, guests, chat_id FROM event_users "
                 "WHERE event_id = ? AND status = 'going'",
                 (event_id,),
             )
-            for user_id, username, first_name, last_name, guests in cursor.fetchall():
+            for user_id, username, first_name, last_name, guests, seen_chat_id in cursor.fetchall():
                 if not user_id:
                     continue
-                entry = per_user.setdefault(user_id, [0, 0, username, first_name, last_name])
+                entry = per_user.setdefault(user_id, [0, 0, username, first_name, last_name, seen_chat_id])
                 entry[0] += guests or 0
                 entry[1] += 1
                 # Prefer a row that actually has a name over an earlier
-                # one that didn't (data quality varies row to row).
+                # one that didn't (data quality varies row to row) -
+                # and remember THAT row's own chat_id alongside it, so
+                # a get_display_name fallback lookup (chat-scoped)
+                # matches wherever this person is genuinely tracked,
+                # not necessarily the hub - they may only ever appear
+                # in a monitored/shared CHILD chat's own participant list.
                 if not entry[2] and username:
                     entry[2] = username
                 if not entry[3] and first_name:
                     entry[3] = first_name
+                    entry[5] = seen_chat_id
                 if not entry[4] and last_name:
                     entry[4] = last_name
 
     def _display(user_id, entry):
-        _, _, username, first_name, last_name = entry
+        _, _, username, first_name, last_name, seen_chat_id = entry
         if first_name:
             name = f"{first_name} {last_name}".strip() if last_name else first_name
         else:
             name = username or f"user{user_id}"
-        return _mention_link(chat_id, username or name, user_id, display_name_override=name if first_name else None)
+        return _mention_link(
+            seen_chat_id or chat_id, username or name, user_id,
+            display_name_override=name if first_name else None,
+        )
 
     by_attendance = sorted(per_user.items(), key=lambda kv: kv[1][1], reverse=True)[:top_n]
     top_by_attendance = [(_display(uid, e), e[1]) for uid, e in by_attendance if e[1] > 0]
@@ -2335,9 +2344,10 @@ def _build_distribution_text(hub_chat_id: str, period: str, page: int, group_nam
     blocks = []
     for r in page_rows:
         average_text = str(r["average"]).replace(".", "\\.")
+        events_label = "Total events" if r["chat_id"] == hub_chat_id else "Events shared"
         blocks.append(
             f"*{escape_markdown(r['chat_name'])}*\n"
-            f"Events shared: {r['events_shared']}\n"
+            f"{events_label}: {r['events_shared']}\n"
             f"Total event members amount: {r['total']}\n"
             f"Average event members amount: {average_text}\n"
             f"Max event members amount: {r['max']}\n"

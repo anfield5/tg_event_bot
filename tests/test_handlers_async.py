@@ -7649,6 +7649,7 @@ class TestStatsCommand:
         query.message = MagicMock()
         query.message.chat = MagicMock(type="group")
         query.message.sender_chat = None
+        query.message.reply_text = AsyncMock()
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
         admin = make_user(user_id=1)
@@ -7667,6 +7668,41 @@ class TestStatsCommand:
         kb = query.edit_message_text.call_args.kwargs.get("reply_markup")
         labels = [b.text for row in kb.inline_keyboard for b in row]
         assert labels == ["🔙 Back to Stats"]
+
+    async def test_top_users_resolves_name_across_chats_not_just_hub(self, db_path):
+        """Real bug fixed (item 1): _compute_top_users aggregates
+        across every chat (hub + children), but always passed the
+        HUB's own chat_id to the get_display_name fallback lookup -
+        if a person's real main_group_users row lives under a CHILD
+        chat's chat_id (not the hub's), that chat-scoped lookup failed
+        to find them, silently showing their username instead of
+        "First Last". Now tracks the actual chat_id they were seen
+        under and uses that for the lookup."""
+        insert_premium(db_path, chat_id="-100")
+        conn = sqlite3.connect(db_path)
+        # This person's name is ONLY on file under the CHILD chat -
+        # never the hub.
+        conn.execute(
+            "INSERT INTO main_group_users (chat_id, username, user_id, first_name, last_name) "
+            "VALUES ('-200','mk10x2','555','Mykola','K')"
+        )
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev1','-100','1','Party','👍','❌',2,'[]','[]','{}','[]')"
+        )
+        # event_users row has NO first_name/last_name captured directly
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, first_name, last_name, status, guests) "
+            "VALUES ('ev1','-200','555','mk10x2',NULL,NULL,'going',1)"
+        )
+        conn.commit()
+
+        _, top_by_total, _ = handlers._compute_top_users("-100", "all")
+
+        assert "Mykola K" in top_by_total[0][0], f"expected the real name, got: {top_by_total[0][0]}"
+        assert "mk10x2" not in top_by_total[0][0], "must not fall back to the bare username"
+        assert "tg://user?id=555" in top_by_total[0][0]
 
     async def test_attendance_ranking_is_distinct_from_guest_rankings(self, db_path):
         """Requested addition: a "Top 3 by attendance" section, ranked
@@ -7721,6 +7757,126 @@ class TestStatsCommand:
         await handlers.stats_users_callback_handler(upd, ctx)
 
         query.edit_message_text.assert_not_called()
+
+    async def test_users_button_rejects_expired_subscription(self, db_path):
+        """Coverage gap found: the hub's PRO subscription could expire
+        BETWEEN the initial /stats call and a later button click - all
+        3 stats callback handlers must re-check premium status, not
+        just admin status."""
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        query = MagicMock()
+        query.data = "statsusers_-100:all"
+        query.message = MagicMock()
+        query.message.chat = MagicMock(type="group")
+        query.message.sender_chat = None
+        query.message.reply_text = AsyncMock()
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        admin = make_user(user_id=1)
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = make_chat(chat_id=-100)
+        upd.message = None
+        ctx = make_context(bot=bot)
+
+        # No insert_premium() call at all - chat_id -100 is free/unregistered.
+        await handlers.stats_users_callback_handler(upd, ctx)
+
+        query.edit_message_text.assert_not_called()
+
+    async def test_distribution_button_rejects_expired_subscription(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        query = MagicMock()
+        query.data = "statsdist_-100:all:0"
+        query.message = MagicMock()
+        query.message.chat = MagicMock(type="group")
+        query.message.sender_chat = None
+        query.message.reply_text = AsyncMock()
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        admin = make_user(user_id=1)
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = make_chat(chat_id=-100)
+        upd.message = None
+        ctx = make_context(bot=bot)
+
+        await handlers.stats_distribution_callback_handler(upd, ctx)
+
+        query.edit_message_text.assert_not_called()
+
+    async def test_back_button_rejects_expired_subscription(self, db_path):
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+
+        query = MagicMock()
+        query.data = "statsback_-100:all"
+        query.message = MagicMock()
+        query.message.chat = MagicMock(type="group")
+        query.message.sender_chat = None
+        query.message.reply_text = AsyncMock()
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        admin = make_user(user_id=1)
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = admin
+        upd.effective_chat = make_chat(chat_id=-100)
+        upd.message = None
+        ctx = make_context(bot=bot)
+
+        await handlers.stats_back_callback_handler(upd, ctx)
+
+        query.edit_message_text.assert_not_called()
+
+    async def test_stats_group_name_dm_branch_resolves_chat_name(self, db_path):
+        """Coverage gap found: _stats_group_name's is_dm=True branch
+        (looking up the hub's chat_name for the header when the button
+        was clicked from a DM, not the group itself) was untested."""
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name) VALUES ('-100', 'My Awesome Group')")
+        conn.commit()
+        conn.close()
+
+        name = await handlers._stats_group_name("-100", is_dm=True)
+        assert name == "My Awesome Group"
+
+        name_group_call = await handlers._stats_group_name("-100", is_dm=False)
+        assert name_group_call is None, "must return None when NOT called from a DM (no header needed)"
+
+    async def test_distribution_hub_row_says_total_events_children_say_events_shared(self, db_path):
+        """Item 3 requested wording: the master hub's own row must say
+        "Total events" (it's not "shared to" itself, it's the origin),
+        while child rows keep "Events shared"."""
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name) VALUES ('-100','Main Hub')")
+        conn.execute("INSERT INTO sub_chats (chat_id, chat_name, owner_chat_id) VALUES ('-201','Child','-100')")
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev0','-100','1','P','👍','❌',2,'[]','[]','{}','[]')"
+        )
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                     "VALUES ('ev0','-100','1','hub','going',0)")
+        conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+                     "VALUES ('ev0','-201','m0','-visible','group')")
+        conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+                     "VALUES ('ev0','-201','2','kid','going',1)")
+        conn.commit()
+
+        text, _, _ = handlers._build_distribution_text("-100", "all", 0)
+        hub_block = text.split("*Main Hub*")[1].split("*Child*")[0]
+        child_block = text.split("*Child*")[1]
+        assert "Total events:" in hub_block
+        assert "Events shared:" not in hub_block
+        assert "Events shared:" in child_block
+        assert "Total events:" not in child_block
 
     async def test_distribution_hub_first_then_by_events_shared(self, db_path):
         """Requested: the master hub is always first, other chats
@@ -7801,7 +7957,8 @@ class TestStatsCommand:
         text0, total_pages, page0 = handlers._build_distribution_text("-100", "all", 0)
         assert total_pages == 2
         assert page0 == 0
-        assert text0.count("Events shared:") == 5
+        assert text0.count("Total events:") == 1  # the hub's own row
+        assert text0.count("Events shared:") == 4  # the 4 children on this page
 
         text1, _, page1 = handlers._build_distribution_text("-100", "all", 1)
         assert page1 == 1
@@ -7840,6 +7997,7 @@ class TestStatsCommand:
         query.message = MagicMock()
         query.message.chat = MagicMock(type="group")
         query.message.sender_chat = None
+        query.message.reply_text = AsyncMock()
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
         admin = make_user(user_id=1)

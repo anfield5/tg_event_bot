@@ -12,7 +12,7 @@ covers setup and architecture, not day-to-day usage.
 
 ## Stack
 
-- Python 3.11, [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) 20.3
+- Python 3.9+, [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) 20.3
 - SQLite (local file, `database.db`) - all bot state
 - Google Sheets via `gspread_asyncio` - optional, per-hub export (PRO) and a
   control sheet (owner-only, always on)
@@ -67,7 +67,12 @@ zone are chosen to minimize crossing lines.
 >   `COALESCE(?, closed_date)` so unrelated actions like a kick or a
 >   guest-count edit never clear an already-set value). The Sheets
 >   Events tab export reuses these exact persisted values rather than
->   computing a fresh timestamp at write time. Events closed before this
+>   computing a fresh timestamp at write time. `created_date` is also
+>   how `/stats [period]` filters events into a time window (parsed in
+>   Python, since `now2ddmmyy()`'s `DD.MM.YYYY` format doesn't sort
+>   correctly as a raw SQL string comparison) - an event with no
+>   `created_date` at all is excluded from any specific period but
+>   still counted under "all time". Events closed before this
 >   change has NULL `created_date`/`closed_date` in the DB (though the
 >   same values already sit in the Sheet) - `scripts/backfill_event_dates.py`
 >   is a one-time, safe-to-rerun script that copies them back from each
