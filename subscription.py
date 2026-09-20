@@ -130,7 +130,7 @@ async def _push_control_sheet_channels() -> bool:
     """Reads all of all_channels and pushes it to the Control Sheet's 'CHANNELS' tab."""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, chat_name, visibility, date_bot_add FROM all_channels")
+        cursor.execute("SELECT chat_id, chat_name, visibility, date_bot_add, role FROM all_channels")
         rows = cursor.fetchall()
     return await sync_control_sheet_channels(rows)
 

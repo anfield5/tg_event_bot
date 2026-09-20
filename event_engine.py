@@ -582,8 +582,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         cursor2 = conn2.cursor()
         cursor2.execute(
             "SELECT username, guests, status, user_id, chat_id FROM event_users "
-            "WHERE event_id = ? AND (guests > 0 OR status IN ('going', 'kicked'))",
-            (event_id,),
+            "WHERE event_id = ? AND chat_id != ? AND (guests > 0 OR status IN ('going', 'kicked'))",
+            (event_id, main_chat_id),
         )
         all_child_going_for_buttons_raw = cursor2.fetchall()
 
@@ -1274,29 +1274,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 # ── Admin-only actions guard ──────────────────────────────────
-                # close/directclose/save (the Verify&Close flow) also allow
-                # the event's OWN creator, not just group admins - /newevent
-                # itself has no admin check, so before this a non-admin
-                # creator had no way to ever close their own event. The
-                # other actions here (kick, cancel, guest adjustments,
-                # adding external members) stay strictly group-admin-only -
-                # more sensitive moderation actions a random creator
-                # shouldn't get unilateral power over.
+                # All of these (close/directclose/save/back, addext/Add Extra
+                # Member, kick, incgst/decgst guest adjustments, cancel) also
+                # allow the event's OWN creator, not just group admins -
+                # /newevent itself has no admin check, so before this a
+                # non-admin creator had no way to manage their own event at
+                # all beyond posting it.
                 is_creator = created_by_user_id is not None and str(created_by_user_id) == str(user_id)
-                if action in ["close", "directclose", "save", "back"]:
+                if action in ["close", "directclose", "save", "back", "addext", "kick", "incgst", "decgst", "cancel"]:
                     if not (is_admin or is_creator):
                         try:
                             await query.answer(
                                 text="⛔️ Only group admins or the event's creator can do this.",
                                 show_alert=True,
                             )
-                        except Exception:
-                            pass
-                        return
-                elif action in ["kick", "incgst", "decgst", "addext", "cancel"]:
-                    if not is_admin:
-                        try:
-                            await query.answer(text="⛔️ Only group admins can do this.", show_alert=True)
                         except Exception:
                             pass
                         return

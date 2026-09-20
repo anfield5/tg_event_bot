@@ -235,7 +235,9 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "\\- Change a feature's tier and/or its usage limit\\. At least one of the two flags is required\\.\n"
         f"{updatefeature_detail}{chr(10) if expanded else ''}"
         "/showtable \\[table\\_name\\] \\[sheet\\_name\\] \\- Dumps `SELECT * FROM table_name` into the "
-        "named tab of EventBot\\_Config \\(must already exist there\\)\\."
+        "named tab of EventBot\\_Config \\(must already exist there\\)\\.\n"
+        "/stats \\-a \\- Bot\\-wide report: groups/channels the bot is in \\(with/without admin rights\\), "
+        "FREE/PRO subscription split\\."
     )
 
 

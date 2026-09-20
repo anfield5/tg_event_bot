@@ -201,7 +201,8 @@ def init_db(db_path: str = DB_PATH):
             subs_date_start TEXT DEFAULT NULL,
             subs_date_end TEXT DEFAULT NULL,
             visibility TEXT DEFAULT NULL,
-            date_bot_add TEXT DEFAULT NULL
+            date_bot_add TEXT DEFAULT NULL,
+            role TEXT DEFAULT 'MEMBER'
         )
     """)
 
@@ -213,7 +214,8 @@ def init_db(db_path: str = DB_PATH):
             chat_id TEXT PRIMARY KEY,
             chat_name TEXT DEFAULT NULL,
             visibility TEXT DEFAULT NULL,
-            date_bot_add TEXT DEFAULT NULL
+            date_bot_add TEXT DEFAULT NULL,
+            role TEXT DEFAULT 'MEMBER'
         )
     """)
 
@@ -596,6 +598,16 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE all_groups ADD COLUMN visibility TEXT DEFAULT NULL")
     if "date_bot_add" not in mcs_cols:
         cursor.execute("ALTER TABLE all_groups ADD COLUMN date_bot_add TEXT DEFAULT NULL")
+    if "role" not in mcs_cols:
+        cursor.execute("ALTER TABLE all_groups ADD COLUMN role TEXT DEFAULT 'MEMBER'")
+
+    # -1b. Same for all_channels - role (the bot's own MEMBER/ADMIN status
+    # in that channel) is the only column that could be missing on an
+    # older all_channels table (the others predate this migration entirely).
+    cursor.execute("PRAGMA table_info(all_channels)")
+    ac_cols = [col[1] for col in cursor.fetchall()]
+    if "role" not in ac_cols:
+        cursor.execute("ALTER TABLE all_channels ADD COLUMN role TEXT DEFAULT 'MEMBER'")
 
     # 0a2. Normalize any pre-existing lowercase 'free'/'pro' type values to
     # 'FREE'/'PRO' - covers rows written before this uppercase convention.
@@ -1066,7 +1078,7 @@ def get_display_name(chat_id: str, user_id: str, fallback: str, db_path: str = N
 
 
 def register_chat_added(chat_id: str, chat_name: str, chat_type: str, visibility: str,
-                         date_bot_add: str, db_path: str = None):
+                         date_bot_add: str, role: str = "MEMBER", db_path: str = None):
     """
     Called the moment the bot is added to a group/channel (see main.py's
     on_my_chat_member_update). Groups go into all_groups (default type
@@ -1078,6 +1090,10 @@ def register_chat_added(chat_id: str, chat_name: str, chat_type: str, visibility
     treated as a group.
     visibility: "public" if the chat has a public @username, "private"
     otherwise (see main.py for how this is determined).
+    role: the bot's OWN status in this chat right now - "ADMIN" if added
+    directly as an administrator, "MEMBER" otherwise. Kept in sync
+    afterward by update_chat_role() whenever the bot is promoted/demoted
+    without actually leaving.
     """
     if db_path is None:
         db_path = DB_PATH
@@ -1085,22 +1101,46 @@ def register_chat_added(chat_id: str, chat_name: str, chat_type: str, visibility
     cursor = conn.cursor()
     if chat_type == "channel":
         cursor.execute("""
-            INSERT INTO all_channels (chat_id, chat_name, visibility, date_bot_add)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO all_channels (chat_id, chat_name, visibility, date_bot_add, role)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE
                 SET chat_name = excluded.chat_name,
                     visibility = excluded.visibility,
-                    date_bot_add = excluded.date_bot_add
-        """, (str(chat_id), chat_name, visibility, date_bot_add))
+                    date_bot_add = excluded.date_bot_add,
+                    role = excluded.role
+        """, (str(chat_id), chat_name, visibility, date_bot_add, role))
     else:
         cursor.execute("""
-            INSERT INTO all_groups (chat_id, chat_name, type, visibility, date_bot_add)
-            VALUES (?, ?, 'FREE', ?, ?)
+            INSERT INTO all_groups (chat_id, chat_name, type, visibility, date_bot_add, role)
+            VALUES (?, ?, 'FREE', ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE
                 SET chat_name = excluded.chat_name,
                     visibility = excluded.visibility,
-                    date_bot_add = excluded.date_bot_add
-        """, (str(chat_id), chat_name, visibility, date_bot_add))
+                    date_bot_add = excluded.date_bot_add,
+                    role = excluded.role
+        """, (str(chat_id), chat_name, visibility, date_bot_add, role))
+    conn.commit()
+    conn.close()
+
+
+def update_chat_role(chat_id: str, role: str, db_path: str = None):
+    """
+    Updates the bot's own MEMBER/ADMIN role for a chat it's ALREADY
+    registered in (all_groups or all_channels) - called when the bot is
+    promoted/demoted without actually leaving the chat (main.py's
+    on_my_chat_member_update, the "member <-> administrator" transition
+    that was previously silently ignored entirely). Tries all_groups
+    first, then all_channels, since the caller may not always know which
+    table this chat_id lives in at the point of a role-only update; a
+    no-op (0 rows affected either way) if the chat isn't registered in
+    either yet.
+    """
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE all_groups SET role = ? WHERE chat_id = ?", (role, str(chat_id)))
+    cursor.execute("UPDATE all_channels SET role = ? WHERE chat_id = ?", (role, str(chat_id)))
     conn.commit()
     conn.close()
 

@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
-from db import init_db, track_user, register_chat_added, register_chat_removed, log_command_usage, is_bot_locked
+from db import init_db, track_user, register_chat_added, register_chat_removed, update_chat_role, log_command_usage, is_bot_locked
 from utils import get_admin_contact
 from hub_resolver import hub_pick_callback_handler, start_command, switchgroup_command
 from handlers import (
@@ -213,14 +213,16 @@ async def _sync_control_sheet_on_startup(application):
 async def on_my_chat_member_update(update, context):
     """
     Tracks the BOT'S OWN membership changes (added to / removed from a
-    group or channel) - a DIFFERENT Telegram update type from regular user
-    membership changes (see on_chat_member_update above, which only fires
-    for OTHER users). Populates all_groups/all_channels the instant the bot
-    joins a new chat (default type 'FREE' for groups), and moves that row
-    into all_chats_bot_log with a removal timestamp the instant it's kicked
-    or leaves. Also pushes the Control Sheet's GROUPS/CHANNELS tabs right
-    away, so they never lag behind reality waiting for the next /setsub or
-    bot restart.
+    group or channel, AND promoted/demoted while still present) - a
+    DIFFERENT Telegram update type from regular user membership changes
+    (see on_chat_member_update above, which only fires for OTHER users).
+    Populates all_groups/all_channels the instant the bot joins a new
+    chat (default type 'FREE' for groups), keeps their `role` column
+    (MEMBER/ADMIN) in sync the instant Telegram reports a status change
+    even without an add/remove, and moves that row into all_chats_bot_log
+    with a removal timestamp the instant it's kicked or leaves. Also
+    pushes the Control Sheet's GROUPS/CHANNELS tabs right away, so they
+    never lag behind reality waiting for the next /setsub or bot restart.
     """
     result = update.my_chat_member
     if not result:
@@ -231,8 +233,9 @@ async def on_my_chat_member_update(update, context):
     old_status  = result.old_chat_member.status
     new_status  = result.new_chat_member.status
 
-    was_present = old_status in ("member", "administrator", "creator")
-    is_present  = new_status in ("member", "administrator", "creator")
+    was_present = old_status in ("member", "administrator", "creator", "restricted")
+    is_present  = new_status in ("member", "administrator", "creator", "restricted")
+    new_role    = "ADMIN" if new_status == "administrator" else "MEMBER"
 
     if is_present and not was_present:
         chat_name  = chat.title or chat.username or chat_id
@@ -241,13 +244,20 @@ async def on_my_chat_member_update(update, context):
         # "private" (invite-link-only) groups and channels.
         visibility = "public" if chat.username else "private"
         chat_type  = "channel" if chat.type == "channel" else "group"
-        register_chat_added(chat_id, chat_name, chat_type, visibility, now2ddmmyy())
-        logger.info(f"Bot added to {chat_type} {chat_id} ({chat_name}, {visibility})")
+        register_chat_added(chat_id, chat_name, chat_type, visibility, now2ddmmyy(), role=new_role)
+        logger.info(f"Bot added to {chat_type} {chat_id} ({chat_name}, {visibility}, role={new_role})")
     elif was_present and not is_present:
         register_chat_removed(chat_id, now2ddmmyy())
         logger.info(f"Bot removed from chat {chat_id}")
+    elif was_present and is_present:
+        old_role = "ADMIN" if old_status == "administrator" else "MEMBER"
+        if old_role == new_role:
+            return  # e.g. restricted <-> member with the same MEMBER role - nothing to sync
+        update_chat_role(chat_id, new_role)
+        logger.info(f"Bot role changed in chat {chat_id}: {old_role} -> {new_role}")
     else:
-        return  # neither an add nor a removal (e.g. restricted <-> member) - nothing to sync
+        return  # never present before or after - nothing to sync
+
 
     if not CONTROL_SHEET_ID:
         return

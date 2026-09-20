@@ -5042,9 +5042,10 @@ class TestEventCreatorCanClose:
     """/newevent has no admin check at all - any member can create an
     event. Previously only group admins could ever close/verify one,
     leaving a non-admin creator with no way to close their own event.
-    close/directclose/save now also allow the event's own creator; other
-    more sensitive admin actions (kick, cancel, guest adjustments, adding
-    external members) stay strictly group-admin-only."""
+    close/directclose/save/back and addext (Add Extra Member) now also
+    allow the event's own creator; the remaining, genuinely more
+    sensitive admin actions (kick, cancel, guest adjustments) stay
+    strictly group-admin-only."""
 
     async def _click(self, action, uid, username, is_admin_member):
         query = _make_fake_button_query(f"{action}_ev1", "-100", uid, username)
@@ -5092,12 +5093,23 @@ class TestEventCreatorCanClose:
         row = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()
         assert row == (0,)
 
-    async def test_creator_cannot_cancel_sensitive_action_stays_admin_only(self, db_path):
+    async def test_creator_can_now_cancel_their_own_event(self, db_path):
+        """Permission tier broadened further: kick/incgst/decgst/cancel
+        now also allow the event's own creator, matching every other
+        verification-mode action - a non-admin creator can fully
+        manage their own event, not just close/verify it."""
         self._insert_event(db_path, created_by="42")
         await self._click("cancel", 42, "creator_person", is_admin_member=False)
         conn = sqlite3.connect(db_path)
         row = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()
-        assert row == (0,)
+        assert row == (-1,)
+
+    async def test_random_non_admin_non_creator_still_cannot_cancel(self, db_path):
+        self._insert_event(db_path, created_by="42")
+        await self._click("cancel", 99, "random_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()
+        assert row == (0,), "must still be open - a random non-admin, non-creator can't cancel"
 
     async def test_group_admin_who_is_not_creator_can_still_close(self, db_path):
         self._insert_event(db_path, created_by="42")
@@ -5161,6 +5173,151 @@ class TestEventCreatorCanClose:
         conn = sqlite3.connect(db_path)
         row = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()
         assert row == (0,)
+
+    async def test_creator_can_use_add_extra_member_without_being_admin(self, db_path):
+        """Item 2 fix: Add Extra Member now also allows the event's
+        own creator, not just group admins - matching close/save/back's
+        permission tier."""
+        self._insert_event(db_path, created_by="42")
+        # Move to verification mode first (addext only applies there)
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        status = conn.execute("SELECT event_status FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert status == 1
+
+        query = _make_fake_button_query("addext_ev1", "-100", 42, "creator_person")
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = MagicMock(id=42)
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        ctx.user_data = {}
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+
+        assert ctx.user_data.get("awaiting_extra_player_for") == "ev1", \
+            "the creator (not an admin) must be able to trigger Add Extra Member"
+
+    async def test_random_non_admin_non_creator_cannot_use_add_extra_member(self, db_path):
+        self._insert_event(db_path, created_by="42")
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+
+        query = _make_fake_button_query("addext_ev1", "-100", 99, "random_person")
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = MagicMock(id=99)
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        ctx.user_data = {}
+        ctx.application = MagicMock()
+        ctx.application.create_task = MagicMock()
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.button_handler(upd, ctx)
+
+        assert "awaiting_extra_player_for" not in ctx.user_data, \
+            "a random non-admin, non-creator must be blocked from Add Extra Member"
+
+    async def test_creator_can_kick_without_being_admin(self, db_path):
+        """Permission tier broadened further: kick now also allows the
+        event's own creator."""
+        self._insert_event(db_path, created_by="42")
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-100','7','targetuser','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        query = _make_fake_button_query("kick_ev1:targetuser", "-100", 42, "creator_person")
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        ctx.application = MagicMock()
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        status = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND username='targetuser'"
+        ).fetchone()[0]
+        assert status == "kicked", "the creator (not an admin) must be able to kick"
+
+    async def test_random_non_admin_non_creator_cannot_kick(self, db_path):
+        self._insert_event(db_path, created_by="42")
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-100','7','targetuser','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        query = _make_fake_button_query("kick_ev1:targetuser", "-100", 99, "random_person")
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        ctx.application = MagicMock()
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        status = conn.execute(
+            "SELECT status FROM event_users WHERE event_id='ev1' AND username='targetuser'"
+        ).fetchone()[0]
+        assert status == "going", "a random non-admin, non-creator must not be able to kick"
+
+    async def test_creator_can_increment_guests_without_being_admin(self, db_path):
+        self._insert_event(db_path, created_by="42")
+        await self._click("close", 42, "creator_person", is_admin_member=False)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-100','7','targetuser','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        query = _make_fake_button_query("incgst_ev1:targetuser", "-100", 42, "creator_person")
+        upd = MagicMock()
+        upd.callback_query = query
+        ctx = MagicMock()
+        ctx.bot = MagicMock()
+        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+        ctx.application = MagicMock()
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
+            await event_engine.button_handler(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        guests = conn.execute(
+            "SELECT guests FROM event_users WHERE event_id='ev1' AND username='targetuser'"
+        ).fetchone()[0]
+        assert guests == 1, "the creator (not an admin) must be able to adjust guest counts"
 
 
 class TestAnonymousAdminButtonClicksAcrossChatTypes:
@@ -8016,6 +8173,85 @@ class TestStatsCommand:
         assert labels == ["👥 Users", "📊 Distribution"]
 
 
+class TestStatsDashCommand:
+    """Item 1: /stats -a - owner-only bot-wide report (groups/channels
+    the bot is in, with/without admin rights, FREE/PRO split) -
+    completely bypasses the normal per-hub resolve/premium flow."""
+
+    OWNER_ID = 555
+
+    async def test_non_owner_gets_silence(self, db_path):
+        chat = make_chat(chat_id=-999, chat_type="private")
+        non_owner = make_user(user_id=999)
+        msg = make_message(chat=chat)
+        msg.sender_chat = None
+        upd = make_update(chat=chat, user=non_owner, message=msg)
+        ctx = make_context(args=["-a"])
+
+        with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
+            await handlers.stats_command(upd, ctx)
+
+        msg.reply_text.assert_not_called()
+
+    async def test_owner_gets_correct_counts(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, role) VALUES ('-1','G1','FREE','MEMBER')")
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, role) VALUES ('-2','G2','PRO','ADMIN')")
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, role) VALUES ('-3','G3','FREE','ADMIN')")
+        conn.execute("INSERT INTO all_channels (chat_id, chat_name, role) VALUES ('-10','C1','MEMBER')")
+        conn.execute("INSERT INTO all_channels (chat_id, chat_name, role) VALUES ('-11','C2','ADMIN')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-999, chat_type="private")
+        owner = make_user(user_id=self.OWNER_ID)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=owner, message=msg)
+        ctx = make_context(args=["-a"])
+
+        with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
+            await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Bot added to groups\\(amount\\): 3" in text
+        assert "Bot added to channels\\(amount\\): 2" in text
+        assert "Bot added to groups with admin rights\\(amount\\): 2" in text
+        assert "Bot added to channels with admin rights\\(amount\\): 1" in text
+        assert "Groups with FREE subscription\\(amount\\): 2" in text
+        assert "Groups with PRO subscription\\(amount\\): 1" in text
+
+    async def test_owner_bypasses_normal_hub_flow_entirely(self, db_path):
+        """No PRO subscription, no hub resolution - -a must work
+        regardless, since it's a bot-wide owner report, not a per-hub
+        one."""
+        chat = make_chat(chat_id=-999, chat_type="private")
+        owner = make_user(user_id=self.OWNER_ID)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=owner, message=msg)
+        ctx = make_context(args=["-a"])
+
+        with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
+            await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "PRO" not in text or "amount" in text  # no "PRO-only feature" rejection message
+        assert "Bot\\-wide Stats" in text
+
+    async def test_zero_counts_when_nothing_registered(self, db_path):
+        chat = make_chat(chat_id=-999, chat_type="private")
+        owner = make_user(user_id=self.OWNER_ID)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=owner, message=msg)
+        ctx = make_context(args=["-a"])
+
+        with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
+            await handlers.stats_command(upd, ctx)
+
+        text = msg.reply_text.call_args.args[0]
+        assert "Bot added to groups\\(amount\\): 0" in text
+        assert "Bot added to channels\\(amount\\): 0" in text
+
+
 class TestHelpUpdatedForNewFlagsAndStats:
     """Item 8: /help updated to reflect all the flag redesign from items
     4-6 (-w/-waitlist, -ngl/-notgoinglist, -mgl/-sngl/-swl on shareevent)
@@ -8663,6 +8899,86 @@ class TestVerificationModeShowsRealNames:
         kb = master_call.kwargs["reply_markup"]
         button_texts = [b.text for row in kb.inline_keyboard for b in row]
         assert any("ghostuser" in t for t in button_texts)
+
+
+class TestVerificationKeyboardNoHubDuplication:
+    """Real bug fixed: the child-participants query feeding the
+    verification keyboard's channel-icon section didn't exclude the
+    hub's own chat_id, so anyone tracked ONLY under the hub (e.g. via
+    Add Extra Member resolving to the hub) got rendered TWICE - once
+    via master_going/master_counters (person icon), once again via
+    this unfiltered "child" query (channel icon) - both pointing at
+    the exact same event_users row, which is why kicking either one
+    kicked the same real person."""
+
+    async def test_hub_only_participant_appears_exactly_once(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Football','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','channel')"
+        )
+        # Vlad is tracked ONLY under the hub's own chat_id - exactly
+        # matching the reported scenario.
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-100','1','vlad','going',3)"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Regular Events"))
+        ctx = make_context(bot=bot)
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        master_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        kb = master_call.kwargs["reply_markup"]
+        vlad_buttons = [b.text for row in kb.inline_keyboard for b in row if "vlad" in b.text.lower()]
+        # Exactly 2 buttons for one real entry: name+Kick row, guest-count row
+        assert len(vlad_buttons) == 2, f"Vlad must appear exactly once (2 buttons total), got: {vlad_buttons}"
+
+    async def test_genuine_child_participant_still_shows_with_channel_icon(self, db_path):
+        """Confirm the fix doesn't over-correct - a person genuinely
+        tracked under a CHILD chat_id must still show up (with the
+        channel icon), just not duplicated."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
+               event_status, going_data, notgoing_data, counters_data, kicked_data)
+               VALUES ('ev1','-100','1','Football','👍','❌',1,'[]','[]','{}','[]')"""
+        )
+        conn.execute(
+            "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "
+            "VALUES ('ev1','-200','5','-visible','channel')"
+        )
+        conn.execute(
+            "INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) "
+            "VALUES ('ev1','-200','2','bob','going',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Regular Events"))
+        ctx = make_context(bot=bot)
+        ctx.application.create_task = MagicMock()
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
+            await event_engine.update_all_shared_views(ctx, "ev1")
+
+        master_call = next(c for c in bot.edit_message_text.call_args_list if c.kwargs.get("chat_id") == -100)
+        kb = master_call.kwargs["reply_markup"]
+        bob_buttons = [b.text for row in kb.inline_keyboard for b in row if "bob" in b.text.lower()]
+        assert len(bob_buttons) == 1, f"Bob (genuine child participant) must appear exactly once, got: {bob_buttons}"
+        assert bob_buttons[0] == "📢 bob", "must keep the channel icon for a genuine child-chat participant"
 
 
 class TestVerificationBackButton:

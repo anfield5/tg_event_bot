@@ -172,21 +172,83 @@ class TestBotRemovedFromChannel:
 
 class TestNonMembershipChangesAreIgnored:
     async def test_restricted_to_member_transition_does_not_trigger_add_or_remove(self, db_path):
-        """Neither status was a 'not present' state and neither is a
-        genuine add/remove - e.g. admin rights being granted/revoked
-        while the bot stays a member throughout. Must not log spurious
-        add/remove events."""
+        """Neither status was a 'not present' state, neither is a
+        genuine add/remove, AND both map to the same MEMBER role (only
+        'administrator' maps to ADMIN) - restricted <-> member is a
+        genuinely role-invariant transition. Must not log spurious
+        add/remove/role-change events."""
         main.CONTROL_SHEET_ID = "fake_sheet_id"
         with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock) as sync_main, \
              patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock) as sync_channels:
             await main.on_my_chat_member_update(
-                _my_chat_member_update(-100, "supergroup", "My Group", "member", "administrator"), MagicMock()
+                _my_chat_member_update(-100, "supergroup", "My Group", "restricted", "member"), MagicMock()
             )
 
         sync_main.assert_not_called()
         sync_channels.assert_not_called()
         conn = sqlite3.connect(db_path)
         assert conn.execute("SELECT chat_id FROM all_groups WHERE chat_id='-100'").fetchone() is None
+
+
+class TestBotRoleChangeTracked:
+    """Item 2: a promotion/demotion WITHOUT the bot leaving the chat
+    (member <-> administrator) was previously silently ignored
+    entirely - now correctly updates all_groups/all_channels' role
+    column and pushes the Control Sheet, matching a genuine add/remove."""
+
+    async def test_promotion_to_admin_updates_role_and_syncs(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, role) VALUES ('-100', 'My Group', 'MEMBER')")
+        conn.commit()
+        conn.close()
+
+        main.CONTROL_SHEET_ID = "fake_sheet_id"
+        with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True) as sync_main, \
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
+            await main.on_my_chat_member_update(
+                _my_chat_member_update(-100, "supergroup", "My Group", "member", "administrator"), MagicMock()
+            )
+
+        conn = sqlite3.connect(db_path)
+        role = conn.execute("SELECT role FROM all_groups WHERE chat_id='-100'").fetchone()[0]
+        assert role == "ADMIN"
+        sync_main.assert_awaited_once()
+
+    async def test_demotion_from_admin_updates_role_and_syncs(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, role) VALUES ('-100', 'My Group', 'ADMIN')")
+        conn.commit()
+        conn.close()
+
+        main.CONTROL_SHEET_ID = "fake_sheet_id"
+        with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True) as sync_main, \
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
+            await main.on_my_chat_member_update(
+                _my_chat_member_update(-100, "supergroup", "My Group", "administrator", "member"), MagicMock()
+            )
+
+        conn = sqlite3.connect(db_path)
+        role = conn.execute("SELECT role FROM all_groups WHERE chat_id='-100'").fetchone()[0]
+        assert role == "MEMBER"
+        sync_main.assert_awaited_once()
+
+    async def test_added_directly_as_admin_gets_admin_role(self, db_path):
+        """The bot can be added straight into admin status (not
+        member -> promoted later) - register_chat_added must be told
+        the correct initial role, not always default to MEMBER."""
+        main.CONTROL_SHEET_ID = "fake_sheet_id"
+        with patch("subscription.sync_control_sheet_main", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_channels", new_callable=AsyncMock, return_value=True), \
+             patch("subscription.sync_control_sheet_chats_log", new_callable=AsyncMock, return_value=True):
+            await main.on_my_chat_member_update(
+                _my_chat_member_update(-100, "supergroup", "My Group", "left", "administrator"), MagicMock()
+            )
+
+        conn = sqlite3.connect(db_path)
+        role = conn.execute("SELECT role FROM all_groups WHERE chat_id='-100'").fetchone()[0]
+        assert role == "ADMIN"
 
 
 class TestChatsLogSyncedToControlSheet:

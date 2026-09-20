@@ -313,7 +313,7 @@ async def sync_control_sheet_channels(rows: list) -> bool:
     of. Same one-way push, write-first-then-trim pattern as
     sync_control_sheet_main (see its docstring for why).
 
-    rows: list of (chat_id, chat_name, visibility, date_bot_add) tuples.
+    rows: list of (chat_id, chat_name, visibility, date_bot_add, role) tuples.
     Returns True on success, False on failure.
     """
     if not CONTROL_SHEET_ID:
@@ -322,7 +322,7 @@ async def sync_control_sheet_channels(rows: list) -> bool:
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("CHANNELS")
-        header = ["CHAT_ID", "CHAT_NAME", "VISIBILITY", "DATE_BOT_ADD"]
+        header = ["CHAT_ID", "CHAT_NAME", "VISIBILITY", "DATE_BOT_ADD", "ROLE"]
         body   = [[str(v) if v is not None else "" for v in row] for row in rows]
         grid   = [header] + body
 

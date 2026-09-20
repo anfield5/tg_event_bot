@@ -24,8 +24,9 @@ from config import (
     DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, logger,
     ICON_SHARED, ICON_STATS, ICON_WARNING,
     ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_STANDBY,
+    OWNER_USER_IDS,
 )
-from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID
+from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_owner
 from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
@@ -2403,7 +2404,42 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
     "all" for no filter (e.g. /stats 30d, /stats 2y). A "Users" button
     under the reply shows the same period's top-3 guest-inviters (see
     stats_users_callback_handler) without re-running the command.
+
+    /stats -a - owner-only, bypasses everything above entirely: a
+    bot-wide report (how many groups/channels the bot is in, with/
+    without admin rights, and the FREE/PRO subscription split) rather
+    than any single hub's own activity.
     """
+    if context.args and context.args[0] == "-a":
+        if not await require_owner(update, OWNER_USER_IDS):
+            return
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM all_groups")
+            groups_total = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM all_channels")
+            channels_total = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM all_groups WHERE role = 'ADMIN'")
+            groups_admin = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM all_channels WHERE role = 'ADMIN'")
+            channels_admin = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM all_groups WHERE type = 'FREE'")
+            groups_free = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM all_groups WHERE type = 'PRO'")
+            groups_pro = cursor.fetchone()[0]
+
+        text = (
+            f"{ICON_STATS} *Bot\\-wide Stats*\n\n"
+            f"Bot added to groups\\(amount\\): {groups_total}\n"
+            f"Bot added to channels\\(amount\\): {channels_total}\n"
+            f"Bot added to groups with admin rights\\(amount\\): {groups_admin}\n"
+            f"Bot added to channels with admin rights\\(amount\\): {channels_admin}\n\n"
+            f"Groups with FREE subscription\\(amount\\): {groups_free}\n"
+            f"Groups with PRO subscription\\(amount\\): {groups_pro}"
+        )
+        await update.message.reply_text(text, parse_mode="MarkdownV2")
+        return
+
     chat_id = await resolve_hub_chat_id(update, context, "stats", override_chat_id)
     if chat_id is None:
         return

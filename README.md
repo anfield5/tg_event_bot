@@ -81,6 +81,18 @@ zone are chosen to minimize crossing lines.
 > - `bot_lock` - a single-row table backing the `/lockbot` global
 >   emergency switch (see [Global lock](#global-lock-and-command-destination-classification)
 >   below) - was added but isn't shown in the diagram at all.
+> - `all_groups`/`all_channels` gained a `role` column - the bot's OWN
+>   status in that chat (`MEMBER`/`ADMIN`), tracked live via
+>   `on_my_chat_member_update`'s `member ↔ administrator` transition
+>   (previously silently ignored - the bot's own promotion/demotion
+>   without leaving a chat was never recorded). Powers `/stats -a`'s
+>   admin-rights counts and is now exported as `CHANNELS`' `ROLE` column
+>   on the Control Sheet. Chats added (or already admin-status) before
+>   this feature existed, whose role hasn't changed SINCE deploying it,
+>   still have the column's default until a resync -
+>   `scripts/sync_bot_roles.py` queries Telegram's live `getChatMember`
+>   for every registered chat and backfills the real current role;
+>   safe to run repeatedly.
 
 - **Gray** = SQLite table (single database, source of truth)
 - **Blue** = Control Sheet - **one** spreadsheet, shared across the whole bot
