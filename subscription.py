@@ -120,7 +120,7 @@ async def _push_control_sheet_main() -> bool:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT chat_id, chat_name, type, sheet_id, sheet_name, subs_date_start, subs_date_end, "
-            "visibility, date_bot_add FROM all_groups"
+            "visibility, date_bot_add, role FROM all_groups"
         )
         rows = cursor.fetchall()
     return await sync_control_sheet_main(rows)

@@ -269,7 +269,7 @@ async def sync_control_sheet_main(rows: list) -> bool:
     for visibility, not a control surface (yet).
 
     rows: list of (chat_id, chat_name, type, sheet_id, sheet_name,
-    subs_date_start, subs_date_end, visibility, date_bot_add) tuples.
+    subs_date_start, subs_date_end, visibility, date_bot_add, role) tuples.
     Returns True on success, False on failure (logged either way) - so
     callers can tell the user honestly instead of always claiming success.
     """
@@ -280,7 +280,7 @@ async def sync_control_sheet_main(rows: list) -> bool:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("GROUPS")
         header = ["CHAT_ID", "CHAT_NAME", "TYPE", "SHEET_ID", "SHEET_NAME",
-                   "SUBS_DATE_START", "SUBS_DATE_END", "VISIBILITY", "DATE_BOT_ADD"]
+                   "SUBS_DATE_START", "SUBS_DATE_END", "VISIBILITY", "DATE_BOT_ADD", "ROLE"]
         body   = [[str(v) if v is not None else "" for v in row] for row in rows]
         grid   = [header] + body
 

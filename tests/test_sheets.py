@@ -263,3 +263,44 @@ class TestGetSheetForChat:
 
         result = await sheets.get_sheet_for_chat("-777")
         assert result == "isolated_sheet"
+
+
+class TestControlSheetRoleColumn:
+    """Real gap fixed: ROLE (the bot's own MEMBER/ADMIN status) was
+    only added to the CHANNELS tab export, GROUPS was missed entirely."""
+
+    async def test_groups_tab_header_includes_role(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        ws = MagicMock()
+        ws.update = AsyncMock()
+        ws.get_all_values = AsyncMock(return_value=[])
+        ws.batch_clear = AsyncMock()
+        ss = MagicMock()
+        ss.worksheet = AsyncMock(return_value=ws)
+
+        with patch("sheets.CONTROL_SHEET_ID", "fake_id"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=ss):
+            await sheets.sync_control_sheet_main([
+                ("-100", "G1", "FREE", None, None, None, None, "public", "01.01.2026", "ADMIN"),
+            ])
+
+        grid = ws.update.call_args.args[1]
+        assert "ROLE" in grid[0]
+
+    async def test_channels_tab_header_includes_role(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        ws = MagicMock()
+        ws.update = AsyncMock()
+        ws.get_all_values = AsyncMock(return_value=[])
+        ws.batch_clear = AsyncMock()
+        ss = MagicMock()
+        ss.worksheet = AsyncMock(return_value=ws)
+
+        with patch("sheets.CONTROL_SHEET_ID", "fake_id"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=ss):
+            await sheets.sync_control_sheet_channels([
+                ("-200", "C1", "public", "01.01.2026", "MEMBER"),
+            ])
+
+        grid = ws.update.call_args.args[1]
+        assert "ROLE" in grid[0]
