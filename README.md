@@ -48,10 +48,9 @@ zone are chosen to minimize crossing lines.
 
 ![Database and Google Sheets schema](docs/db_sheets_schema.svg)
 
-> **Recent schema changes not yet reflected in the diagram above** (the
-> SVG is a static, hand-produced artifact with no generation script in
-> this repo, so it can't be mechanically regenerated - `db.py`'s own
-> `init_db()` is the definitive, always-current source of truth):
+> **Notes on non-obvious schema decisions** (`db.py`'s own `init_db()`
+> is the definitive, always-current source of truth for exact column
+> lists; the diagram above is now regenerated to match):
 > - `main_group_users`' primary key is now `(chat_id, user_id)`, not
 >   `(chat_id, username)` - a Telegram `@username` isn't a permanent
 >   identity (it can change, and a since-abandoned one can be reused by
@@ -80,7 +79,7 @@ zone are chosen to minimize crossing lines.
 >   overwriting an existing value.
 > - `bot_lock` - a single-row table backing the `/lockbot` global
 >   emergency switch (see [Global lock](#global-lock-and-command-destination-classification)
->   below) - was added but isn't shown in the diagram at all.
+>   below).
 > - `all_groups`/`all_channels` gained a `role` column - the bot's OWN
 >   status in that chat (`MEMBER`/`ADMIN`), tracked live via
 >   `on_my_chat_member_update`'s `member ↔ administrator` transition
