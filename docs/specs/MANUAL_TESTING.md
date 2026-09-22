@@ -77,6 +77,17 @@ nobody thought the change touched.
   or button click gets **zero response** (not an error message — total
   silence, same as the bot being offline). Owner's own commands and
   buttons keep working normally. `/lockbot off` restores everyone.
+- [ ] **S18.** Change your own Telegram `@username`, then click any
+  event button or run `/updateuser` → `/listusers` correctly shows
+  your **new** username, not a duplicate row or the old one.
+- [ ] **S19.** An event with 20+ going participants in verification
+  mode → Prev/Next controls appear, Kick/Guest/Add Extra
+  Member/Save & Close all keep working, and the current page is kept
+  after each action (doesn't reset to page 1).
+- [ ] **S20.** An anonymous admin ("Remain Anonymous" on) runs
+  `/refreshusers`/`/refreshusersall` → they still appear in
+  `/listusers`/`/notify`/the Users sheet, not marked "Left" despite
+  still being in the chat.
 
 ---
 
@@ -181,17 +192,33 @@ executing all ~130 detailed scenarios every time isn't realistic.
   and gets no reply (the command's existence isn't revealed to them).
 - [ ] Restarting the bot while locked keeps it locked (the state is
   persisted, not just held in memory).
+- [ ] While locked, a **non-owner** clicking Going/Not Going/ADD/Drop/
+  ALL on an already-posted event still works normally.
+- [ ] While locked, a **non-owner** running any command (or clicking
+  Kick/Return/±guest) gets the explicit lock message with a
+  contact-the-owner button/link, not silence.
+
+### /showtable
+- [ ] `/showtable events Events` (owner, from a DM) with a real tab
+  named `Events` in `EventBot_Config` → the tab is overwritten with
+  every row from the `events` table, headers included.
+- [ ] `/showtable <realtable> <NonexistentTab>` → explicit warning,
+  nothing written anywhere.
+- [ ] `/showtable <not_a_real_table> <AnyTab>` → explicit rejection,
+  no SQL ever runs against the real database.
+- [ ] Non-owner gets total silence; owner calling from a group gets
+  the DM-only error.
 
 ### Command destination classification (Type 1/2/3)
 - [ ] Every Type 3 command (`switchgroup`, `start`, `lockbot`,
-  `allgroups`, `allchannels`, `updatefeature`, `setsub`, `setsheet`)
-  called **from a group** gives the explicit `⛔️ /<command> only works
-  in a DM...` error — not silence.
-- [ ] For the 5 owner-only Type 3 commands specifically
-  (`lockbot`/`allgroups`/`allchannels`/`updatefeature`/`setsub`): a
-  **non-owner** calling from a group still gets total silence (the
-  owner check runs first) — only an **owner** calling from the wrong
-  place sees the DM-only error.
+  `allgroups`, `allchannels`, `updatefeature`, `setsub`, `setsheet`,
+  `showtable`) called **from a group** gives the explicit
+  `⛔️ /<command> only works in a DM...` error — not silence.
+- [ ] For the 6 owner-only Type 3 commands specifically
+  (`lockbot`/`allgroups`/`allchannels`/`updatefeature`/`setsub`/
+  `showtable`): a **non-owner** calling from a group still gets total
+  silence (the owner check runs first) — only an **owner** calling
+  from the wrong place sees the DM-only error.
 - [ ] `/setsheet` called from a DM correctly resolves which group to
   bind to (via the sticky-group selection), rather than needing the
   group's own chat_id passed manually.
@@ -220,3 +247,15 @@ checklist above already covers the general area.
 | `/notify`, `/refreshusers` | Read/checked the frozen `going_data`/`notgoing_data` columns directly, missing anyone whose state changed after the first migration | `handlers.py::notify`, `handlers.py::refreshusers` |
 | Legacy unresolvable Add Extra Member entries | Migration silently skipped them (no valid numeric id) — they'd vanish from `event_users` entirely instead of staying visible/surfaceable | `db.py::migrate_event_to_event_users` |
 | Placeholder-to-real-id transition | Fixing the above then risked a genuine click creating a SECOND, duplicate row alongside the stale placeholder | `event_engine.py` (unified going/notgoing/add/sub/dropall block) |
+| `/refreshusersall` on monitored child chats | Users sheet sync silently wrote nothing — `get_sheet_for_chat()` was called with the monitored child's own chat_id, which is never independently registered in `all_groups` (only the owning hub is) | `sheets.py::sync_users_sheet` (new `sheet_owner_chat_id` param), `handlers.py::refreshusersall` |
+| `main_group_users` keyed by username | A reused `@username`'s stale row (pointing to its FORMER, departed holder's real user_id) got incorrectly deleted-by-proxy when `/refreshusers` checked that old id, deleting the CURRENT, still-present holder's tracking entirely. Re-keyed to `(chat_id, user_id)`, the only permanent Telegram identity | `db.py` schema + `track_user()`, `handlers.py::refreshusers`/`refreshusersall` (DELETE now by user_id, not username) |
+| `/updateuser` "already resolved" branch | Called `track_user()` without passing the existing user_id - under the new required-user_id contract this silently no-op'd, never actually updating the person's status at all | `handlers.py::updateuser` |
+| `/refreshusersall`'s own removal loop | Unlike `/refreshusers`, had NO protection against transient API errors - any exception was treated as confirmed departure and removed | `handlers.py::refreshusersall` |
+| Add Extra Member (child/monitored chat participants) | Looked up the target username in `main_group_users` using the ADMIN's own chat_id (wherever they're typing from, typically the hub), not the chat the person actually belongs to - caused duplicate rows (one per chat, different icons), broken guest increment/decrement (split across the duplicates), and "@username" instead of "First Last" | `handlers.py::handle_extra_player_input` (now searches hub + every `event_shares` chat, hub takes priority if present in both) |
+| Verification-mode keyboard button limit | Each participant = 5 buttons (2 rows). 21+ going participants (105+ buttons) exceeds Telegram's practical ~100-button-per-keyboard limit, silently breaking every re-render (Kick/Guest/Add Extra Member/Save & Close all stop working, event gets permanently stuck in verification) | `keyboard.py::create_event_keyboard` (new pagination, 10/page), `event_engine.py::button_handler` (new `vpage` action) |
+| Verification-page storage via `context.application.chat_data` | Broke Prev/Next in real production (PTB v20+ made the top-level mapping read-only - `.setdefault()`/item assignment raises) while still passing in tests, since the test mocks used a plain unrestricted dict instead of PTB's real restricted mapping | `event_engine.py` (new module-level `_verification_pages` dict, matching the existing `_event_locks`/`_refresh_state` pattern) |
+| `/refreshusers`/`/refreshusersall` and anonymous admins | `get_chat_member` can incorrectly report an anonymous admin ("Remain Anonymous") as "left"/"kicked" even though they're still a genuine, current administrator - they'd get deleted from `main_group_users` despite still being in the chat, disappearing from `/listusers`/`/notify`/the Users sheet | `handlers.py::refreshusers`/`refreshusersall` (cross-checks a "left"/"kicked" result against the already-fetched admin list before trusting it - reusing the existing `get_chat_administrators()` call, no extra API cost) |
+| Verification keyboard duplicating a hub-only participant | The child-participants query feeding the channel-icon section of the verification keyboard didn't exclude `chat_id = main_chat_id`, so anyone tracked ONLY under the hub got rendered twice (once via `master_going`/`master_counters` with the person icon, once via this unfiltered query with the channel icon) - both pointing at the same `event_users` row, so kicking either visual entry kicked the same real person | `event_engine.py::update_all_shared_views` (child query now adds `AND chat_id != ?` with the hub's own chat_id) |
+| Verification/event-control permission tier | Kick/incgst/decgst/cancel/addext required strict group-admin status, unlike Save & Close/Back which also allow the event's own creator - a non-admin creator could close/verify their own event but not manage it further (add members, kick, adjust guests, cancel) | `event_engine.py::button_handler` (consolidated into one admin-OR-creator tier for close/directclose/save/back/addext/kick/incgst/decgst/cancel) |
+| Bot's own promotion/demotion never tracked | `on_my_chat_member_update` had an `else: return` covering the exact "member ↔ administrator" transition (still present before and after, just a role change) - the bot being promoted/demoted without leaving a chat was silently ignored entirely, no DB update, no Control Sheet sync | `main.py::on_my_chat_member_update` (new `role` column on `all_groups`/`all_channels`, updated via the new `db.update_chat_role()`) |
+| `was_present`/`is_present` missing the "restricted" status | Telegram's "restricted" status means still present in the chat (just with limited permissions) - a `restricted` ↔ `member` transition was incorrectly treated as a genuine add/remove instead of the role-invariant no-op it actually is (found while testing the role-tracking fix above) | `main.py::on_my_chat_member_update` (both tuples now include `"restricted"`) |

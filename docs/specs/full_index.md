@@ -33,16 +33,17 @@ DM instead, so they're not left wondering if anything happened).
 
 **Type 3 — DM only, explicit error if called from a group**:
 `/switchgroup`, `/start`, `/lockbot`, `/allgroups`, `/allchannels`,
-`/updatefeature`, `/setsub`, `/setsheet`. Enforced by `require_dm_only()`
-at the top of each — replies with `⛔️ /<command> only works in a DM
-with the bot...` and returns, rather than silently doing nothing (the
-older convention `/start`/`/switchgroup` used before this was made
-explicit). For the 5 owner-only commands here (`lockbot`, `allgroups`,
-`allchannels`, `updatefeature`, `setsub`), the DM-only check runs
-**after** the owner check, not before — a non-owner calling from a
-group must still get silence (the command's existence isn't revealed
-to them); only an owner calling from the wrong place sees the DM-only
-error. `/setsheet` keeps its own `resolve_hub_chat_id` call for
+`/updatefeature`, `/setsub`, `/setsheet`, `/showtable`. Enforced by
+`require_dm_only()` at the top of each — replies with `⛔️ /<command>
+only works in a DM with the bot...` and returns, rather than silently
+doing nothing (the older convention `/start`/`/switchgroup` used
+before this was made explicit). For the 6 owner-only commands here
+(`lockbot`, `allgroups`, `allchannels`, `updatefeature`, `setsub`,
+`showtable`), the DM-only check runs **after** the owner check, not
+before — a non-owner calling from a group must still get silence (the
+command's existence isn't revealed to them); only an owner calling
+from the wrong place sees the DM-only error. `/setsheet` keeps its own
+`resolve_hub_chat_id` call for
 picking which group to bind (a DM alone doesn't know which group), but
 the DM-only check runs before that resolution even starts.
 
@@ -122,10 +123,13 @@ No flags. Lists monitored chats.
 No flags. *(owner-only)* Sets/changes a group/channel's subscription tier and expiry.
 
 ## /lockbot
-`on`/`off` argument, no flags. *(owner-only)* Global emergency switch — `on` makes the bot ignore every command and button click from anyone not in `OWNER_USER_IDS`, across every chat at once (not scoped to one group). `off` restores normal availability. Enforced by a dedicated gate handler that runs before every other handler, silently stopping all further processing for non-owners while locked — no reply, same as being offline.
+`on`/`off` argument, no flags. *(owner-only)* Global emergency switch — `on` makes the bot stop everyone not in `OWNER_USER_IDS`, across every chat at once (not scoped to one group), with one deliberate exception: Going/Not Going/ADD/Drop/ALL clicks on an already-posted event still work for everyone, so a lockdown doesn't strand people mid-RSVP. Enforced by a dedicated gate handler (`main.py`'s `lock_gate`) that runs before every other handler. A blocked command gets a reply with a button to message the bot owner (`utils.get_admin_contact()` — the same contact info shown in the premium-upgrade flow); a blocked button click gets a `show_alert` popup with the same contact URL as plain text. `off` restores normal availability.
 
 ## /updatefeature
 **-minlevel**, **-limit** — *(owner-only)* changes a feature's own tier requirement and/or per-tier usage cap. **Note:** unrelated to `/newevent`'s `-limit` (event headcount) despite the identical flag string.
+
+## /showtable
+`table_name` and `sheet_name` arguments, no flags. *(owner-only)* Runs `SELECT * FROM table_name` against the bot's own SQLite database and writes the results into the named tab of the Control Sheet (`EventBot_Config`), overwriting whatever was there before. `table_name` is checked against `sqlite_master`'s real table list before ever being interpolated into a raw SQL string — table/column names can't be passed as `?` placeholder parameters in SQLite, so this whitelist check IS the actual SQL-injection safety boundary here. `sheet_name` must already exist as a tab — this only writes into an existing tab, never creates one; an unknown name gets an explicit warning.
 
 ## /setsheet
 No flags. Binds this group to its own Google Sheet.
@@ -152,18 +156,50 @@ No flags. *(owner-only)* Lists every channel the bot is in.
 - **ADD** — adds one guest to the clicker's own count.
 - **Drop** — removes one guest from the clicker's own count.
 - **ALL** — drops all of the clicker's own guests at once; promotes one waiter per freed slot.
-- **Verify** *(shown when `verification` feature is on)* — admin-only, locks voting, enters review mode.
-- **Save&Close** *(shown when `verification` is off)* — admin-only, closes directly.
-- **Cancel** — admin-only, cancels immediately.
+- **Verify** *(shown when `verification` feature is on)* — admin-or-creator, locks voting, enters review mode.
+- **Save&Close** *(shown when `verification` is off)* — admin-or-creator, closes directly.
+- **Cancel** — admin-or-creator, cancels immediately.
 
 ## Event post — verification mode (main hub only)
 - **[Participant name]** — non-clickable display row.
-- **Kick** — admin-only, removes this person from going.
-- **Return** — admin-only, restores a kicked person.
+- **Kick** — admin-or-creator, removes this person from going.
+- **Return** — admin-or-creator, restores a kicked person.
 - **[guest counter]** — non-clickable display.
-- **−** / **+** — admin-only, adjusts this person's guest count by one.
-- **Add Extra Member** — admin-only, prompts for a username to add manually.
-- **Save & Close Event** — admin-only, finalizes and exports the roster.
+- **−** / **+** — admin-or-creator, adjusts this person's guest count by one.
+- **Add Extra Member** — admin-or-creator, prompts for a username to add manually.
+- **🔙 Back** — admin-or-creator, reverts to open (`event_status` 0) for an accidentally-clicked Verify, without going through Save & Close or Cancel. Doesn't touch any kick/guest/extra-member data already changed while in verification, and doesn't set `closed_date`.
+- **Save & Close Event** — admin-or-creator, finalizes and exports the roster.
+- **◀️ Prev / N/M / Next ▶️** — pagination controls, shown only when there's more than one page (see below).
+
+**Pagination (real bug fixed):** each participant renders as 2 rows / 5
+buttons (name+Kick/Return, guest-count+minus+plus). With enough people this
+exceeds Telegram's practical ~100-button-per-keyboard limit — reported
+incident: an event with 21 going participants (105+ buttons) got
+permanently stuck in verification mode, since Telegram silently rejects
+every re-render attempt (Kick/Guest/Add Extra Member/Save & Close all stop
+visibly working, though the underlying DB state is untouched — the fix has
+nothing to do with the data itself). Fixed via `keyboard.VERIFICATION_PAGE_SIZE`
+(10 people/page, keeping every page comfortably under the limit no matter
+the total roster size) — master hub and every shared/monitored child chat's
+participants are combined into ONE list before paginating, so the button
+count is genuinely capped regardless of how many different chats
+contributed people. The current page is stored in
+`event_engine._verification_pages[event_id]` (a plain module-level dict,
+matching this same module's existing `_event_locks`/`_refresh_state`
+pattern) via a new `vpage_<event_id>:<page>` callback action — this
+preserves the admin's page across Kick/Guest/Add Extra Member clicks
+rather than resetting to page 0 every time, and an out-of-range page (e.g.
+after kicks shrink the roster) clamps to the last valid page rather than
+showing empty or crashing. **Real bug found in an earlier version of this
+fix**: the page was originally stored in `context.application.chat_data`,
+which PTB v20+ made read-only at the top level (`.setdefault()`/item
+assignment on it raises — only mutating an *already-existing* inner
+per-chat dict is sanctioned). This silently broke Prev/Next in actual
+production while still passing in tests, since the test mocks used a
+plain, unrestricted dict instead of PTB's real restricted mapping — a
+reminder that mocking a third-party object's *shape* isn't the same as
+mocking its *behavior/constraints*. Not persisted across a bot restart
+(an acceptable, minor UX tradeoff for something this transient).
 
 ## /help main menu
 **Users**, **Utility**, **Event Lifecycle**, **Distribution**, **Aliases**, **Monitoring**, **DM Access** — each opens its detail section; locked ones show a PRO badge and route to an upgrade prompt.
@@ -185,13 +221,14 @@ No flags. *(owner-only)* Lists every channel the bot is in.
 ## Part A — SQLite tables
 
 ### `all_groups`
-**Columns:** `chat_id` (PK), `chat_name`, `type` (FREE/PRO), `sheet_id` (UNIQUE), `sheet_name`, `subs_date_start`, `subs_date_end`, `visibility`, `date_bot_add`
+**Columns:** `chat_id` (PK), `chat_name`, `type` (FREE/PRO), `sheet_id` (UNIQUE), `sheet_name`, `subs_date_start`, `subs_date_end`, `visibility`, `date_bot_add`, `role` (the bot's OWN status in this chat — MEMBER/ADMIN)
 
 Only holds chats the bot is **currently** in as a group/supergroup — a hub. One row per chat, upserted by `chat_id`.
 
 | Trigger | Operation |
 |---|---|
-| Bot added to a group (`my_chat_member` update) | INSERT (or UPDATE on conflict — `chat_name`/`visibility`/`date_bot_add` refreshed) via `register_chat_added()` |
+| Bot added to a group (`my_chat_member` update) | INSERT (or UPDATE on conflict — `chat_name`/`visibility`/`date_bot_add`/`role` refreshed) via `register_chat_added()`, `role` set from the add's own `new_chat_member.status` (ADMIN if added straight in as administrator) |
+| Bot promoted/demoted in a group without leaving (`my_chat_member`, `member` ↔ `administrator`) | UPDATE `role` only, via `update_chat_role()` — previously silently ignored entirely (real bug fixed: the handler's own `else: return` branch covered this exact transition) |
 | Bot removed from a group | Row moved out: INSERT into `all_chats_bot_log`, then **DELETE** from `all_groups`, via `register_chat_removed()` |
 | `/setsub <chat_id> off` | UPDATE `type='FREE'` if the row exists, else INSERT a fresh FREE row |
 | `/setsub <chat_id> on <days>` | UPDATE `type='PRO'`, `subs_date_start`/`subs_date_end` recalculated (extending an active sub stacks onto its current end date, doesn't reset it), else INSERT a fresh PRO row |
@@ -199,13 +236,14 @@ Only holds chats the bot is **currently** in as a group/supergroup — a hub. On
 | Legacy value normalization (startup migration) | UPDATE `type='FREE'`/`'PRO'` where the old lowercase `'free'`/`'pro'` values are found |
 
 ### `all_channels`
-**Columns:** `chat_id` (PK), `chat_name`, `visibility`, `date_bot_add`
+**Columns:** `chat_id` (PK), `chat_name`, `visibility`, `date_bot_add`, `role` (the bot's OWN status in this channel — MEMBER/ADMIN)
 
 Same presence-registry idea as `all_groups`, but channels have no subscription/sheet concept.
 
 | Trigger | Operation |
 |---|---|
-| Bot added to a channel | INSERT (or UPDATE on conflict) via `register_chat_added()` |
+| Bot added to a channel | INSERT (or UPDATE on conflict, including `role`) via `register_chat_added()` |
+| Bot promoted/demoted in a channel without leaving | UPDATE `role` only, via `update_chat_role()` — same fix as `all_groups`' own entry above |
 | Bot removed from a channel | INSERT into `all_chats_bot_log`, then **DELETE** from `all_channels`, via `register_chat_removed()` |
 
 ### `all_chats_bot_log`
@@ -253,7 +291,9 @@ The single source of truth for what's available at each tier. Seeded at startup 
 | One-time legacy migration (old per-tier limit columns) | UPDATE `limit_count` from whichever of the 3 old columns matched the row's current tier, then those 3 old columns are dropped |
 
 ### `events`
-**Columns:** `event_id` (PK), `chat_id`, `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `going_data` (JSON, **frozen/vestigial** — see below), `notgoing_data` (JSON, **frozen/vestigial**), `counters_data` (JSON, **frozen/vestigial**), `event_date`, `kicked_data` (JSON, **frozen/vestigial**), `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON — still live, see below), `waitlist_open`, `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`
+**Columns:** `event_id` (PK), `chat_id` (NOT NULL), `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `going_data` (JSON, **frozen/vestigial** — see below), `notgoing_data` (JSON, **frozen/vestigial**), `counters_data` (JSON, **frozen/vestigial**), `event_date`, `kicked_data` (JSON, **frozen/vestigial**), `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON — still live, see below), `waitlist_open`, `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`, `created_date`, `closed_date`
+
+`created_date`/`closed_date` are real, persisted columns (not just written to the bound Google Sheet) — set via `now2ddmmyy()` at `/newevent` creation time and at Save&Close/Cancel/Directclose respectively. Both follow a "DB first, then Sheets reuses that exact value" pattern: the timestamp is computed once, written to the `events` row (via a plain `INSERT`/`UPDATE`), and the SAME in-memory value is reused for the Google Sheets Events tab export (if the hub is PRO with a bound sheet) — never recomputed a second time for the Sheet, which could otherwise drift from what was actually persisted. `closed_date` uses `COALESCE(?, closed_date)` in its own `UPDATE` so actions that don't close the event (kick, guest adjustments, `back`, pagination) never overwrite an already-set value with `NULL`.
 
 **Variant B note:** `going_data`/`notgoing_data`/`counters_data`/`kicked_data` were the master hub's own source of truth *before* Variant B unified the master hub and every child chat under the single `event_users` table (see that table's own section below). These four columns are no longer written to by any button click or command — they're read exactly once per event, the very first time ANY code path touches that event after the Variant B deploy, to migrate their contents into `event_users` (see `db.migrate_event_to_event_users()`). After that one-time migration, they sit frozen, kept only so that an event nobody has touched yet doesn't render as empty (a fallback path in `update_all_shared_views` reads them directly if `event_users` has no rows yet for that event).
 
@@ -273,15 +313,21 @@ The single source of truth for what's available at each tier. Seeded at startup 
 No DELETE ever happens on this table — a canceled or closed event's row stays forever (its `event_status` just changes).
 
 ### `main_group_users`
-**Columns:** `chat_id`, `username`, `user_id`, `status` (active/passive), `first_name`, `last_name` — composite PK `(chat_id, username)`
+**Columns:** `chat_id`, `username`, `user_id` (NOT NULL), `status` (active/passive), `first_name`, `last_name` — composite PK `(chat_id, user_id)`
 
 The tracked-roster table used by `/listusers`, `/notify`, `/refreshusers`, and every mention-resolution lookup.
 
+**Real bug fixed:** this table used to be keyed by `(chat_id, username)`, with `user_id` optional. But a Telegram `@username` is **not** a permanent identity — it can be changed, and once abandoned, can be picked up by a completely different person. This caused a real incident: a stale row for a reused `@username` still pointed at its *former* holder's real (but no-longer-relevant) `user_id`. `/refreshusers` correctly queried that old id, Telegram correctly reported it as `left`, and the row was deleted — silently removing the *current*, still-present holder of that username from tracking. Keying by `user_id` (the only permanent Telegram identity) makes this collision structurally impossible: each real person always gets their own row, no matter how many usernames they've cycled through, and no matter who held their current username before them. `user_id` is required (`NOT NULL`) — a call to `track_user()` with no resolvable numeric id is now a silent no-op, rather than the old behavior of creating a permanently-unresolvable stub row that lingered forever.
+
+`track_user()` also refuses to ever store `GROUP_ANONYMOUS_BOT_ID` (`1087968824`, Telegram's shared pseudo-account for "Remain Anonymous" senders) as anyone's personal tracking id — a plain text message from an anonymous sender never reveals their real identity, only a genuine button click does, so accepting this pseudo-id here would create a bogus row that doesn't correspond to any real, individually-trackable person.
+
+A handful of call sites still do a **fallback lookup by username** specifically when no `user_id` is already known (e.g. `/updateuser` checking if a name has already been resolved, `_mention_link`'s own fallback for old-format Not Going entries) — this is an inherent, unavoidable property of resolving an identity from a name alone, not a bug: if two different real people have both, at different times, held the same now-current username, and neither has been freshly tracked yet, the lookup could theoretically return either. The core incident above (incorrect *removal* of a still-present person) is fixed regardless, since removal is now keyed by `user_id`, never by username.
+
 | Trigger | Operation |
 |---|---|
-| Anyone clicking Going/Not Going/any event button, joining/being added to a chat, `/adduser`, `/updateuser`, `@everyone` mentions | INSERT ... ON CONFLICT DO UPDATE (upsert) via `track_user()` — updates `status` always; `user_id`/`first_name`/`last_name` only if a non-null value is actually being passed (never overwrites a good value with a blank one) |
-| `/refreshusers` finding someone no longer in the chat (and unresolvable via the admin list) | **DELETE** by `(chat_id, username)` |
-| `/refreshusersall`, same logic, per monitored chat | **DELETE** by `(chat_id, username)` |
+| Anyone clicking Going/Not Going/any event button, joining/being added to a chat, `/adduser`, `/updateuser`, `@everyone` mentions | INSERT ... ON CONFLICT(chat_id, user_id) DO UPDATE (upsert) via `track_user()` — updates `username`/`status` always (so a rename is reflected in place, not left stale); `first_name`/`last_name` only if a non-null value is actually being passed (never overwrites a good value with a blank one). No-op entirely if `user_id` is missing or is `GROUP_ANONYMOUS_BOT_ID` |
+| `/refreshusers` finding someone no longer in the chat | **DELETE** by `(chat_id, user_id)` — never by username, to avoid ever deleting a *different*, currently-present person who happens to hold that same username string right now |
+| `/refreshusersall`, same logic, per monitored chat | **DELETE** by `(chat_id, user_id)`, same reasoning. Also fixed a real gap here: unlike `/refreshusers`, this loop previously had no protection against transient API errors — any exception was treated as confirmed departure and removed; now matches the safer "keep on error" behavior |
 
 ### `event_shares`
 **Columns:** `share_id` (PK, autoincrement), `event_id`, `chat_id`, `message_id`, `share_mode` (-visible/-onlycount/-hidden — the `-mgl` value), `chat_type`, `share_notgoing_visibility`, `share_waitlist_visibility`, `share_clickability` — UNIQUE `(event_id, chat_id)`
@@ -341,7 +387,7 @@ An unresolvable person (e.g. added via Add Extra Member with no real Telegram us
 Two categories: the **Control Sheet** (one, shared across the whole bot, tracked via `CONTROL_SHEET_ID`) and **per-hub sheets** (one Google Sheet per premium hub, bound via `/setsheet`). Every per-hub write is silently skipped entirely on FREE tier or if no sheet is bound — by design, not an error.
 
 ### Control Sheet — `GROUPS` tab
-**Columns:** CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD
+**Columns:** CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD, ROLE
 
 Full overwrite-and-trim mirror of the entire `all_groups` SQLite table (not incremental row edits).
 
@@ -352,7 +398,7 @@ Full overwrite-and-trim mirror of the entire `all_groups` SQLite table (not incr
 | `/setsub` (on or off) | Full re-push |
 
 ### Control Sheet — `CHANNELS` tab
-**Columns:** CHAT_ID, CHAT_NAME, VISIBILITY, DATE_BOT_ADD
+**Columns:** CHAT_ID, CHAT_NAME, VISIBILITY, DATE_BOT_ADD, ROLE
 
 Same full-mirror pattern as `GROUPS`, sourced from `all_channels`.
 
@@ -421,7 +467,7 @@ Pure append-only action log — one row per state-changing button click or Add E
 |---|---|
 | Any state-changing click in the master hub or a child chat (going/notgoing/add/sub/dropall/kick/return/save/cancel) | `append_row`, `ACTION` = the raw action name, uppercased |
 | ± guest buttons specifically, in verification mode | `append_row`, `ACTION` logged as the friendlier `ADD_editmode`/`SUB_editmode` instead of the raw `incgst`/`decgst` |
-| Add Extra Member | `append_row`, `ACTION='ADD_EXTRA_PLAYER'`, `USER_NAME`/`USER_ID` = the **admin who clicked**, not the person being added |
+| Add Extra Member | `append_row`, `ACTION='ADD_EXTRA_PLAYER'`, `USER_NAME`/`USER_ID` = the **admin or creator who clicked**, not the person being added |
 
 ### Per-hub sheet — `EventUsers` tab
 **Columns:** EVENT_ID, USER_ID
