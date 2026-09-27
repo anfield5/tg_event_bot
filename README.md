@@ -51,6 +51,13 @@ zone are chosen to minimize crossing lines.
 > **Notes on non-obvious schema decisions** (`db.py`'s own `init_db()`
 > is the definitive, always-current source of truth for exact column
 > lists; the diagram above is now regenerated to match):
+> - `events.waitlist_open` (the old boolean open/closed flag) has been
+>   physically dropped - superseded by `waitlist_visibility`
+>   (visible/hidden/onlycount), which no code path had read `waitlist_open`
+>   through for a long time. The migration backfills `waitlist_visibility`
+>   from the old boolean for any pre-existing row (`1` → `visible`, `0` →
+>   `hidden`) before dropping the column, so no existing event's setting
+>   is lost.
 > - `main_group_users`' primary key is now `(chat_id, user_id)`, not
 >   `(chat_id, username)` - a Telegram `@username` isn't a permanent
 >   identity (it can change, and a since-abandoned one can be reused by

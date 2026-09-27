@@ -304,3 +304,68 @@ class TestControlSheetRoleColumn:
 
         grid = ws.update.call_args.args[1]
         assert "ROLE" in grid[0]
+
+
+class TestOpenSpreadsheetRetry:
+    """Real gap fixed: open_spreadsheet's OAuth-dependent calls
+    (agcm.authorize + gc.open_by_key) were the only unprotected Google
+    API call in sheets.py - any exception there propagated straight
+    up through refreshusersall's outer catch with zero retry, even
+    for "invalid_grant: Invalid grant: account not found", a
+    documented, sometimes-transient Google error (server clock skew
+    or a flaky token refresh, not always a genuinely revoked key)."""
+
+    async def test_transient_invalid_grant_recovers_on_retry(self):
+        sheets._spreadsheet_cache.clear()
+        call_count = {"n": 0}
+
+        async def flaky_authorize():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise Exception("invalid_grant: Invalid grant: account not found")
+            gc = MagicMock()
+            gc.open_by_key = AsyncMock(return_value="FAKE_SPREADSHEET")
+            return gc
+
+        with patch("sheets.agcm") as mock_agcm:
+            mock_agcm.authorize = flaky_authorize
+            result = await sheets.open_spreadsheet("sheet_retry_test", _retry_delay=0.01)
+
+        assert result == "FAKE_SPREADSHEET"
+        assert call_count["n"] == 2
+
+    async def test_persistent_invalid_grant_raises_after_retries_exhausted(self):
+        sheets._spreadsheet_cache.clear()
+
+        async def always_fails():
+            raise Exception("invalid_grant: Invalid grant: account not found")
+
+        with patch("sheets.agcm") as mock_agcm:
+            mock_agcm.authorize = always_fails
+            with pytest.raises(Exception, match="invalid_grant"):
+                await sheets.open_spreadsheet("sheet_persistent_fail", _retries=2, _retry_delay=0.01)
+
+    async def test_non_invalid_grant_error_is_not_retried(self):
+        """A different kind of error must fail immediately, not burn
+        through retries meant specifically for the OAuth hiccup case."""
+        sheets._spreadsheet_cache.clear()
+        call_count = {"n": 0}
+
+        async def different_error():
+            call_count["n"] += 1
+            raise Exception("some other unrelated error")
+
+        with patch("sheets.agcm") as mock_agcm:
+            mock_agcm.authorize = different_error
+            with pytest.raises(Exception, match="unrelated error"):
+                await sheets.open_spreadsheet("sheet_other_error", _retry_delay=0.01)
+
+        assert call_count["n"] == 1, "must not retry a non-invalid_grant error"
+
+    async def test_cached_sheet_never_calls_authorize_at_all(self):
+        sheets._spreadsheet_cache["sheet_cached"] = "ALREADY_CACHED"
+        with patch("sheets.agcm") as mock_agcm:
+            mock_agcm.authorize = AsyncMock(side_effect=AssertionError("should not be called"))
+            result = await sheets.open_spreadsheet("sheet_cached")
+        assert result == "ALREADY_CACHED"
+        sheets._spreadsheet_cache.clear()

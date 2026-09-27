@@ -1,4 +1,5 @@
 import json
+import asyncio
 import gspread_asyncio
 from datetime import datetime
 from google.oauth2.service_account import Credentials
@@ -42,7 +43,7 @@ _spreadsheet_cache = {}
 _SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-async def open_spreadsheet(sheet_id):
+async def open_spreadsheet(sheet_id, _retries=2, _retry_delay=1.5):
     """
     Opens a spreadsheet by its ID (gc.open_by_key), not by title. A title
     isn't guaranteed unique - two different customers could both leave their
@@ -54,15 +55,35 @@ async def open_spreadsheet(sheet_id):
     Returns None (no network call at all) if sheet_id is falsy - the normal,
     expected case for a free-tier hub or a premium hub that hasn't
     configured a sheet yet. Callers must check for a None return.
+
+    Retries once (by default) on a Google OAuth token-refresh failure
+    ("invalid_grant: Invalid grant: account not found") - a documented,
+    sometimes-transient error (server clock skew or a flaky token refresh,
+    not always a genuinely revoked credential) that otherwise surfaces as a
+    confusing, unrecoverable "Failed" partway through a bulk operation like
+    /refreshusersall, for what may just be a one-off hiccup.
     """
     if not sheet_id:
         return None
     if sheet_id in _spreadsheet_cache:
         return _spreadsheet_cache[sheet_id]
-    gc = await agcm.authorize()
-    ss = await gc.open_by_key(sheet_id)
-    _spreadsheet_cache[sheet_id] = ss
-    return ss
+    last_error = None
+    for attempt in range(_retries + 1):
+        try:
+            gc = await agcm.authorize()
+            ss = await gc.open_by_key(sheet_id)
+            _spreadsheet_cache[sheet_id] = ss
+            return ss
+        except Exception as e:
+            last_error = e
+            if "invalid_grant" not in str(e) or attempt == _retries:
+                raise
+            logger.warning(
+                f"open_spreadsheet: transient invalid_grant on attempt {attempt + 1}/{_retries + 1} "
+                f"for sheet {sheet_id}, retrying: {e}"
+            )
+            await asyncio.sleep(_retry_delay)
+    raise last_error
 
 
 async def get_sheet_for_chat(chat_id):

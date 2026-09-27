@@ -335,7 +335,6 @@ def init_db(db_path: str = DB_PATH):
             feature_snapshot TEXT DEFAULT NULL,
             total_limit INTEGER DEFAULT NULL,
             waitlist_data TEXT DEFAULT '[]',
-            waitlist_open INTEGER DEFAULT 0,
             waitlist_visibility TEXT DEFAULT 'hidden',
             notgoing_visibility TEXT DEFAULT 'visible',
             clickability TEXT DEFAULT 'on',
@@ -645,14 +644,26 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE events ADD COLUMN waitlist_open INTEGER DEFAULT 0")
 
     # 0a6. Add `waitlist_visibility` (visible/hidden/onlycount) alongside
-    # the older boolean waitlist_open, which stays in the schema for
-    # backward-compat inertia but is no longer read by any code path.
-    # One-time migration: for pre-existing rows, carry the old boolean
-    # over (1 -> visible, 0 -> hidden) so nobody's setting silently
-    # resets - only genuinely new rows default to 'hidden' going forward.
+    # the older boolean waitlist_open. One-time migration: for
+    # pre-existing rows, carry the old boolean over (1 -> visible,
+    # 0 -> hidden) so nobody's setting silently resets - only genuinely
+    # new rows default to 'hidden' going forward. waitlist_open itself
+    # is dropped immediately after (0a6b) - it's kept alive only long
+    # enough for this one backfill read.
     if "waitlist_visibility" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN waitlist_visibility TEXT DEFAULT 'hidden'")
         cursor.execute("UPDATE events SET waitlist_visibility = 'visible' WHERE waitlist_open = 1")
+
+    # 0a6b. waitlist_open itself is now fully dead (superseded by
+    # waitlist_visibility above, which every existing row was just
+    # backfilled from) - drop it outright rather than leaving an unused
+    # column around forever. Re-checks PRAGMA table_info fresh (not the
+    # events_cols snapshot from before 0a5/0a6 may have run) since this
+    # must correctly no-op on a database that's already had it dropped
+    # by an earlier run of this same migration.
+    cursor.execute("PRAGMA table_info(events)")
+    if "waitlist_open" in [col[1] for col in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE events DROP COLUMN waitlist_open")
 
     # 0a7. Add `created_by_user_id` - lets the event's own creator close it,
     # not just group admins (previously ANY member could create an event

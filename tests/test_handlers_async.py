@@ -4217,8 +4217,8 @@ class TestButtonHandlerCapacityAndPromotion:
         conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_open)
-               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,'[]',1)""",
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,'[]')""",
             (json.dumps(["alice (1)", "bob (2)"]),),
         )
         conn.commit()
@@ -4237,8 +4237,8 @@ class TestButtonHandlerCapacityAndPromotion:
         conn = sqlite3.connect(db_path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data, waitlist_open)
-               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,?,1)""",
+               event_status, going_data, notgoing_data, counters_data, kicked_data, total_limit, waitlist_data)
+               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]',2,?)""",
             (
                 json.dumps(["alice (1)", "bob (2)"]),
                 json.dumps([{"chat_id": "-100", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "2026-01-01 00:00:00"}]),
@@ -6398,6 +6398,46 @@ class TestDeduplicatedProTierChecks:
         text = msg.reply_text.call_args.args[0]
         assert "PRO" in text
         assert "addmonitor" in text
+
+    async def test_refreshusersall_failed_line_shows_real_error_reason(self, db_path):
+        """Real gap fixed: the 'Failed' line used to show only the chat
+        name, hiding WHY it failed entirely - undiagnosable from the
+        bot's own reply (this was the exact scenario reported: two
+        monitored chats failing with no visible reason)."""
+        insert_premium(db_path, chat_id="-100123")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO sub_chats (chat_id, owner_chat_id, chat_type, chat_name, is_monitored) "
+            "VALUES ('-200', '-100123', 'group', 'Monitored Group', 1)"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.get_chat = AsyncMock(return_value=MagicMock(title="Hub"))
+        bot.get_chat_administrators = AsyncMock(return_value=[])
+        chat = make_chat(chat_id=-100123, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=[])
+
+        # sync_users_sheet is the one call in the loop NOT wrapped in its
+        # own inner try/except (only open_spreadsheet's OAuth call, which
+        # it calls internally, is unprotected) - simulate that exact
+        # failure mode reaching the outer handler.
+        with patch("handlers.sync_users_sheet", new_callable=AsyncMock,
+                   side_effect=Exception("invalid_grant: Invalid grant: account not found")):
+            await handlers.refreshusersall(upd, ctx)
+
+        final_call = msg.reply_text.call_args_list[-1]
+        text = final_call.args[0] if final_call.args else final_call.kwargs.get("text", "")
+        # edit_message_text may be used instead for the final report - check both
+        if not text:
+            text = ctx.bot.edit_message_text.call_args.kwargs.get("text", "") if ctx.bot.edit_message_text.called else ""
+        assert "Failed" in text
+        assert "invalid_grant" in text or "account not found" in text
 
 
 class TestAliasMessageConsistencyFixes:
@@ -8719,10 +8759,10 @@ class TestClickabilityOnMakesEverySectionClickable:
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
                event_status, going_data, notgoing_data, counters_data, kicked_data,
-               waitlist_data, waitlist_open, waitlist_visibility, clickability)
+               waitlist_data, waitlist_visibility, clickability)
                VALUES ('ev1','-100','1','Party','👍','❌',0,'["alice (1)"]','["bob (2)"]','{"carol":2}','[]',
                '[{"chat_id":"-100","user_id":"3","username":"carol","first_name":"Carol","last_name":"C",
-               "timestamp":"2026-01-01 00:00:00"}]',1,'visible','on')"""
+               "timestamp":"2026-01-01 00:00:00"}]','visible','on')"""
         )
         conn.execute(
             "INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "

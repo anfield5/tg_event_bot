@@ -160,6 +160,22 @@ FLAGS = {
         "gated_by_feature": None,
         "used_in": ["updateuser"],
     },
+    "listusers_active": {
+        "names": ["-a", "-active"],
+        "values": None,
+        "default": None,
+        "description": "Show only active users, header becomes \"Active Users\"",
+        "gated_by_feature": None,
+        "used_in": ["listusers"],
+    },
+    "listusers_passive": {
+        "names": ["-p", "-passive"],
+        "values": None,
+        "default": None,
+        "description": "Show only passive users, header becomes \"Passive Users\"",
+        "gated_by_feature": None,
+        "used_in": ["listusers"],
+    },
     "minlevel": {
         "names": ["-minlevel"],
         "values": "free|pro|admin",
@@ -216,6 +232,7 @@ COMMANDS = {
     "editevent":     {"label": "/editevent",     "owner_only": False},
     "shareevent":    {"label": "/shareevent",    "owner_only": False},
     "updateuser":    {"label": "/updateuser",    "owner_only": False},
+    "listusers":     {"label": "/listusers",     "owner_only": False},
     "updatefeature": {"label": "/updatefeature", "owner_only": True},
     "allgroups":     {"label": "/allgroups",     "owner_only": True},
 }

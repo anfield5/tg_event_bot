@@ -171,6 +171,16 @@ class TestNoFixedDefaultFlagsExplainWhy:
         text = fr.render_flags_detail("updateuser")
         assert text.count("this is an action, not a persistent setting") == 2
 
+    def test_listusers_active_passive_have_distinct_filter_descriptions(self):
+        """listusers' -a/-p reuse the same flag NAMES as updateuser's,
+        but are registered as separate keys since they filter rather
+        than set - must not accidentally share updateuser's
+        "mark as active" wording."""
+        text = fr.render_flags_detail("listusers")
+        assert "Active Users" in text
+        assert "Passive Users" in text
+        assert "Mark as" not in text
+
     def test_minlevel_explains_partial_update(self):
         text = fr.render_flags_detail("updatefeature")
         assert "existing tier requirement is simply left unchanged" in text

@@ -641,6 +641,86 @@ class TestMigrationEventsCreatedClosedDate:
         assert rows == [("ev1",)], "the original row must survive both migrations"
 
 
+class TestMigrationWaitlistOpenDropped:
+    """waitlist_open - the old boolean waitlist-visibility flag,
+    superseded by waitlist_visibility (visible/hidden/onlycount) -
+    confirmed dead (no code path outside db.py's own migration history
+    ever read or wrote it) and physically dropped from the schema.
+    Must still correctly backfill waitlist_visibility from the old
+    boolean for any pre-existing row before dropping it."""
+
+    def test_fresh_db_never_has_the_column(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        cols = {c[1] for c in sqlite3.connect(path).execute("PRAGMA table_info(events)").fetchall()}
+        assert "waitlist_open" not in cols
+        assert "waitlist_visibility" in cols
+
+    def test_old_row_with_waitlist_open_1_becomes_visible(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]',
+                waitlist_open INTEGER DEFAULT 0
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, waitlist_open) VALUES ('ev1','-100',1)")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT waitlist_visibility FROM events WHERE event_id='ev1'")
+        assert rows == [("visible",)]
+        cols = {c[1] for c in sqlite3.connect(path).execute("PRAGMA table_info(events)").fetchall()}
+        assert "waitlist_open" not in cols, "must be physically dropped after the backfill"
+
+    def test_old_row_with_waitlist_open_0_becomes_hidden(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]',
+                waitlist_open INTEGER DEFAULT 0
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, waitlist_open) VALUES ('ev1','-100',0)")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT waitlist_visibility FROM events WHERE event_id='ev1'")
+        assert rows == [("hidden",)]
+
+    def test_idempotent_on_already_migrated_db(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        init_db(db_path=path)
+        init_db(db_path=path)  # must not raise - column already gone
+        cols = {c[1] for c in sqlite3.connect(path).execute("PRAGMA table_info(events)").fetchall()}
+        assert "waitlist_open" not in cols
+
+    def test_row_survives_the_drop(self, tmp_path):
+        """The DROP COLUMN itself must not lose any other data on the row."""
+        path = str(tmp_path / "t.db")
+        run_sql(path, """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id TEXT, name TEXT,
+                going_icon TEXT, notgoing_icon TEXT, event_status INTEGER DEFAULT 0,
+                going_data TEXT, notgoing_data TEXT, counters_data TEXT,
+                event_date TEXT DEFAULT NULL, kicked_data TEXT DEFAULT '[]',
+                waitlist_open INTEGER DEFAULT 0
+            )
+        """)
+        run_sql(path, "INSERT INTO events (event_id, chat_id, name, waitlist_open) VALUES ('ev1','-100','Party',1)")
+
+        init_db(db_path=path)
+
+        rows = fetch_all(path, "SELECT event_id, chat_id, name FROM events WHERE event_id='ev1'")
+        assert rows == [("ev1", "-100", "Party")]
+
+
 # ---------------------------------------------------------------------------
 # track_user
 # ---------------------------------------------------------------------------

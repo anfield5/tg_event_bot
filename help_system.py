@@ -115,6 +115,11 @@ def _updateuser_flags_detail_text() -> str:
     return flag_registry.render_flags_detail("updateuser")
 
 
+def _listusers_flags_detail_text() -> str:
+    """The -a/-p flag breakdown for /listusers, from flag_registry.py."""
+    return flag_registry.render_flags_detail("listusers")
+
+
 def _updatefeature_flags_detail_text() -> str:
     """The -minlevel/-limit flag breakdown for /updatefeature (owner-only), from flag_registry.py."""
     return (
@@ -345,9 +350,9 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "👥 *User Management*\n\n"
             "/adduser \\[user\\_id\\|username\\] \\[\\.\\.\\.\\] \\- Manually add users to tracked list\n"
             "username only resolves if they're an admin of this chat or have already interacted with the bot\n"
-            "/listusers \\[\\-a or \\-p\\] \\- Show tracked users \\(count shown, active listed "
-            "before passive\\)\\; \\-a for active only, \\-p for passive only \\(long forms also accepted\\)\n"
-            "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
+            "/listusers \\[\\-a\\|\\-p\\] \\- Show tracked users\n"
+            + (_listusers_flags_detail_text() if users_expanded else "")
+            + "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
             + (_updateuser_flags_detail_text() if users_expanded else "")
             + "/notify \\- Ping users who haven't responded\n"
             "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group"
