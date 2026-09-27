@@ -779,6 +779,97 @@ class TestListusers:
 
         msg.reply_text.assert_awaited_once()
 
+    async def test_header_shows_count_and_sorts_active_first(self, db_path):
+        """Requested: count in the header, active users listed before
+        passive ones regardless of insertion order."""
+        conn = sqlite3.connect(db_path)
+        # Deliberately inserted passive-first to prove sorting, not just row order
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','passive1','1','passive')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','active1','2','active')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=[])
+
+        await handlers.listusers(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Tracked Users \\(2\\)" in reply
+        assert reply.index("active1") < reply.index("passive1"), "active must come before passive"
+
+    async def test_dash_a_filters_to_active_only(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob','2','passive')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-a"])
+
+        await handlers.listusers(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Active Users \\(1\\)" in reply
+        assert "alice" in reply
+        assert "bob" not in reply
+
+    async def test_dash_active_long_form_works_too(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-active"])
+
+        await handlers.listusers(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Active Users \\(1\\)" in reply
+
+    async def test_dash_p_filters_to_passive_only(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','alice','1','active')")
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob','2','passive')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-p"])
+
+        await handlers.listusers(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Passive Users \\(1\\)" in reply
+        assert "bob" in reply
+        assert "alice" not in reply
+
+    async def test_dash_passive_long_form_works_too(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100123','bob','2','passive')")
+        conn.commit()
+        conn.close()
+
+        chat = make_chat(chat_id=-100123)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, message=msg)
+        ctx = make_context(args=["-passive"])
+
+        await handlers.listusers(upd, ctx)
+
+        reply = msg.reply_text.call_args.args[0]
+        assert "Passive Users \\(1\\)" in reply
+
 
 # ── /setalias, /removealias, /listalias ───────────────────────────────────────
 

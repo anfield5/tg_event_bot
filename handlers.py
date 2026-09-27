@@ -869,12 +869,39 @@ async def updateuser(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
 
 @register_hub_command("listusers")
 async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+    """
+    Shows every tracked user for this hub, with their status (active/
+    passive - see track_user()'s own docstring for exactly what flips
+    this). Sorted active-first, then passive. Filterable with a prefix
+    argument:
+      /listusers          - everyone, header "Tracked Users (N)"
+      /listusers -a[ctive]  - only active, header "Active Users (N)"
+      /listusers -p[assive] - only passive, header "Passive Users (N)"
+    """
     chat_id = await resolve_hub_chat_id(update, context, "listusers", override_chat_id)
     if chat_id is None:
         return
+
+    filter_arg = context.args[0].lower() if context.args else None
+    if filter_arg in ("-a", "-active"):
+        status_filter = "active"
+        header = "Active Users"
+    elif filter_arg in ("-p", "-passive"):
+        status_filter = "passive"
+        header = "Passive Users"
+    else:
+        status_filter = None
+        header = "Tracked Users"
+
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT username, status, user_id FROM main_group_users WHERE chat_id = ?", (chat_id,))
+        if status_filter:
+            cursor.execute(
+                "SELECT username, status, user_id FROM main_group_users WHERE chat_id = ? AND status = ?",
+                (chat_id, status_filter),
+            )
+        else:
+            cursor.execute("SELECT username, status, user_id FROM main_group_users WHERE chat_id = ?", (chat_id,))
         rows = cursor.fetchall()
 
     if not rows:
@@ -883,8 +910,12 @@ async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE, override
         )
         return
 
+    # active first, then passive - status is otherwise stable-sorted
+    # (preserves the DB's own row order within each group)
+    rows.sort(key=lambda r: 0 if r[1] == "active" else 1)
+
     lines = [f"• {_mention_link(chat_id, r[0], r[2])} \\(`{escape_markdown(r[1])}`\\)" for r in rows]
-    text  = f"{ICON_STATS} *Tracked Users:*\n\n" + "\n".join(lines)
+    text = f"{ICON_STATS} *{header} \\({len(rows)}\\):*\n\n" + "\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
@@ -1439,7 +1470,8 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
             lines.append(status_line)
         except Exception as e:
             logger.error(f"refreshusersall failed for {chat_name}: {e}")
-            lines.append(f"  ❌ Failed: `{escape_markdown(chat_name)}`")
+            error_summary = str(e)[:80]
+            lines.append(f"  ❌ Failed: `{escape_markdown(chat_name)}` \\- {escape_markdown(error_summary)}")
 
         if progress_msg is not None:
             try:
