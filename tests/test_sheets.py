@@ -316,7 +316,7 @@ class TestOpenSpreadsheetRetry:
     or a flaky token refresh, not always a genuinely revoked key)."""
 
     async def test_transient_invalid_grant_recovers_on_retry(self):
-        sheets._spreadsheet_cache.clear()
+        sheets._spreadsheet_cache.pop("sheet_retry_test", None)
         call_count = {"n": 0}
 
         async def flaky_authorize():
@@ -335,7 +335,7 @@ class TestOpenSpreadsheetRetry:
         assert call_count["n"] == 2
 
     async def test_persistent_invalid_grant_raises_after_retries_exhausted(self):
-        sheets._spreadsheet_cache.clear()
+        sheets._spreadsheet_cache.pop("sheet_persistent_fail", None)
 
         async def always_fails():
             raise Exception("invalid_grant: Invalid grant: account not found")
@@ -348,7 +348,7 @@ class TestOpenSpreadsheetRetry:
     async def test_non_invalid_grant_error_is_not_retried(self):
         """A different kind of error must fail immediately, not burn
         through retries meant specifically for the OAuth hiccup case."""
-        sheets._spreadsheet_cache.clear()
+        sheets._spreadsheet_cache.pop("sheet_other_error", None)
         call_count = {"n": 0}
 
         async def different_error():
@@ -363,9 +363,45 @@ class TestOpenSpreadsheetRetry:
         assert call_count["n"] == 1, "must not retry a non-invalid_grant error"
 
     async def test_cached_sheet_never_calls_authorize_at_all(self):
-        sheets._spreadsheet_cache["sheet_cached"] = "ALREADY_CACHED"
+        sheets._spreadsheet_cache["sheet_cached_unique"] = "ALREADY_CACHED"
         with patch("sheets.agcm") as mock_agcm:
             mock_agcm.authorize = AsyncMock(side_effect=AssertionError("should not be called"))
-            result = await sheets.open_spreadsheet("sheet_cached")
+            result = await sheets.open_spreadsheet("sheet_cached_unique")
         assert result == "ALREADY_CACHED"
-        sheets._spreadsheet_cache.clear()
+        sheets._spreadsheet_cache.pop("sheet_cached_unique", None)
+
+    async def test_default_retry_count_is_four(self):
+        """Strengthened after a real report where the original single
+        retry (2 total attempts) still exhausted every attempt with
+        server clock sync and the fix's own deployment both confirmed
+        fine - now defaults to 4 retries (5 total attempts)."""
+        sheets._spreadsheet_cache.pop("sheet_default_retries", None)
+        call_count = {"n": 0}
+
+        async def always_fails():
+            call_count["n"] += 1
+            raise Exception("invalid_grant: Invalid grant: account not found")
+
+        with patch("sheets.agcm") as mock_agcm:
+            mock_agcm.authorize = always_fails
+            with pytest.raises(Exception, match="invalid_grant"):
+                await sheets.open_spreadsheet("sheet_default_retries", _retry_delay=0.01)
+
+        assert call_count["n"] == 5, "default must be 4 retries = 5 total attempts"
+
+    async def test_backoff_delay_doubles_each_attempt(self):
+        sheets._spreadsheet_cache.pop("sheet_backoff_test", None)
+        sleep_calls = []
+
+        async def always_fails():
+            raise Exception("invalid_grant: Invalid grant: account not found")
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        with patch("sheets.agcm") as mock_agcm, patch("sheets.asyncio.sleep", fake_sleep):
+            mock_agcm.authorize = always_fails
+            with pytest.raises(Exception, match="invalid_grant"):
+                await sheets.open_spreadsheet("sheet_backoff_test", _retries=3, _retry_delay=2.0)
+
+        assert sleep_calls == [2.0, 4.0, 8.0], "delay must double each attempt (exponential backoff)"

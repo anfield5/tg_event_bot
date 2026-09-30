@@ -43,7 +43,7 @@ _spreadsheet_cache = {}
 _SUBS_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-async def open_spreadsheet(sheet_id, _retries=2, _retry_delay=1.5):
+async def open_spreadsheet(sheet_id, _retries=4, _retry_delay=2.0):
     """
     Opens a spreadsheet by its ID (gc.open_by_key), not by title. A title
     isn't guaranteed unique - two different customers could both leave their
@@ -56,12 +56,18 @@ async def open_spreadsheet(sheet_id, _retries=2, _retry_delay=1.5):
     expected case for a free-tier hub or a premium hub that hasn't
     configured a sheet yet. Callers must check for a None return.
 
-    Retries once (by default) on a Google OAuth token-refresh failure
-    ("invalid_grant: Invalid grant: account not found") - a documented,
-    sometimes-transient error (server clock skew or a flaky token refresh,
-    not always a genuinely revoked credential) that otherwise surfaces as a
-    confusing, unrecoverable "Failed" partway through a bulk operation like
-    /refreshusersall, for what may just be a one-off hiccup.
+    Retries up to 4 times (with exponential backoff: 2s, 4s, 8s, 16s) on a
+    Google OAuth token-refresh failure ("invalid_grant: Invalid grant:
+    account not found") - a documented, sometimes-transient error (server
+    clock skew or a flaky token refresh, not always a genuinely revoked
+    credential) that otherwise surfaces as a confusing, unrecoverable
+    "Failed" partway through a bulk operation like /refreshusersall, for
+    what may just be a one-off hiccup. Strengthened from a single 1.5s
+    retry after a real report where that still exhausted every attempt
+    with server clock sync and the fix's own deployment both confirmed
+    fine - if this STILL exhausts every attempt, the credential itself
+    (or a rate limit on it) needs checking directly in Google Cloud
+    Console, not another code-side retry.
     """
     if not sheet_id:
         return None
@@ -82,7 +88,7 @@ async def open_spreadsheet(sheet_id, _retries=2, _retry_delay=1.5):
                 f"open_spreadsheet: transient invalid_grant on attempt {attempt + 1}/{_retries + 1} "
                 f"for sheet {sheet_id}, retrying: {e}"
             )
-            await asyncio.sleep(_retry_delay)
+            await asyncio.sleep(_retry_delay * (2 ** attempt))
     raise last_error
 
 

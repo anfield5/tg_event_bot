@@ -1520,6 +1520,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             except Exception as e:
                 logger.error(f"Sheets save pipeline failed: {e}")
+                try:
+                    await context.bot.send_message(
+                        chat_id=main_chat_id,
+                        text=f"⚠️ Event saved, but Google Sheets sync failed: {str(e)[:150]}",
+                    )
+                except Exception as warn_e:
+                    logger.error(f"Also failed to send the Sheets-failure warning itself: {warn_e}")
 
         # ── Cancel Event: mark Events row as Canceled, write NOTHING to EventUsers ─
         if action == "cancel":
@@ -1548,4 +1555,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # a cancelled event must not write anything to EventUsers.
             except Exception as e:
                 logger.error(f"Sheets cancel pipeline failed: {e}")
+                try:
+                    await context.bot.send_message(
+                        chat_id=main_chat_id,
+                        text=f"⚠️ Event cancelled, but Google Sheets sync failed: {str(e)[:150]}",
+                    )
+                except Exception as warn_e:
+                    logger.error(f"Also failed to send the Sheets-failure warning itself: {warn_e}")
 

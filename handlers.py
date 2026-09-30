@@ -441,6 +441,14 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 ])
             except Exception as e:
                 logger.error(f"Failed to log event creation to Google Sheets: {e}")
+                try:
+                    await message.reply_text(
+                        f"{ICON_WARNING} This event was created, but couldn't be saved to Google Sheets "
+                        f"\\({escape_markdown(str(e)[:100])}\\)\\. It'll still work fully in the chat itself\\.",
+                        parse_mode="MarkdownV2",
+                    )
+                except Exception as warn_e:
+                    logger.error(f"Also failed to send the Sheets-failure warning itself: {warn_e}")
 
 
 @register_hub_command("editevent")

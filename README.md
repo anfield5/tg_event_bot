@@ -108,6 +108,17 @@ zone are chosen to minimize crossing lines.
 >   discover it either, since it only iterates chat_ids ALREADY in
 >   those tables. The only fix is removing and re-adding the bot to
 >   that specific chat, which triggers a fresh `my_chat_member` event.
+> - If Google Sheets writes were broken for a period (bad/expired
+>   credentials, etc.), any event created/closed/cancelled during that
+>   window exists in the DB but is missing from Sheets entirely -
+>   `scripts/sync_events_to_sheets.py` finds every DB event (created
+>   within the last `--days`, default 21) absent from a hub's own
+>   Events tab and backfills it, plus EventUsers for closed events and
+>   an APPROXIMATE Actions reconstruction (one row per person's final
+>   going/notgoing/kicked status, not their real per-click history,
+>   which the DB never stored in the first place - only added when
+>   that event has zero genuine Actions rows already). Only ever adds
+>   missing rows, never edits an existing one, safe to run repeatedly.
 
 - **Gray** = SQLite table (single database, source of truth)
 - **Blue** = Control Sheet - **one** spreadsheet, shared across the whole bot

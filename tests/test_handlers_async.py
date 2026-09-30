@@ -6558,6 +6558,105 @@ class TestSilentPermissionDenialNowGivesFeedback:
         assert query.answer.call_args.kwargs.get("show_alert") is not True
 
 
+class TestSheetsFailureIsVisibleToUser:
+    """Real gap fixed: a Google Sheets write failure at /newevent, Save
+    & Close, or Cancel was previously completely silent - only a log
+    line, invisible to the user (exact reported symptom: an event
+    created with zero signal that Sheets sync had failed). The event
+    itself still works fully in Telegram/SQLite either way - Sheets
+    is supplementary, not blocking - but the user must now be told."""
+
+    async def test_newevent_sheets_failure_sends_visible_warning(self, db_path):
+        insert_premium(db_path, chat_id="-100")
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["Party"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock,
+                    side_effect=Exception("invalid_grant: Invalid grant: account not found")):
+            await handlers.newevent(upd, ctx)
+
+        all_replies = " ".join(
+            (c.args[0] if c.args else c.kwargs.get("text", "")) for c in msg.reply_text.call_args_list
+        )
+        assert "Google Sheets" in all_replies
+        assert "invalid" in all_replies.lower()
+
+    async def test_newevent_sheets_success_has_no_warning(self, db_path):
+        """Confirm the fix doesn't over-correct - no warning at all
+        when Sheets sync genuinely succeeds."""
+        insert_premium(db_path, chat_id="-100")
+        chat = make_chat(chat_id=-100, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(args=["Party"])
+
+        ws = AsyncMock()
+        ws.append_row = AsyncMock()
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock,
+                    return_value=AsyncMock(worksheet=AsyncMock(return_value=ws))):
+            await handlers.newevent(upd, ctx)
+
+        all_replies = " ".join(
+            (c.args[0] if c.args else c.kwargs.get("text", "")) for c in msg.reply_text.call_args_list
+        )
+        assert "Google Sheets" not in all_replies
+
+    async def test_save_and_close_sheets_failure_sends_visible_warning(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status="administrator"))
+        bot.send_message = AsyncMock()
+        query = MagicMock()
+        query.data = "save_ev1"
+        query.message = MagicMock()
+        query.message.chat_id = -100
+        query.message.chat = MagicMock(id=-100)
+        query.message.message_id = 1
+        query.from_user = make_user(user_id=1)
+        query.answer = AsyncMock()
+        upd = MagicMock()
+        upd.callback_query = query
+        upd.effective_user = query.from_user
+        upd.effective_chat = make_chat(chat_id=-100)
+        ctx = MagicMock()
+        ctx.bot = bot
+        ctx.user_data = {}
+        ctx.application = MagicMock()
+        def _discard_task(coro):
+            coro.close()
+            return MagicMock()
+        ctx.application.create_task = MagicMock(side_effect=_discard_task)
+
+        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+             patch("event_engine.open_spreadsheet", new_callable=AsyncMock,
+                    side_effect=Exception("invalid_grant: Invalid grant: account not found")):
+            await event_engine.button_handler(upd, ctx)
+
+        send_calls = " ".join(str(c.kwargs.get("text", "")) for c in bot.send_message.call_args_list)
+        assert "Google Sheets" in send_calls
+        assert "invalid" in send_calls.lower()
+
+
+    """Missing warning found and fixed: /newevent previously created a new
+    event with zero acknowledgment that an older active event already
+    existed, leaving it orphaned (still clickable for participants, but no
+    longer reachable via /waitlist, /editevent etc which target the
+    latest event)."""
+
 class TestNeweventWarnsOnExistingActiveEvent:
     """Missing warning found and fixed: /newevent previously created a new
     event with zero acknowledgment that an older active event already
