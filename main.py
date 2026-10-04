@@ -15,7 +15,7 @@ from utils import get_admin_contact
 from hub_resolver import hub_pick_callback_handler, start_command, switchgroup_command
 from handlers import (
     help_command, help_callback_handler, help_back_handler, upgrade_info_callback_handler, userid, chatid,
-    newevent, editevent,
+    newevent, deleteevent, deleteevent_callback_handler, editevent,
     notify,
     updateuser, listusers, refreshusers, refreshusersall, adduser,
     shareevent, waitlist_command,
@@ -332,6 +332,7 @@ def main():
     app.add_handler(CallbackQueryHandler(stats_users_callback_handler, pattern="^statsusers_"))
     app.add_handler(CallbackQueryHandler(stats_distribution_callback_handler, pattern="^statsdist_"))
     app.add_handler(CallbackQueryHandler(stats_back_callback_handler, pattern="^statsback_"))
+    app.add_handler(CallbackQueryHandler(deleteevent_callback_handler, pattern="^delev(pick|yes|no)_"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # 2. Chat member join/leave tracking
@@ -353,6 +354,7 @@ def main():
     app.add_handler(CommandHandler("userid",       userid))
     app.add_handler(CommandHandler("chatid",       chatid))
     app.add_handler(CommandHandler("newevent",     newevent))
+    app.add_handler(CommandHandler("deleteevent",  deleteevent))
     app.add_handler(CommandHandler("editevent",    editevent))
     app.add_handler(CommandHandler("notify",       notify))
     app.add_handler(CommandHandler("updateuser",   updateuser))

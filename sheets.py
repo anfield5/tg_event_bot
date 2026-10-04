@@ -1,6 +1,7 @@
 import json
 import asyncio
 import gspread_asyncio
+from gspread.exceptions import WorksheetNotFound
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 from config import GOOGLE_CREDENTIALS_JSON, CONTROL_SHEET_ID, logger
@@ -468,3 +469,60 @@ async def sync_control_sheet_botconfig(feature_rows: list):
     except Exception as e:
         logger.error(f"Google Sheets Control/BOTCONFIG sync failed: {repr(e)}")
         return False
+
+
+# Tabs whose first column is an EVENT_ID that belongs to exactly one event.
+EVENT_LINKED_TABS = ("Events", "Actions", "EventUsers")
+
+
+def _contiguous_runs(rows):
+    """[2, 3, 5, 8, 9] -> [(2, 3), (5, 5), (8, 9)] (1-based, inclusive)."""
+    runs = []
+    for r in rows:
+        if runs and r == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], r)
+        else:
+            runs.append((r, r))
+    return runs
+
+
+async def delete_event_from_sheet(chat_id, event_id):
+    """
+    Removes EVERY row belonging to `event_id` from the hub's Events, Actions
+    and EventUsers tabs (the header row is never touched). All deletions go
+    out as ONE spreadsheet batchUpdate - a single API request (Google
+    applies a batch atomically) - with each tab's row ranges ordered
+    bottom-to-top, so removing a range never shifts the indices of the
+    ranges still waiting to be removed.
+
+    Returns {tab: rows_removed}, or None when this hub has no Sheet
+    connected at all (free tier / expired / not set up - nothing to clean).
+    A tab missing from the sheet is skipped. Any connection/auth/API
+    failure is RAISED - the caller must treat that as "nothing was
+    cleaned" rather than carry on with a half-finished delete.
+    """
+    sheet_target = await get_sheet_for_chat(chat_id)
+    ss = await open_spreadsheet(sheet_target)
+    if not ss:
+        return None
+
+    counts, requests = {}, []
+    for tab in EVENT_LINKED_TABS:
+        try:
+            ws = await ss.worksheet(tab)
+        except WorksheetNotFound:
+            counts[tab] = 0
+            continue
+        column_a = await ws.col_values(1)
+        rows = [i for i, value in enumerate(column_a, start=1)
+                if i > 1 and str(value).strip() == str(event_id)]
+        counts[tab] = len(rows)
+        for start, end in reversed(_contiguous_runs(rows)):
+            requests.append({"deleteDimension": {"range": {
+                "sheetId": ws.id, "dimension": "ROWS",
+                "startIndex": start - 1, "endIndex": end,
+            }}})
+
+    if requests:
+        await ss.batch_update({"requests": requests})
+    return counts

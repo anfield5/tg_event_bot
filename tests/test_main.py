@@ -549,3 +549,12 @@ class TestLockGateVotingExemption:
             with pytest.raises(Exception) as exc_info:
                 await main.lock_gate(upd, MagicMock())
             assert type(exc_info.value).__name__ == "ApplicationHandlerStop"
+
+
+class TestDeleteeventRegistration:
+    def test_command_and_callbacks_registered_before_the_catch_all(self):
+        source = open("main.py", encoding="utf-8").read()
+        assert 'CommandHandler("deleteevent"' in source
+        pattern = 'CallbackQueryHandler(deleteevent_callback_handler, pattern="^delev(pick|yes|no)_")'
+        assert pattern in source
+        assert source.index(pattern) < source.index("CallbackQueryHandler(button_handler))")

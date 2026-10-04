@@ -206,7 +206,7 @@ or a DM with the bot) - tracked explicitly in `utils.COMMAND_DESTINATION_TYPE`
 and enforced for the DM-only category via `utils.require_dm_only()`:
 1. **Dual-callable, result follows the caller** (the default - most commands).
 2. **Dual-callable, but the result always lands in the group** (`/newevent`,
-   `/editevent`, `/shareevent`, `/notify`) - e.g. `/notify`'s ping always
+   `/editevent`, `/deleteevent`, `/shareevent`, `/notify`) - e.g. `/notify`'s ping always
    goes to the group via `send_message`, since pinging people from inside a
    DM wouldn't reach them where they need to respond.
 3. **DM only** (`/switchgroup`, `/start`, and every owner-only command) -

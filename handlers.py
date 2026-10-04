@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
 from keyboard import create_event_keyboard
-from subscription import is_premium, has_feature, require_premium
+from subscription import is_premium, has_feature, require_premium, require_feature
 from aliases import setalias, removealias, listalias
 from monitors import addmonitor, removemonitor, listmonitors
 from help_system import (
@@ -30,7 +30,7 @@ from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, 
 from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
-    get_sheet_for_chat, open_spreadsheet, sync_users_sheet,
+    get_sheet_for_chat, open_spreadsheet, sync_users_sheet, delete_event_from_sheet,
 )
 
 
@@ -272,6 +272,30 @@ def parse_user_args(args: list) -> list:
 # Event lifecycle
 # ---------------------------------------------------------------------------
 
+async def _message_still_exists(bot, chat_id, message_id) -> bool:
+    """
+    Checks whether a message is still present in the chat, WITHOUT ever
+    touching its own content/keyboard - copies it, then immediately
+    deletes the copy. Unlike re-sending its reply_markup (which would
+    require reconstructing the exact current keyboard byte-for-byte to
+    avoid accidentally altering a still-live event's buttons), this can
+    never corrupt the original regardless of what it currently contains.
+    Deleting the bot's own freshly-made copy never needs special chat
+    admin rights, unlike deleting someone else's message would.
+    """
+    if not message_id:
+        return False
+    try:
+        copy = await bot.copy_message(chat_id=int(chat_id), from_chat_id=int(chat_id), message_id=int(message_id))
+        try:
+            await bot.delete_message(chat_id=int(chat_id), message_id=copy.message_id)
+        except Exception:
+            pass  # copy succeeded (so the original IS alive) - a failed cleanup doesn't change that
+        return True
+    except Exception:
+        return False
+
+
 @register_hub_command("newevent")
 async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
@@ -364,10 +388,48 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT message_id, name FROM events WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
+            "SELECT event_id, message_id, name, created_date, created_by_user_id FROM events "
+            "WHERE chat_id = ? AND event_status IN (0, 1) ORDER BY ROWID DESC LIMIT 1",
             (chat_id,),
         )
         existing_active = cursor.fetchone()
+
+    if existing_active:
+        old_event_id, old_message_id, old_name, old_created_date, old_created_by = existing_active
+        if await _message_still_exists(context.bot, chat_id, old_message_id):
+            pass  # genuinely still live - keep existing_active, warning shows below as before
+        else:
+            # Self-healing: the old post was deleted from the chat (by an
+            # admin, or the bot lost access) - it can never be interacted
+            # with again, so silently close it out instead of nagging about
+            # a conflict the user has no way to resolve through it anymore.
+            closed_date = now2ddmmyy()
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE events SET event_status = -1, closed_date = ? WHERE event_id = ?",
+                    (closed_date, old_event_id),
+                )
+                conn.commit()
+            try:
+                sheet_target = await get_sheet_for_chat(chat_id)
+                ss = await open_spreadsheet(sheet_target)
+                if ss:
+                    ws = await ss.worksheet("Events")
+                    records = await ws.get_all_records()
+                    found = False
+                    for idx, r in enumerate(records, start=2):
+                        if str(r.get("EVENT_ID")) == str(old_event_id):
+                            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CANCELED", 0]])
+                            found = True
+                            break
+                    if not found:
+                        await ws.append_row([
+                            old_event_id, old_name, old_created_date or "", old_created_by or "",
+                            "", closed_date, "CANCELED", 0,
+                        ])
+            except Exception as e:
+                logger.error(f"Sheets auto-cancel of orphaned event {old_event_id} failed: {e}")
+            existing_active = None  # don't warn - the conflict is already resolved
 
     try:
         created_date = now2ddmmyy()
@@ -392,7 +454,7 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
 
     if existing_active:
         await message.reply_text(
-            f"{ICON_WARNING} There's already an active event \\(`{escape_markdown(existing_active[1])}`\\) in this chat\\. "
+            f"{ICON_WARNING} There's already an active event \\(`{escape_markdown(existing_active[2])}`\\) in this chat\\. "
             f"Its post is still clickable for participants, but commands like /waitlist and /editevent now target "
             f"this NEW event instead\\. Consider closing the old one first next time\\.",
             parse_mode="MarkdownV2",
@@ -449,6 +511,286 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                     )
                 except Exception as warn_e:
                     logger.error(f"Also failed to send the Sheets-failure warning itself: {warn_e}")
+
+
+# ---------------------------------------------------------------------------
+# /deleteevent - permanently removes ONE event (DB + Google Sheet + posts)
+# ---------------------------------------------------------------------------
+
+DELETEEVENT_LIST_LIMIT = 10
+EVENT_STATUS_LABELS = {-1: "CANCELED", 0: "OPEN", 1: "VERIFICATION", 2: "CLOSED"}
+
+
+def _deletable_events(chat_id, user_id, is_admin) -> list:
+    """
+    Every event of THIS hub the caller may delete, newest first, as
+    (event_id, name, event_status, created_date, created_by_user_id).
+    Admins may delete any event; anyone else only the events they created.
+    Every button press is validated against this same list, which is also
+    what scopes it to the right hub - a stale or forged callback can never
+    reach an event belonging to a different hub.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT event_id, name, event_status, created_date, created_by_user_id "
+            "FROM events WHERE chat_id = ? ORDER BY ROWID DESC",
+            (str(chat_id),),
+        ).fetchall()
+    if is_admin:
+        return rows
+    return [r for r in rows if r[4] is not None and str(r[4]) == str(user_id)]
+
+
+def _match_events(events, query) -> list:
+    """
+    Exact event_id first, otherwise a case-insensitive substring of the
+    name. Done in Python on purpose: SQLite's LOWER()/LIKE only fold ASCII,
+    so a SQL search would silently miss Cyrillic names typed in another case.
+    """
+    q = query.strip()
+    exact = [e for e in events if e[0] == q]
+    if exact:
+        return exact
+    needle = q.casefold()
+    return [e for e in events if needle in (e[1] or "").casefold()]
+
+
+def _event_button_label(event) -> str:
+    event_id, name, status, created_date, _creator = event
+    name = name or "(no name)"
+    if len(name) > 28:
+        name = name[:27] + "…"
+    day = (created_date or "")[:10] or "?"
+    return f"{name} · {day} · {EVENT_STATUS_LABELS.get(status, '?')}"
+
+
+def _events_picker_markup(chat_id, events) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(_event_button_label(e), callback_data=f"delevpick_{chat_id}:{e[0]}")]
+        for e in events[:DELETEEVENT_LIST_LIMIT]
+    ]
+    rows.append([InlineKeyboardButton("✖ Close", callback_data=f"delevno_{chat_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _delete_confirmation(chat_id, event_id):
+    """(text, markup) for the "are you sure" screen, or None if the event is gone."""
+    with get_connection() as conn:
+        ev = conn.execute(
+            "SELECT name, event_status, created_date FROM events WHERE chat_id = ? AND event_id = ?",
+            (str(chat_id), event_id),
+        ).fetchone()
+        if not ev:
+            return None
+        users_n = conn.execute("SELECT COUNT(*) FROM event_users WHERE event_id = ?", (event_id,)).fetchone()[0]
+        shares_n = conn.execute("SELECT COUNT(*) FROM event_shares WHERE event_id = ?", (event_id,)).fetchone()[0]
+    name, status, created_date = ev
+    name_md = escape_markdown(name or "(no name)")
+    id_md = escape_markdown(event_id)
+    day_md = escape_markdown((created_date or "")[:10] or "?")
+    status_md = escape_markdown(EVENT_STATUS_LABELS.get(status, "?"))
+    posts_md = "its post in this chat"
+    if shares_n:
+        posts_md += f" and {shares_n} shared post\\(s\\)"
+    text = (
+        "🗑 *Delete this event?*\n\n"
+        f"*{name_md}*\n"
+        f"ID `{id_md}` · created {day_md} · {status_md}\n\n"
+        "This will permanently remove:\n"
+        f"• the event and its {users_n} participant record\\(s\\) from the database\n"
+        f"• {posts_md} \\(best effort\\)\n"
+        "• its rows in the Events / Actions / EventUsers tabs of the Google Sheet \\(if one is connected\\)\n\n"
+        "⚠️ This cannot be undone\\."
+    )
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🗑 Yes, delete forever", callback_data=f"delevyes_{chat_id}:{event_id}"),
+        InlineKeyboardButton("↩️ Cancel", callback_data=f"delevno_{chat_id}"),
+    ]])
+    return text, markup
+
+
+async def _perform_event_deletion(context, chat_id, event_id) -> str:
+    """
+    Does the actual removal and returns the MarkdownV2 result text.
+    Order matters: the Google Sheet goes FIRST - it's the step that can fail
+    for outside reasons (credentials, quota, network), and if it does,
+    NOTHING is deleted anywhere, so there is never a half-deleted event
+    whose Sheet rows can no longer be tied to anything in the DB. Only then
+    the DB rows (one transaction), and last the Telegram posts (best effort -
+    they may already be gone or too old for the bot to delete).
+    """
+    with get_connection() as conn:
+        ev = conn.execute(
+            "SELECT name, message_id FROM events WHERE chat_id = ? AND event_id = ?",
+            (str(chat_id), event_id),
+        ).fetchone()
+        if not ev:
+            return "That event no longer exists\\."
+        shares = conn.execute(
+            "SELECT chat_id, message_id FROM event_shares WHERE event_id = ?", (event_id,)
+        ).fetchall()
+        users_n = conn.execute("SELECT COUNT(*) FROM event_users WHERE event_id = ?", (event_id,)).fetchone()[0]
+    name, main_message_id = ev
+    name_md = escape_markdown(name or "(no name)")
+    id_md = escape_markdown(event_id)
+
+    # Held across the Sheet cleanup + DB delete so a click that lands in
+    # between can't write a fresh Actions row for an event that's going away.
+    async with get_event_lock(event_id):
+        try:
+            sheet_counts = await delete_event_from_sheet(chat_id, event_id)
+        except Exception as e:
+            logger.error(f"/deleteevent: Sheets cleanup failed for {event_id}: {e}")
+            reason = escape_markdown(str(e)[:150])
+            return (
+                f"❌ *Nothing was deleted*\\. The Google Sheet couldn't be cleaned up \\({reason}\\)\\. "
+                "Fix the Sheets connection and run /deleteevent again\\."
+            )
+        with get_connection() as conn:
+            conn.execute("DELETE FROM event_users WHERE event_id = ?", (event_id,))
+            conn.execute("DELETE FROM event_shares WHERE event_id = ?", (event_id,))
+            conn.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
+            conn.commit()
+
+    targets = [(c, m) for c, m in [(chat_id, main_message_id)] + list(shares) if c and m]
+    removed = 0
+    for target_chat, target_message in targets:
+        try:
+            await context.bot.delete_message(chat_id=int(target_chat), message_id=int(target_message))
+            removed += 1
+        except Exception:
+            pass  # already deleted, too old for Telegram to allow, or access lost
+
+    if sheet_counts is None:
+        sheet_line = "• Google Sheet: not connected for this chat \\- nothing to clean"
+    else:
+        total_rows = sum(sheet_counts.values())
+        breakdown = escape_markdown(", ".join(f"{tab} {n}" for tab, n in sheet_counts.items()))
+        sheet_line = f"• Google Sheet: {total_rows} row\\(s\\) removed \\({breakdown}\\)"
+    posts_line = f"• Telegram posts: {removed} of {len(targets)} removed"
+    if removed < len(targets):
+        posts_line += " \\(the rest were already gone, too old for Telegram to let the bot delete, or the bot lost access\\)"
+    return (
+        f"✅ Deleted *{name_md}* \\(`{id_md}`\\)\n"
+        f"• Database: the event and {users_n} participant record\\(s\\)\n"
+        f"{sheet_line}\n"
+        f"{posts_line}"
+    )
+
+
+@register_hub_command("deleteevent")
+async def deleteevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
+    """
+    /deleteevent                      - latest 10 events of this hub, as buttons
+    /deleteevent <part of name | id>  - finds by exact event_id, else by name
+                                        (case-insensitive); a single match goes
+                                        straight to the confirmation screen
+    Always asks for confirmation before anything is removed. Admins may
+    delete any event of the hub, other members only events they created.
+    """
+    chat_id = await resolve_hub_chat_id(update, context, "deleteevent", override_chat_id)
+    if chat_id is None:
+        return
+    if not await require_feature(update, "deleteevent", "/deleteevent", chat_id):
+        return
+    user = update.effective_user
+    is_admin = await is_real_admin(context.bot, chat_id, user, message=update.message)
+    events = _deletable_events(chat_id, user.id, is_admin)
+    query = " ".join(context.args).strip() if context.args else ""
+
+    if not events:
+        text = (
+            "No events found in this chat\\." if is_admin
+            else "You can only delete events you created, and you haven't created any in this chat\\."
+        )
+        await update.message.reply_text(text, parse_mode="MarkdownV2")
+        return
+
+    if query:
+        matches = _match_events(events, query)
+        if not matches:
+            await update.message.reply_text(
+                f"No event matching `{escape_markdown(query)}` among the events you can delete\\.",
+                parse_mode="MarkdownV2",
+            )
+            return
+        if len(matches) == 1:
+            built = _delete_confirmation(chat_id, matches[0][0])
+            if built is None:
+                await update.message.reply_text("That event no longer exists\\.", parse_mode="MarkdownV2")
+                return
+            text, markup = built
+            await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=markup)
+            return
+        header = f"Several events match `{escape_markdown(query)}` \\- pick one:"
+        shown = matches
+    else:
+        header = "Pick the event to delete:"
+        shown = events
+
+    footer = ""
+    if len(shown) > DELETEEVENT_LIST_LIMIT:
+        footer = (
+            f"\n\nShowing the latest {DELETEEVENT_LIST_LIMIT} of {len(shown)}\\. "
+            "Add part of the name or the event ID after /deleteevent to find a specific one\\."
+        )
+    await update.message.reply_text(
+        header + footer, parse_mode="MarkdownV2", reply_markup=_events_picker_markup(chat_id, shown)
+    )
+
+
+async def deleteevent_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Buttons of /deleteevent:  delevpick_<hub>:<event> (show confirmation),
+    delevyes_<hub>:<event> (really delete), delevno_<hub> (dismiss).
+    Anyone in the chat can press a button on the bot's message, so the
+    clicker's right to delete is re-checked on EVERY press, scoped to the
+    hub carried in the callback.
+    """
+    query = update.callback_query
+    prefix, _, payload = query.data.partition("_")
+    chat_id, _, event_id = payload.partition(":")
+    user = update.effective_user
+
+    if not await require_feature(update, "deleteevent", "/deleteevent", chat_id):
+        await query.answer()  # a silent denial must still dismiss the button's loading spinner
+        return
+
+    is_admin = await is_real_admin(context.bot, chat_id, user, message=query.message)
+    events = _deletable_events(chat_id, user.id, is_admin)
+    if not events:
+        await query.answer("⛔ You can't delete events here.", show_alert=True)
+        return
+
+    if prefix == "delevno":
+        await query.answer()
+        await query.edit_message_text("Cancelled - nothing was deleted.")
+        return
+
+    if not any(e[0] == event_id for e in events):
+        await query.answer("⛔ You can't delete this event, or it no longer exists.", show_alert=True)
+        return
+    await query.answer()
+
+    if prefix == "delevpick":
+        built = _delete_confirmation(chat_id, event_id)
+        if built is None:
+            await query.edit_message_text("That event no longer exists.")
+            return
+        text, markup = built
+        await query.edit_message_text(text, parse_mode="MarkdownV2", reply_markup=markup)
+    elif prefix == "delevyes":
+        result = await _perform_event_deletion(context, chat_id, event_id)
+        try:
+            await query.edit_message_text(result, parse_mode="MarkdownV2")
+        except Exception as e:
+            # The deletion already happened - never leave the admin staring
+            # at a stale confirmation screen because the summary didn't render.
+            logger.error(f"/deleteevent: couldn't render the result message: {e}")
+            try:
+                await query.edit_message_text("✅ Event deleted.")
+            except Exception:
+                pass
 
 
 @register_hub_command("editevent")

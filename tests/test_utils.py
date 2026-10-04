@@ -146,9 +146,9 @@ class TestCommandDestinationClassification:
     (require_dm_only), previously only covered indirectly through each
     individual command's own tests."""
 
-    def test_type_2_commands_are_exactly_these_four(self):
+    def test_type_2_commands_are_exactly_these_five(self):
         type_2 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 2}
-        assert type_2 == {"newevent", "editevent", "shareevent", "notify"}
+        assert type_2 == {"newevent", "editevent", "deleteevent", "shareevent", "notify"}
 
     def test_type_3_commands_are_exactly_these_nine(self):
         type_3 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 3}

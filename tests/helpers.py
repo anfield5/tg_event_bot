@@ -55,6 +55,12 @@ def make_bot(bot_id=777):
     # "no admins found" so tests that don't care about this feature aren't
     # affected by it.
     bot.get_chat_administrators  = AsyncMock(return_value=[])
+    # Used by newevent's self-healing orphan check (_message_still_exists) -
+    # defaults to "message exists" (copy succeeds, delete succeeds), since
+    # most tests assume a normal, live event. Tests specifically simulating
+    # a deleted message override copy_message with a side_effect instead.
+    bot.copy_message              = AsyncMock(return_value=MagicMock(message_id=12345))
+    bot.delete_message            = AsyncMock()
     return bot
 
 

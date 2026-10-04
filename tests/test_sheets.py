@@ -405,3 +405,101 @@ class TestOpenSpreadsheetRetry:
                 await sheets.open_spreadsheet("sheet_backoff_test", _retries=3, _retry_delay=2.0)
 
         assert sleep_calls == [2.0, 4.0, 8.0], "delay must double each attempt (exponential backoff)"
+
+
+class _FakeWorksheet:
+    def __init__(self, sheet_id, rows):
+        self.id = sheet_id
+        self.rows = rows  # list of rows, rows[0] is the header
+
+    async def col_values(self, col):
+        return [r[col - 1] if len(r) >= col else "" for r in self.rows]
+
+
+class _FakeSpreadsheet:
+    """Applies deleteDimension requests IN ORDER, like Google does - so a
+    wrong (top-to-bottom) ordering would leave the wrong rows behind."""
+
+    def __init__(self, worksheets):
+        self._ws = worksheets
+        self.batch_calls = []
+
+    async def worksheet(self, name):
+        from gspread.exceptions import WorksheetNotFound
+        if name not in self._ws:
+            raise WorksheetNotFound(name)
+        return self._ws[name]
+
+    async def batch_update(self, body):
+        self.batch_calls.append(body)
+        for req in body["requests"]:
+            r = req["deleteDimension"]["range"]
+            ws = next(w for w in self._ws.values() if w.id == r["sheetId"])
+            del ws.rows[r["startIndex"]:r["endIndex"]]
+        return {}
+
+
+async def _run_delete(ss, event_id="ev1"):
+    from unittest.mock import AsyncMock, patch
+    with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+         patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=ss):
+        return await sheets.delete_event_from_sheet("-100", event_id)
+
+
+class TestDeleteEventFromSheet:
+    """/deleteevent's Google Sheet half: every row of ONE event, across
+    Events/Actions/EventUsers, removed in a single batch request."""
+
+    def _sheet(self):
+        return _FakeSpreadsheet({
+            "Events": _FakeWorksheet(1, [["EVENT_ID"], ["ev1"], ["ev2"]]),
+            "Actions": _FakeWorksheet(2, [["EVENT_ID"], ["ev1"], ["ev2"], ["ev1"], ["ev1"], ["ev2"]]),
+            "EventUsers": _FakeWorksheet(3, [["EVENT_ID"], ["ev2"], ["ev1"]]),
+        })
+
+    async def test_removes_only_this_events_rows_in_all_three_tabs(self):
+        ss = self._sheet()
+        counts = await _run_delete(ss)
+        assert counts == {"Events": 1, "Actions": 3, "EventUsers": 1}
+        assert ss._ws["Events"].rows == [["EVENT_ID"], ["ev2"]]
+        assert ss._ws["Actions"].rows == [["EVENT_ID"], ["ev2"], ["ev2"]]
+        assert ss._ws["EventUsers"].rows == [["EVENT_ID"], ["ev2"]]
+
+    async def test_everything_goes_out_as_a_single_batch_request(self):
+        ss = self._sheet()
+        await _run_delete(ss)
+        assert len(ss.batch_calls) == 1
+
+    async def test_header_row_is_never_deleted(self):
+        ss = _FakeSpreadsheet({"Events": _FakeWorksheet(1, [["ev1"], ["ev1"]])})
+        await _run_delete(ss)
+        assert ss._ws["Events"].rows == [["ev1"]]
+
+    async def test_no_matching_rows_sends_no_request_at_all(self):
+        ss = self._sheet()
+        counts = await _run_delete(ss, event_id="unknown")
+        assert counts == {"Events": 0, "Actions": 0, "EventUsers": 0}
+        assert ss.batch_calls == []
+
+    async def test_missing_tab_is_skipped_not_fatal(self):
+        ss = self._sheet()
+        del ss._ws["EventUsers"]
+        counts = await _run_delete(ss)
+        assert counts == {"Events": 1, "Actions": 3, "EventUsers": 0}
+        assert ss._ws["Actions"].rows == [["EVENT_ID"], ["ev2"], ["ev2"]]
+
+    async def test_hub_without_a_sheet_returns_none(self):
+        assert await _run_delete(None) is None
+
+    async def test_connection_failure_is_raised_not_swallowed(self):
+        import pytest
+        from unittest.mock import AsyncMock, patch
+        with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet123"), \
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock,
+                   side_effect=Exception("invalid_grant")):
+            with pytest.raises(Exception, match="invalid_grant"):
+                await sheets.delete_event_from_sheet("-100", "ev1")
+
+    def test_contiguous_runs(self):
+        assert sheets._contiguous_runs([2, 3, 5, 8, 9, 10]) == [(2, 3), (5, 5), (8, 10)]
+        assert sheets._contiguous_runs([]) == []

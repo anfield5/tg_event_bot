@@ -6657,6 +6657,130 @@ class TestSheetsFailureIsVisibleToUser:
     longer reachable via /waitlist, /editevent etc which target the
     latest event)."""
 
+class TestNeweventSelfHealsOrphanedEvent:
+    """Architecture decision: instead of a manual /cancelevent command,
+    /newevent itself lazily verifies the old active event's message is
+    still alive (via a non-destructive copy+delete ping) before
+    warning about it. If the message is genuinely gone (deleted by an
+    admin, bot lost access, etc.), the orphan is silently auto-closed
+    in DB+Sheets and NO warning is shown at all - zero admin action
+    needed, unlike the removed /cancelevent escape hatch."""
+
+    async def _insert_orphan(self, db_path, event_id="ev_orphan", chat_id="-1",
+                              message_id="999", created_by="1"):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data, created_by_user_id) "
+            "VALUES (?, ?, ?, 'OldDeletedEvent', '👍', '❌', 0, '[]', '[]', '{}', '[]', ?)",
+            (event_id, chat_id, message_id, created_by),
+        )
+        conn.commit()
+        conn.close()
+
+    async def test_deleted_message_is_silently_healed_no_warning(self, db_path):
+        await self._insert_orphan(db_path)
+        bot = make_bot()
+        bot.copy_message = AsyncMock(side_effect=Exception("message to copy not found"))
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["BrandNewParty"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        all_replies = [c.args[0] for c in msg.reply_text.call_args_list if c.args]
+        assert not any("already an active event" in r for r in all_replies)
+
+    async def test_deleted_message_orphan_gets_cancelled_in_db(self, db_path):
+        await self._insert_orphan(db_path)
+        bot = make_bot()
+        bot.copy_message = AsyncMock(side_effect=Exception("message to copy not found"))
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["BrandNewParty"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        conn = sqlite3.connect(db_path)
+        status = conn.execute("SELECT event_status FROM events WHERE event_id='ev_orphan'").fetchone()[0]
+        assert status == -1
+
+    async def test_copy_succeeds_delete_cleans_up_the_probe(self, db_path):
+        """The verification copy must be cleaned up afterward (not left
+        behind as a visible duplicate message in the chat)."""
+        await self._insert_orphan(db_path)
+        bot = make_bot()
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["BrandNewParty"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        bot.copy_message.assert_awaited_once()
+        bot.delete_message.assert_awaited_once_with(chat_id=-1, message_id=12345)
+
+    async def test_live_message_still_warns_normally(self, db_path):
+        """Confirm the fix doesn't over-correct - a genuinely live old
+        event must still produce the warning, unchanged."""
+        await self._insert_orphan(db_path)
+        bot = make_bot()  # default copy_message succeeds - message is "alive"
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["BrandNewParty"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)
+
+        all_replies = [c.args[0] for c in msg.reply_text.call_args_list if c.args]
+        assert any("already an active event" in r for r in all_replies)
+
+        conn = sqlite3.connect(db_path)
+        status = conn.execute("SELECT event_status FROM events WHERE event_id='ev_orphan'").fetchone()[0]
+        assert status == 0, "a genuinely live event must NOT be auto-cancelled"
+
+    async def test_no_message_id_is_treated_as_orphaned(self, db_path):
+        """An event with no message_id at all (shouldn't normally
+        happen, but defensively) must be treated as unreachable rather
+        than crashing on int(None)."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
+            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev_nomsg','-1',NULL,'NoMessage','👍','❌',0,'[]','[]','{}','[]')"
+        )
+        conn.commit()
+        conn.close()
+
+        bot = make_bot()
+        chat = make_chat(chat_id=-1, chat_type="supergroup")
+        user = make_user(user_id=1)
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=user, message=msg)
+        ctx = make_context(bot=bot, args=["BrandNewParty"])
+
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock, return_value=None), \
+             patch("handlers.open_spreadsheet", new_callable=AsyncMock):
+            await handlers.newevent(upd, ctx)  # must not raise
+
+        all_replies = [c.args[0] for c in msg.reply_text.call_args_list if c.args]
+        assert not any("already an active event" in r for r in all_replies)
+
+
 class TestNeweventWarnsOnExistingActiveEvent:
     """Missing warning found and fixed: /newevent previously created a new
     event with zero acknowledgment that an older active event already

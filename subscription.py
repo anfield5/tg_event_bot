@@ -79,6 +79,50 @@ def has_feature(chat_id: str, feature_key: str) -> bool:
     return tier_order.get(group_tier, -1) >= tier_order.get(row[0], 99)
 
 
+def feature_min_tier(feature_key: str):
+    """The feature's current min_tier ("FREE" / "PRO" / "ADMIN"), or None if it isn't seeded."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT min_tier FROM all_features WHERE feature_key = ?", (feature_key,)).fetchone()
+    return row[0] if row else None
+
+
+def feature_available(chat_id: str, user_id: int, feature_key: str) -> bool:
+    """
+    Tier-aware availability that - unlike has_feature() - also understands the
+    ADMIN tier, which is gated on WHO is asking (OWNER_USER_IDS), not on the
+    hub's subscription. Honours whatever min_tier the owner currently has set
+    with /updatefeature, so opening a feature up later (e.g. -minlevel pro)
+    needs no code change. Unknown feature -> False (fail closed).
+    """
+    tier = feature_min_tier(feature_key)
+    if tier is None:
+        return False
+    if tier == "ADMIN":
+        return user_id in OWNER_USER_IDS
+    return has_feature(chat_id, feature_key)
+
+
+async def require_feature(update: Update, feature_key: str, feature_label: str, chat_id: str = None) -> bool:
+    """
+    Gate for a command backed by an all_features row; True = caller may
+    proceed. Otherwise the denial is handled the way that tier already is
+    everywhere else, and False is returned:
+      ADMIN - owners only; total silence for everyone else (require_owner),
+              so a not-yet-released command isn't advertised
+      PRO   - the usual "PRO-only feature" upgrade message (require_premium)
+      FREE  - always allowed
+    Unknown feature -> silent False.
+    """
+    tier = feature_min_tier(feature_key)
+    if tier is None:
+        return False
+    if tier == "ADMIN":
+        return await require_owner(update, OWNER_USER_IDS)
+    if tier == "PRO":
+        return await require_premium(update, feature_label, chat_id)
+    return True
+
+
 # all_features (db.get_all_features) is now the single source of truth
 # for what's available at each tier - see set_feature_flag() below and
 # _push_control_sheet_botconfig(), which mirrors it to the Control Sheet's

@@ -906,11 +906,11 @@ class TestFeatureFlags:
     overwritten by a second init_db() call.
     """
 
-    def test_seeds_sixteen_flags_on_fresh_db(self, tmp_path):
+    def test_seeds_seventeen_flags_on_fresh_db(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         rows = get_all_features(db_path=path)
-        assert len(rows) == 16
+        assert len(rows) == 17
 
     def test_free_pro_admin_tiers_all_present(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -931,6 +931,7 @@ class TestFeatureFlags:
         assert by_key["custom_sheet"] == "PRO"
         assert by_key["setsub"] == "ADMIN"
         assert by_key["owner_overview"] == "ADMIN"
+        assert by_key["deleteevent"] == "ADMIN"
         assert by_key["refreshusersall"] == "PRO"
         assert by_key["verification"] == "FREE"
         assert by_key["add_extra_member"] == "FREE"

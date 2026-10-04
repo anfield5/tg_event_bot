@@ -27,6 +27,7 @@ COMMAND_DESTINATION_TYPE = {
     # Type 2 - result always in the group
     "newevent":  2,
     "editevent": 2,
+    "deleteevent": 2,
     "shareevent": 2,
     "notify":    2,
     # Type 3 - DM only

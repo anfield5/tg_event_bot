@@ -67,6 +67,11 @@ def _seed_all_features(cursor):
          "-d/-date sets the event date and optional time, -limit caps capacity (see event_limit)."),
         ("editevent", "/editevent (edit the active event)", "FREE", None,
          "Edits the name/date/icons/limit of the currently active event - same flags as /newevent."),
+        ("deleteevent", "/deleteevent (permanently delete one event)", "ADMIN", None,
+         "Permanently deletes ONE event - its DB rows, its rows in the hub's Sheet (Events/Actions/EventUsers) "
+         "and its Telegram posts - after a confirmation. Owner-level (ADMIN) for now: only OWNER_USER_IDS may use "
+         "it and everyone else gets silence. Open it up later with /updatefeature deleteevent -minlevel pro "
+         "(or free) - no code change."),
         ("event_limit", "-limit on /newevent and /editevent (Waitlist capacity)", "PRO", None,
          "Whether a hub can cap an event's total headcount and configure Waitlist visibility "
          "with -limit N [visible|hidden|onlycount]. When gated off, the flag is rejected with "

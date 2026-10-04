@@ -16,7 +16,7 @@ from config import (
     ICON_PREMIUM, OWNER_USER_IDS, ICON_ADD, ICON_CANCEL_EVENT,
     ICON_KICK, ICON_RETURN, ICON_SAVE, ICON_VERIFICATION,
 )
-from subscription import is_premium, has_feature
+from subscription import is_premium, has_feature, feature_available
 from hub_resolver import _get_known_candidate_chats
 from db import get_all_features, get_shareevent_remaining_for_chat
 from utils import escape_markdown, get_admin_contact
@@ -184,7 +184,8 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _build_main_help_text(has_event_limit: bool = False, expanded: bool = False) -> str:
+def _build_main_help_text(has_event_limit: bool = False, expanded: bool = False,
+                          has_deleteevent: bool = False) -> str:
     """
     The one and only source of the main /help text - both help_command
     (direct /help) and help_back_handler (the "Back" button from a detail
@@ -202,12 +203,14 @@ def _build_main_help_text(has_event_limit: bool = False, expanded: bool = False)
     different place depending on what the person tapped.
     """
     waitlist_line = "/waitlist \\- Show the Waitlist for the latest event \\(hub sees everyone with `from <chat>`, a child chat sees only its own\\)\n" if has_event_limit else ""
+    deleteevent_line = "/deleteevent \\[name or id\\] \\- Permanently delete one event \\(database, Google Sheet and its posts\\)\\. No argument lists the latest events to pick from\n" if has_deleteevent else ""
     tail = _newevent_flags_detail_text() + "\n" if expanded else "See 🗳 *Event Lifecycle* below for what each flag does and its default\\.\n"
     text = (
         "📖 *Main Commands*\n\n"
         "/newevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-gi \\<emoji\\>\\]\\[\\-ni \\<emoji\\>\\]"
         "\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Create a new event\n"
         f"{waitlist_line}"
+        f"{deleteevent_line}"
         "/editevent \\[name\\] \\[\\-d dd\\.mm\\.yyyy \\[HH:MM\\]\\]\\[\\-limit N\\]\\[\\-wl visible\\|hidden\\|onlycount\\]"
         "\\[\\-ngl visible\\|hidden\\|onlycount\\]\\[\\-clc on\\|off\\] \\- Edit the active event \\(same flags as /newevent, only what's given is changed\\)\n\n"
         f"{tail}"
@@ -267,7 +270,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id_for_help = await _help_target_chat_id(update, context)
     has_event_limit = has_feature(chat_id_for_help, "event_limit")
-    main_help = _build_main_help_text(has_event_limit)
+    main_help = _build_main_help_text(
+        has_event_limit,
+        has_deleteevent=feature_available(chat_id_for_help, update.effective_user.id, "deleteevent"),
+    )
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await update.message.reply_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
@@ -300,7 +306,10 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         chat_id_for_toggle = await _help_target_chat_id(update, context)
         has_event_limit = has_feature(chat_id_for_toggle, "event_limit")
         expanded = query.data == "help_expand_newevent"
-        new_text = _build_main_help_text(has_event_limit, expanded=expanded)
+        new_text = _build_main_help_text(
+            has_event_limit, expanded=expanded,
+            has_deleteevent=feature_available(chat_id_for_toggle, update.effective_user.id, "deleteevent"),
+        )
         new_keyboard = _build_main_help_keyboard(chat_id_for_toggle, expanded=expanded)
         await query.edit_message_text(new_text, parse_mode="MarkdownV2", reply_markup=new_keyboard)
         return
@@ -454,7 +463,10 @@ async def help_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id_for_help = await _help_target_chat_id(update, context)
     has_event_limit = has_feature(chat_id_for_help, "event_limit")
-    main_help = _build_main_help_text(has_event_limit)
+    main_help = _build_main_help_text(
+        has_event_limit,
+        has_deleteevent=feature_available(chat_id_for_help, update.effective_user.id, "deleteevent"),
+    )
 
     keyboard = _build_main_help_keyboard(chat_id_for_help)
     await query.edit_message_text(main_help, parse_mode="MarkdownV2", reply_markup=keyboard)
