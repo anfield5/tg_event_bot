@@ -178,7 +178,7 @@ FLAGS = {
     },
     "minlevel": {
         "names": ["-minlevel"],
-        "values": "free|pro|admin",
+        "values": "free|pro|owner",
         "default": None,
         "description": "the minimum tier required to use this feature at all. No default - this is a partial-update flag; if omitted, the existing tier requirement is simply left unchanged",
         "gated_by_feature": None,  # owner-only command, gated on OWNER_USER_IDS not a feature

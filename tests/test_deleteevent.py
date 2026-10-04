@@ -43,7 +43,7 @@ def _make_premium(db_path, chat_id=HUB):
 
 @pytest.fixture()
 def seeded_db(tmp_path, monkeypatch):
-    """The database exactly as init_db() seeds it - deleteevent is owner-level (ADMIN)."""
+    """The database exactly as init_db() seeds it - deleteevent is owner-level (OWNER)."""
     path = str(tmp_path / "test.db")
     monkeypatch.setattr(db_module, "DB_PATH", path)
     db_module.init_db(db_path=path)
@@ -313,11 +313,11 @@ class TestDeletion:
 
 class TestFeatureGate:
     """deleteevent is its own feature (all_features), seeded owner-level
-    (ADMIN). The gate follows whatever min_tier is set NOW, so opening it up
+    (OWNER). The gate follows whatever min_tier is set NOW, so opening it up
     later is a plain /updatefeature change."""
 
     def test_seeded_as_owner_level(self, seeded_db):
-        assert subscription.feature_min_tier("deleteevent") == "ADMIN"
+        assert subscription.feature_min_tier("deleteevent") == "OWNER"
 
     async def test_non_owner_gets_total_silence_even_as_group_admin(self, seeded_db):
         _add_event(seeded_db, "ev1", "First")
@@ -386,3 +386,59 @@ class TestFeatureGate:
         import help_system
         assert "/deleteevent" not in help_system._build_main_help_text()
         assert "/deleteevent" in help_system._build_main_help_text(has_deleteevent=True)
+
+
+class TestHelpMentions:
+    """/deleteevent must be documented wherever it is available - and only
+    shown to people who can actually use it."""
+
+    @staticmethod
+    def _owner_only():
+        return patch("subscription.OWNER_USER_IDS", {OWNER})
+
+    async def _main_help(self, user_id):
+        import help_system
+        chat = make_chat(chat_id=int(HUB), chat_type="supergroup")
+        msg = make_message(chat=chat)
+        upd = make_update(chat=chat, user=make_user(user_id=user_id), message=msg)
+        await help_system.help_command(upd, make_context(args=[]))
+        return msg.reply_text.call_args.args[0]
+
+    async def _lifecycle_section(self, user_id):
+        import help_system
+        chat = make_chat(chat_id=int(HUB), chat_type="supergroup")
+        msg = make_message(chat=chat)
+        query = MagicMock()
+        query.data = "help_lifecycle"
+        query.message = msg
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        upd = make_update(chat=chat, user=make_user(user_id=user_id), message=msg)
+        upd.callback_query = query
+        await help_system.help_callback_handler(upd, make_context())
+        return query.edit_message_text.call_args.args[0]
+
+    async def test_main_help_shows_it_to_the_owner(self, seeded_db):
+        with self._owner_only():
+            assert "/deleteevent" in await self._main_help(OWNER)
+
+    async def test_main_help_hides_it_from_everyone_else(self, seeded_db):
+        with self._owner_only():
+            assert "/deleteevent" not in await self._main_help(1)
+
+    async def test_main_help_shows_it_to_all_once_opened_up(self, seeded_db):
+        _set_tier(seeded_db, "FREE")
+        with self._owner_only():
+            assert "/deleteevent" in await self._main_help(1)
+
+    async def test_event_lifecycle_section_points_to_it_for_the_owner_only(self, seeded_db):
+        with self._owner_only():
+            assert "/deleteevent" in await self._lifecycle_section(OWNER)
+            assert "/deleteevent" not in await self._lifecycle_section(1)
+
+    def test_owner_help_documents_it_as_a_separate_not_dm_only_block(self, seeded_db):
+        import help_system
+        text = help_system._build_owner_help_text()
+        assert "/deleteevent" in text
+        assert "not DM" in text, "the header above says owner commands are DM-only - this one isn't"
+        assert text.index("/stats") < text.index("/deleteevent")

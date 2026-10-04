@@ -2161,7 +2161,7 @@ class TestHelpOwnerFlag:
             user = make_user(user_id=555)
             msg  = make_message(chat=chat)
             upd  = make_update(chat=chat, user=user, message=msg)
-            ctx  = make_context(bot=bot, args=["-a"])
+            ctx  = make_context(bot=bot, args=["-o"])
 
             await handlers.help_command(upd, ctx)
 
@@ -2175,7 +2175,7 @@ class TestHelpOwnerFlag:
             user = make_user(user_id=999)  # not the owner
             msg  = make_message(chat=chat)
             upd  = make_update(chat=chat, user=user, message=msg)
-            ctx  = make_context(bot=bot, args=["-a"])
+            ctx  = make_context(bot=bot, args=["-o"])
 
             await handlers.help_command(upd, ctx)
 
@@ -3386,16 +3386,16 @@ class TestFeatureFlagsSync:
         fake_ss = FakeSpreadsheet()
         with patch("sheets.CONTROL_SHEET_ID", "fake"), \
              patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
-            result = await subscription.set_feature_flag("monitoring", "ADMIN")
+            result = await subscription.set_feature_flag("monitoring", "OWNER")
 
         assert result is True
         conn = sqlite3.connect(db_path)
         stored = conn.execute("SELECT min_tier FROM all_features WHERE feature_key='monitoring'").fetchone()
-        assert stored == ("ADMIN",)
+        assert stored == ("OWNER",)
 
         ws = fake_ss.worksheets["BOTCONFIG"]
         grid = ws.updates[0]
-        assert grid[0] == ["FEATURE_KEY", "FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
+        assert grid[0] == ["FEATURE_KEY", "FEATURE", "FREE", "PRO", "OWNER", "DESCRIPTION"]
         monitoring_row = next(r for r in grid if r[0] == "monitoring")
         assert monitoring_row[2:5] == ["no", "no", "yes"]
 
@@ -3660,13 +3660,13 @@ class TestUpdateFeature:
             user = make_user(user_id=555)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
-            ctx = make_context(bot=bot, args=["shareevent", "-minlevel", "admin", "-limit", "7"])
+            ctx = make_context(bot=bot, args=["shareevent", "-minlevel", "owner", "-limit", "7"])
 
             await subscription.updatefeature(upd, ctx)
 
             conn = sqlite3.connect(db_path)
             row = conn.execute("SELECT min_tier, limit_count FROM all_features WHERE feature_key='shareevent'").fetchone()
-            assert row == ("ADMIN", 7)
+            assert row == ("OWNER", 7)
 
     async def test_unknown_feature_key(self, db_path):
         with patch("subscription.OWNER_USER_IDS", {555}):
@@ -8540,7 +8540,7 @@ class TestStatsDashCommand:
         msg = make_message(chat=chat)
         msg.sender_chat = None
         upd = make_update(chat=chat, user=non_owner, message=msg)
-        ctx = make_context(args=["-a"])
+        ctx = make_context(args=["-o"])
 
         with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
             await handlers.stats_command(upd, ctx)
@@ -8561,7 +8561,7 @@ class TestStatsDashCommand:
         owner = make_user(user_id=self.OWNER_ID)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=owner, message=msg)
-        ctx = make_context(args=["-a"])
+        ctx = make_context(args=["-o"])
 
         with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
             await handlers.stats_command(upd, ctx)
@@ -8582,7 +8582,7 @@ class TestStatsDashCommand:
         owner = make_user(user_id=self.OWNER_ID)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=owner, message=msg)
-        ctx = make_context(args=["-a"])
+        ctx = make_context(args=["-o"])
 
         with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
             await handlers.stats_command(upd, ctx)
@@ -8596,7 +8596,7 @@ class TestStatsDashCommand:
         owner = make_user(user_id=self.OWNER_ID)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=owner, message=msg)
-        ctx = make_context(args=["-a"])
+        ctx = make_context(args=["-o"])
 
         with patch("handlers.OWNER_USER_IDS", {self.OWNER_ID}):
             await handlers.stats_command(upd, ctx)
@@ -9624,7 +9624,7 @@ class TestHelpAuditFindings:
             user = make_user(user_id=1)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
-            ctx = make_context(args=["-a"])
+            ctx = make_context(args=["-o"])
 
             await help_system.help_command(upd, ctx)
 
@@ -10214,15 +10214,15 @@ class TestGoingClickHealsStaleUnresolvableEntry:
 
 
 class TestHelpOwnerFlagReducedToTwoForms:
-    """Item 1: /help's owner-only flag reduced from 3 forms (-a, --admin,
-    --owner) to 2 (-a, -admin) - both still gated on OWNER_USER_IDS."""
+    """/help's owner-only flag is -o / -owner (renamed from -a / -admin). The old forms
+    and the double-dash forms must NOT work. Gated on OWNER_USER_IDS."""
 
     async def test_short_form_still_works(self, db_path):
         chat = make_chat(chat_id=-1)
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
-        ctx = make_context(args=["-a"])
+        ctx = make_context(args=["-o"])
 
         with patch("help_system.OWNER_USER_IDS", [1]):
             await help_system.help_command(upd, ctx)
@@ -10235,7 +10235,7 @@ class TestHelpOwnerFlagReducedToTwoForms:
         user = make_user(user_id=1)
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
-        ctx = make_context(args=["-admin"])
+        ctx = make_context(args=["-owner"])
 
         with patch("help_system.OWNER_USER_IDS", [1]):
             await help_system.help_command(upd, ctx)
@@ -10243,7 +10243,7 @@ class TestHelpOwnerFlagReducedToTwoForms:
         text = msg.reply_text.call_args.args[0]
         assert "Owner\\-Only Commands" in text
 
-    @pytest.mark.parametrize("removed_flag", ["--admin", "--owner"])
+    @pytest.mark.parametrize("removed_flag", ["--admin", "--owner", "-a", "-admin"])
     async def test_removed_forms_no_longer_work(self, db_path, removed_flag):
         chat = make_chat(chat_id=-1)
         user = make_user(user_id=1)
@@ -10262,7 +10262,7 @@ class TestHelpOwnerFlagReducedToTwoForms:
         user = make_user(user_id=999)  # not an owner
         msg = make_message(chat=chat)
         upd = make_update(chat=chat, user=user, message=msg)
-        ctx = make_context(args=["-admin"])
+        ctx = make_context(args=["-owner"])
 
         with patch("help_system.OWNER_USER_IDS", [1]):
             await help_system.help_command(upd, ctx)
@@ -10497,7 +10497,7 @@ class TestOwnerHelpSingleToggle:
             user = make_user(user_id=1)
             msg = make_message(chat=chat)
             upd = make_update(chat=chat, user=user, message=msg)
-            ctx = make_context(args=["-a"])
+            ctx = make_context(args=["-o"])
 
             await help_system.help_command(upd, ctx)
 

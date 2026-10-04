@@ -4,7 +4,7 @@ since this is self-contained (only depends on config/utils/subscription/
 hub_resolver, never touches the event-rendering engine) and was one of the
 largest coherent chunks of that file.
 
-Covers: /userid, /chatid, /help (including the owner-only "-a" variant),
+Covers: /userid, /chatid, /help (including the owner-only "-o" variant),
 the help_* callback handlers (section drill-down, back button), and the
 upgrade-info screen shown when a free-tier hub taps a locked PRO button.
 """
@@ -239,13 +239,17 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "/allgroups \\[\\-pro\\] \\- List every group the bot is in, 10 at a time\n"
         f"{allgroups_detail}"
         "/allchannels \\- List every channel the bot is in, 10 at a time\n"
-        "/updatefeature \\[feature\\_key\\] \\[\\-minlevel free\\|pro\\|admin\\] \\[\\-limit N\\] "
+        "/updatefeature \\[feature\\_key\\] \\[\\-minlevel free\\|pro\\|owner\\] \\[\\-limit N\\] "
         "\\- Change a feature's tier and/or its usage limit\\. At least one of the two flags is required\\.\n"
         f"{updatefeature_detail}{chr(10) if expanded else ''}"
         "/showtable \\[table\\_name\\] \\[sheet\\_name\\] \\- Dumps `SELECT * FROM table_name` into the "
         "named tab of EventBot\\_Config \\(must already exist there\\)\\.\n"
-        "/stats \\-a \\- Bot\\-wide report: groups/channels the bot is in \\(with/without admin rights\\), "
-        "FREE/PRO subscription split\\."
+        "/stats \\-o\\|\\-owner \\- Bot\\-wide report: groups/channels the bot is in \\(with/without admin rights\\), "
+        "FREE/PRO subscription split\\.\n\n"
+        "🗑 *Owner\\-level feature* \\(works in groups too, not DM\\-only\\)\n"
+        "/deleteevent \\[name or id\\] \\- Permanently delete one event: database, Google Sheet rows and its "
+        "posts, after a confirmation\\. No argument lists the latest events; or pass part of the name or the event ID\\. "
+        "Open it to others later with /updatefeature deleteevent \\-minlevel pro\\|free\\."
     )
 
 
@@ -259,7 +263,7 @@ def _build_owner_help_keyboard(expanded: bool = False) -> InlineKeyboardMarkup:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    is_owner_request = bool(context.args) and context.args[0].strip().lower() in ("-a", "-admin")
+    is_owner_request = bool(context.args) and context.args[0].strip().lower() in ("-o", "-owner")
     if is_owner_request and update.effective_user.id in OWNER_USER_IDS:
         await update.message.reply_text(
             _build_owner_help_text(),
@@ -348,12 +352,17 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if shareevent_limit is not None:
         shareevent_limit_line = (
             f"FREE hubs can share to the same target before being blocked "
-            f"\\(limit {shareevent_limit}, remaining {shareevent_remaining}\\) \\- a PRO/ADMIN\\-gated "
+            f"\\(limit {shareevent_limit}, remaining {shareevent_remaining}\\) \\- a PRO/OWNER\\-gated "
             f"hub is always unlimited\\. The limit is adjustable via /updatefeature\\."
         )
     else:
         shareevent_limit_line = "Currently unlimited for every tier \\(adjustable via /updatefeature\\)\\."
 
+    lifecycle_delete_note = ""
+    if effective_query_data == "help_lifecycle" and feature_available(
+        await _help_target_chat_id(update, context), update.effective_user.id, "deleteevent"
+    ):
+        lifecycle_delete_note = "\n\nTo erase an event completely \\(database, Google Sheet rows and its posts\\) use /deleteevent\\."
     help_sections = {
         "help_users": (
             "👥 *User Management*\n\n"
@@ -432,6 +441,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"event already running\\. If Verify is disabled for a hub, the "
             f"OPEN\\-state button closes the event directly instead of entering review\\.\n\n"
             f"See /newevent's own \\🔽 More button \\(main /help screen\\) for its flags\\."
+            f"{lifecycle_delete_note}"
         ),
     }
     

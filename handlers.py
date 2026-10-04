@@ -2787,12 +2787,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
     under the reply shows the same period's top-3 guest-inviters (see
     stats_users_callback_handler) without re-running the command.
 
-    /stats -a - owner-only, bypasses everything above entirely: a
+    /stats -o | -owner - owner-only, bypasses everything above entirely: a
     bot-wide report (how many groups/channels the bot is in, with/
     without admin rights, and the FREE/PRO subscription split) rather
     than any single hub's own activity.
     """
-    if context.args and context.args[0] == "-a":
+    if context.args and context.args[0] in ("-o", "-owner"):
         if not await require_owner(update, OWNER_USER_IDS):
             return
         with get_connection() as conn:

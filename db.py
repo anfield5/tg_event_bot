@@ -67,9 +67,9 @@ def _seed_all_features(cursor):
          "-d/-date sets the event date and optional time, -limit caps capacity (see event_limit)."),
         ("editevent", "/editevent (edit the active event)", "FREE", None,
          "Edits the name/date/icons/limit of the currently active event - same flags as /newevent."),
-        ("deleteevent", "/deleteevent (permanently delete one event)", "ADMIN", None,
+        ("deleteevent", "/deleteevent (permanently delete one event)", "OWNER", None,
          "Permanently deletes ONE event - its DB rows, its rows in the hub's Sheet (Events/Actions/EventUsers) "
-         "and its Telegram posts - after a confirmation. Owner-level (ADMIN) for now: only OWNER_USER_IDS may use "
+         "and its Telegram posts - after a confirmation. Owner-level for now: only OWNER_USER_IDS may use "
          "it and everyone else gets silence. Open it up later with /updatefeature deleteevent -minlevel pro "
          "(or free) - no code change."),
         ("event_limit", "-limit on /newevent and /editevent (Waitlist capacity)", "PRO", None,
@@ -87,7 +87,7 @@ def _seed_all_features(cursor):
          "with Telegram and Google Sheets."),
         ("shareevent", "/shareevent (per target group/channel)", "FREE", 3,
          "Sharing an event to a child group/channel. limit_count caps how many distinct events can be "
-         "shared to the same target - only applies while min_tier is FREE (a PRO/ADMIN-gated hub is always "
+         "shared to the same target - only applies while min_tier is FREE (a PRO/OWNER-gated hub is always "
          "unlimited). Change either via /updatefeature."),
         ("verification", "Verification step before closing an event", "FREE", None,
          "The review step (kick/return, +/- guest, Add Extra Member) between OPEN and CLOSED. "
@@ -100,7 +100,7 @@ def _seed_all_features(cursor):
          "Whether commands can be run in a private DM with the bot at all (sticky group selection, "
          "/switchgroup, etc.) - FREE hubs must run commands inside the actual group chat instead. "
          "/start, /help, and /switchgroup itself are never gated by this - only the actual work commands are."),
-        ("setsub", "/setsub (manage subscriptions)", "ADMIN", None,
+        ("setsub", "/setsub (manage subscriptions)", "OWNER", None,
          "Activate, extend, or deactivate PRO for any group. Gated on OWNER_USER_IDS, not chat admin status."),
         ("custom_sheet", "Custom Google Sheet (/setsheet)", "PRO", None,
          "Binds the hub to its own Google Sheet (Users/Events/Actions/EventUsers/UserPresenceLog tabs)."),
@@ -110,7 +110,7 @@ def _seed_all_features(cursor):
          "Requires monitored chats, which can only ever be configured via /addmonitor (itself PRO-only) - so this is functionally inert on FREE regardless."),
         ("aliases", "Aliases (/setalias, /removealias, /listalias)", "PRO", None,
          "Custom short names for child groups/channels, used with /shareevent."),
-        ("owner_overview", "/allgroups, /allchannels (view everything the bot is in)", "ADMIN", None,
+        ("owner_overview", "/allgroups, /allchannels (view everything the bot is in)", "OWNER", None,
          "Lists every group/channel the bot is in, paginated, with an optional -pro filter on /allgroups."),
         ("stats", "/stats (event activity stats for this group)", "PRO", None,
          "Shows how many events this hub has created, how many were closed, and total/average headcount "
@@ -256,14 +256,14 @@ def init_db(db_path: str = DB_PATH):
     """)
 
     # The single source of truth for what's available at each subscription
-    # tier - FREE / PRO / ADMIN, in that ascending order (ADMIN can do
+    # tier - FREE / PRO / OWNER, in that ascending order (OWNER can do
     # everything PRO can, PRO can do everything FREE can). Mirrored to the
     # Control Sheet's "BOTCONFIG" tab (see sheets.sync_control_sheet_botconfig)
     # every time this table changes - see db.set_feature_flag().
     #
     # limit_count applies ONLY to the feature's own min_tier - any tier
     # ABOVE min_tier is automatically unlimited. E.g. min_tier=FREE,
-    # limit_count=3 means FREE is capped at 3, PRO/ADMIN are unlimited by
+    # limit_count=3 means FREE is capped at 3, PRO/OWNER are unlimited by
     # construction (they're above FREE). There is no way to configure an
     # "inversion" (a higher tier ending up more restricted than a lower
     # one) - the model doesn't allow it, so no separate limit exists per
@@ -307,6 +307,8 @@ def init_db(db_path: str = DB_PATH):
         # specific value over; the other two tiers' old limits are
         # discarded (they were only ever reachable by first changing
         # min_tier to match them, at which point they'd have applied).
+        # "ADMIN" is the OLD name of the top tier (renamed OWNER right below) - rows of a
+        # database old enough to still have these columns carry it here.
         for tier, col in (("FREE", "limit_free"), ("PRO", "limit_pro"), ("ADMIN", "limit_admin")):
             cursor.execute(
                 f"UPDATE all_features SET limit_count = {col} "
@@ -320,6 +322,10 @@ def init_db(db_path: str = DB_PATH):
         except sqlite3.OperationalError:
             pass  # older SQLite without DROP COLUMN support - harmless leftover columns
     _seed_all_features(cursor)
+    # The top tier used to be called "ADMIN". It is gated on OWNER_USER_IDS (WHO is asking),
+    # not on anyone being a chat admin, hence OWNER. One-time and idempotent; runs after the
+    # seed so a database that still has the old name is converted in place.
+    cursor.execute("UPDATE all_features SET min_tier = 'OWNER' WHERE min_tier = 'ADMIN'")
 
     # Storage for active voting events within the system.
     # event_status: -1 canceled / 0 open / 1 verification / 2 closed
@@ -1226,7 +1232,7 @@ def get_all_features(db_path: str = None):
     min_tier, limit_count, description) tuples, ordered by sort_order (an
     explicit, developer-defined display order - deliberately not
     tier-then-alphabetical, since the intended order mixes tiers, e.g.
-    setsub/ADMIN listed before custom_sheet/PRO) - this is what
+    setsub/OWNER listed before custom_sheet/PRO) - this is what
     sync_control_sheet_botconfig() mirrors to the Control Sheet's
     "BOTCONFIG" tab. limit_count is None for unlimited, or an integer cap -
     it only ever applies while a chat is AT min_tier exactly; any tier

@@ -259,7 +259,7 @@ class TestMigrationAllFeaturesRename:
         """)
         # A real feature_key with an admin-customized tier, to confirm the
         # rename preserves data rather than resetting it via re-seeding.
-        run_sql(path, "INSERT INTO feature_flags (feature_key, feature_label, min_tier) VALUES ('aliases','Aliases','ADMIN')")
+        run_sql(path, "INSERT INTO feature_flags (feature_key, feature_label, min_tier) VALUES ('aliases','Aliases','OWNER')")
 
         init_db(db_path=path)
 
@@ -267,7 +267,7 @@ class TestMigrationAllFeaturesRename:
         assert "all_features" in tables
         assert "feature_flags" not in tables
         row = fetch_all(path, "SELECT feature_key, min_tier FROM all_features WHERE feature_key='aliases'")
-        assert row == [("aliases", "ADMIN")]
+        assert row == [("aliases", "OWNER")]
 
 
 class TestMigrationDateBotRemovedRename:
@@ -902,7 +902,7 @@ class TestCommandLog:
 class TestFeatureFlags:
     """
     all_features is the single source of truth for what's available at
-    each tier (FREE/PRO/ADMIN) - seeded automatically on init_db(), never
+    each tier (FREE/PRO/OWNER) - seeded automatically on init_db(), never
     overwritten by a second init_db() call.
     """
 
@@ -917,7 +917,7 @@ class TestFeatureFlags:
         init_db(db_path=path)
         rows = get_all_features(db_path=path)
         tiers = {r[2] for r in rows}
-        assert tiers == {"FREE", "PRO", "ADMIN"}
+        assert tiers == {"FREE", "PRO", "OWNER"}
 
     def test_known_features_have_the_expected_tier(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -929,9 +929,9 @@ class TestFeatureFlags:
         assert by_key["aliases"] == "PRO"
         assert by_key["monitoring"] == "PRO"
         assert by_key["custom_sheet"] == "PRO"
-        assert by_key["setsub"] == "ADMIN"
-        assert by_key["owner_overview"] == "ADMIN"
-        assert by_key["deleteevent"] == "ADMIN"
+        assert by_key["setsub"] == "OWNER"
+        assert by_key["owner_overview"] == "OWNER"
+        assert by_key["deleteevent"] == "OWNER"
         assert by_key["refreshusersall"] == "PRO"
         assert by_key["verification"] == "FREE"
         assert by_key["add_extra_member"] == "FREE"
@@ -946,12 +946,12 @@ class TestFeatureFlags:
     def test_reseeding_does_not_overwrite_a_manually_changed_flag(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        update_feature_flag("aliases", "ADMIN", db_path=path)
+        update_feature_flag("aliases", "OWNER", db_path=path)
 
         init_db(db_path=path)  # re-run must NOT reset aliases back to PRO
 
         by_key = {r[0]: r[2] for r in get_all_features(db_path=path)}
-        assert by_key["aliases"] == "ADMIN"
+        assert by_key["aliases"] == "OWNER"
 
     def test_reseeding_refreshes_stale_label_text_but_not_min_tier(self, tmp_path):
         """
@@ -963,13 +963,13 @@ class TestFeatureFlags:
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         run_sql(path, "UPDATE all_features SET feature_label = 'stale old label' WHERE feature_key = 'aliases'")
-        update_feature_flag("aliases", "ADMIN", db_path=path)
+        update_feature_flag("aliases", "OWNER", db_path=path)
 
         init_db(db_path=path)
 
         rows = fetch_all(path, "SELECT feature_label, min_tier FROM all_features WHERE feature_key = 'aliases'")
         assert rows[0][0] != "stale old label"
-        assert rows[0][1] == "ADMIN"
+        assert rows[0][1] == "OWNER"
 
     def test_retires_feature_keys_no_longer_in_the_seed_list(self, tmp_path):
         """

@@ -408,7 +408,7 @@ async def sync_control_sheet_chats_log(rows: list) -> bool:
         return False
 
 
-_TIER_ORDER = {"FREE": 0, "PRO": 1, "ADMIN": 2}
+_TIER_ORDER = {"FREE": 0, "PRO": 1, "OWNER": 2}
 
 
 async def sync_control_sheet_botconfig(feature_rows: list):
@@ -418,9 +418,9 @@ async def sync_control_sheet_botconfig(feature_rows: list):
     truth for what's available at each tier, not just reference data.
 
     feature_rows: list of (feature_key, feature_label, min_tier,
-    limit_count, description) tuples. For each row, FREE/PRO/ADMIN columns
-    are computed from the tier hierarchy (ADMIN >= PRO >= FREE): a feature
-    with min_tier='PRO' shows "no" under FREE and "yes" under PRO/ADMIN.
+    limit_count, description) tuples. For each row, FREE/PRO/OWNER columns
+    are computed from the tier hierarchy (OWNER >= PRO >= FREE): a feature
+    with min_tier='PRO' shows "no" under FREE and "yes" under PRO/OWNER.
     limit_count only ever applies to the tier that EQUALS min_tier exactly
     (shown as "yes(limit N)") - any tier above min_tier is unlimited by
     construction and just shows a plain "yes".
@@ -433,7 +433,7 @@ async def sync_control_sheet_botconfig(feature_rows: list):
     try:
         ss = await open_spreadsheet(CONTROL_SHEET_ID)
         ws = await ss.worksheet("BOTCONFIG")
-        header = ["FEATURE_KEY", "FEATURE", "FREE", "PRO", "ADMIN", "DESCRIPTION"]
+        header = ["FEATURE_KEY", "FEATURE", "FREE", "PRO", "OWNER", "DESCRIPTION"]
         body = []
         for feature_key, feature_label, min_tier, limit_count, description in feature_rows:
             required = _TIER_ORDER.get(min_tier, 0)
@@ -450,7 +450,7 @@ async def sync_control_sheet_botconfig(feature_rows: list):
                 feature_label,
                 _cell("FREE"),
                 _cell("PRO"),
-                _cell("ADMIN"),
+                _cell("OWNER"),
                 description or "",
             ])
         grid = [header] + body

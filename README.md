@@ -91,7 +91,7 @@ zone are chosen to minimize crossing lines.
 >   status in that chat (`MEMBER`/`ADMIN`), tracked live via
 >   `on_my_chat_member_update`'s `member ↔ administrator` transition
 >   (previously silently ignored - the bot's own promotion/demotion
->   without leaving a chat was never recorded). Powers `/stats -a`'s
+>   without leaving a chat was never recorded). Powers `/stats -o`'s
 >   admin-rights counts and is now exported as both `GROUPS`' and
 >   `CHANNELS`' `ROLE` column on the Control Sheet (initially only
 >   `CHANNELS` got it - a real gap, fixed). Chats added (or already
@@ -155,7 +155,7 @@ owner-only, always kept in sync regardless of tier):
 |---|---|---|
 | `GROUPS` | CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD, ROLE | mirrors `all_groups`, on every `/setsub` |
 | `CHANNELS` | CHAT_ID, CHAT_NAME, VISIBILITY, DATE_BOT_ADD, ROLE | mirrors `all_channels` |
-| `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION | mirrors `all_features`, on every `/updatefeature` |
+| `BOTCONFIG` | FEATURE_KEY, FEATURE, FREE, PRO, OWNER, DESCRIPTION | mirrors `all_features`, on every `/updatefeature` |
 | `chats_log` | CHAT_ID, DATE_BOT_ADD, DATE_BOT_REMOVE | mirrors `all_chats_bot_log` - the historical add/remove trail, pushed immediately whenever the bot is removed from a group/channel |
 
 **Per-hub Sheet** (bound via `/setsheet`, PRO-only - a FREE hub writes

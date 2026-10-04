@@ -58,9 +58,9 @@ def has_feature(chat_id: str, feature_key: str) -> bool:
     set_feature_flag() even though they default to FREE.
 
     Only meaningful for FREE/PRO-tier features. A group's own subscription
-    is never "ADMIN" (that tier is gated on OWNER_USER_IDS, the caller's own
+    is never "OWNER" (that tier is gated on OWNER_USER_IDS, the caller's own
     identity - unrelated to any group's subscription), so checking an
-    ADMIN-tier feature_key here will always return False; that's correct,
+    OWNER-tier feature_key here will always return False; that's correct,
     not a bug - use the OWNER_USER_IDS check directly for those instead.
 
     Unknown feature_key (typo, or not seeded) defaults to False rather than
@@ -74,13 +74,13 @@ def has_feature(chat_id: str, feature_key: str) -> bool:
     if not row:
         return False
 
-    tier_order = {"FREE": 0, "PRO": 1, "ADMIN": 2}
+    tier_order = {"FREE": 0, "PRO": 1, "OWNER": 2}
     group_tier = "PRO" if is_premium(chat_id) else "FREE"
     return tier_order.get(group_tier, -1) >= tier_order.get(row[0], 99)
 
 
 def feature_min_tier(feature_key: str):
-    """The feature's current min_tier ("FREE" / "PRO" / "ADMIN"), or None if it isn't seeded."""
+    """The feature's current min_tier ("FREE" / "PRO" / "OWNER"), or None if it isn't seeded."""
     with get_connection() as conn:
         row = conn.execute("SELECT min_tier FROM all_features WHERE feature_key = ?", (feature_key,)).fetchone()
     return row[0] if row else None
@@ -89,7 +89,7 @@ def feature_min_tier(feature_key: str):
 def feature_available(chat_id: str, user_id: int, feature_key: str) -> bool:
     """
     Tier-aware availability that - unlike has_feature() - also understands the
-    ADMIN tier, which is gated on WHO is asking (OWNER_USER_IDS), not on the
+    OWNER tier, which is gated on WHO is asking (OWNER_USER_IDS), not on the
     hub's subscription. Honours whatever min_tier the owner currently has set
     with /updatefeature, so opening a feature up later (e.g. -minlevel pro)
     needs no code change. Unknown feature -> False (fail closed).
@@ -97,7 +97,7 @@ def feature_available(chat_id: str, user_id: int, feature_key: str) -> bool:
     tier = feature_min_tier(feature_key)
     if tier is None:
         return False
-    if tier == "ADMIN":
+    if tier == "OWNER":
         return user_id in OWNER_USER_IDS
     return has_feature(chat_id, feature_key)
 
@@ -107,7 +107,7 @@ async def require_feature(update: Update, feature_key: str, feature_label: str, 
     Gate for a command backed by an all_features row; True = caller may
     proceed. Otherwise the denial is handled the way that tier already is
     everywhere else, and False is returned:
-      ADMIN - owners only; total silence for everyone else (require_owner),
+      OWNER - owners only; total silence for everyone else (require_owner),
               so a not-yet-released command isn't advertised
       PRO   - the usual "PRO-only feature" upgrade message (require_premium)
       FREE  - always allowed
@@ -116,7 +116,7 @@ async def require_feature(update: Update, feature_key: str, feature_label: str, 
     tier = feature_min_tier(feature_key)
     if tier is None:
         return False
-    if tier == "ADMIN":
+    if tier == "OWNER":
         return await require_owner(update, OWNER_USER_IDS)
     if tier == "PRO":
         return await require_premium(update, feature_label, chat_id)
@@ -813,7 +813,7 @@ async def set_feature_flag(feature_key: str, min_tier: str, limit_count=_LIMIT_N
     then immediately re-syncs the Control Sheet's BOTCONFIG tab, so it can
     never drift out of date with the table. Powers /updatefeature.
 
-    min_tier must be one of "FREE", "PRO", "ADMIN". limit_count: omit to
+    min_tier must be one of "FREE", "PRO", "OWNER". limit_count: omit to
     leave the current value untouched, pass None to clear it (unlimited),
     or an int to set/change it. limit_count only ever applies while a chat
     is AT min_tier exactly - any tier above is unlimited by construction.
@@ -827,7 +827,7 @@ async def updatefeature(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Owner-only. Changes which tier a feature requires and/or its usage
     limit - the live command powering set_feature_flag().
 
-    Usage: /updatefeature <feature_key> [-minlevel free|pro|admin] [-limit N]
+    Usage: /updatefeature <feature_key> [-minlevel free|pro|owner] [-limit N]
       /updatefeature shareevent -minlevel pro            - PRO-gated; limit resets to unlimited (tier changed, -limit omitted)
       /updatefeature shareevent -limit 10                 - limit set to 10, tier untouched
       /updatefeature shareevent -minlevel free -limit 5   - both changed explicitly, in one call
@@ -859,7 +859,7 @@ async def updatefeature(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 1:
         await update.message.reply_text(
-            "❌ *Syntax:* `/updatefeature <feature_key> [-minlevel free|pro|admin] [-limit N]`\n"
+            "❌ *Syntax:* `/updatefeature <feature_key> [-minlevel free|pro|owner] [-limit N]`\n"
             "At least one of `\\-minlevel`/`\\-limit` is required\\. `\\-limit 0` clears the limit \\(unlimited\\)\\.",
             parse_mode="MarkdownV2",
         )
@@ -877,13 +877,13 @@ async def updatefeature(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_row = next(r for r in existing if r[0] == feature_key)
     current_min_tier, current_limit = current_row[2], current_row[3]
 
-    level_map = {"free": "FREE", "pro": "PRO", "admin": "ADMIN"}
+    level_map = {"free": "FREE", "pro": "PRO", "owner": "OWNER"}
     new_min_tier = None
     if "-minlevel" in args:
         idx = args.index("-minlevel")
         if idx + 1 >= len(args) or args[idx + 1].strip().lower() not in level_map:
             await update.message.reply_text(
-                "❌ `\\-minlevel` must be followed by one of `free`, `pro`, `admin`\\.",
+                "❌ `\\-minlevel` must be followed by one of `free`, `pro`, `owner`\\.",
                 parse_mode="MarkdownV2",
             )
             return
