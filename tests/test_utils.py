@@ -150,11 +150,11 @@ class TestCommandDestinationClassification:
         type_2 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 2}
         assert type_2 == {"newevent", "editevent", "deleteevent", "shareevent", "notify"}
 
-    def test_type_3_commands_are_exactly_these_nine(self):
+    def test_type_3_commands_are_exactly_these_ten(self):
         type_3 = {k for k, v in COMMAND_DESTINATION_TYPE.items() if v == 3}
         assert type_3 == {
             "switchgroup", "start", "lockbot", "allgroups",
-            "allchannels", "updatefeature", "setsub", "setsheet", "showtable",
+            "allchannels", "updatefeature", "setsub", "setsheet", "showtable", "version",
         }
 
     def test_no_command_is_both_type_2_and_type_3(self):
@@ -223,6 +223,7 @@ class TestCommandDestinationTypeMatchesRealCode:
         "setsub": ("setsub", "subscription.py"),
         "setsheet": ("setsheet", "subscription.py"),
         "showtable": ("showtable", "subscription.py"),
+        "version": ("version_command", "subscription.py"),
     }
 
     def _get_function_source(self, filename, function_name):

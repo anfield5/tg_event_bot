@@ -244,8 +244,9 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         f"{updatefeature_detail}{chr(10) if expanded else ''}"
         "/showtable \\[table\\_name\\] \\[sheet\\_name\\] \\- Dumps `SELECT * FROM table_name` into the "
         "named tab of EventBot\\_Config \\(must already exist there\\)\\.\n"
+        "/version \\- Show the running bot version, when it started \\(and the uptime\\), and the Python / python\\-telegram\\-bot versions\n"
         "/stats \\-o\\|\\-owner \\- Bot\\-wide report: groups/channels the bot is in \\(with/without admin rights\\), "
-        "FREE/PRO subscription split\\.\n\n"
+        "FREE/PRO split, PRO expiries, growth and churn, activity and top commands/groups\\.\n\n"
         "🗑 *Owner\\-level feature* \\(works in groups too, not DM\\-only\\)\n"
         "/deleteevent \\[name or id\\] \\- Permanently delete one event: database, Google Sheet rows and its "
         "posts, after a confirmation\\. No argument lists the latest events; or pass part of the name or the event ID\\. "
@@ -390,7 +391,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
             + (
                 "\n/stats \\[period\\] \\- Event activity stats for this group \\(events created, closed, "
-                "total/average headcount\\)\\. period is `<number><unit>` \\- d/w/m/y \\(e\\.g\\. `30d`, `6m`, `2y`\\), "
+                "cancelled/open, total/average headcount, guest share, limit fill and waitlist\\)\\. period is `<number><unit>` \\- d/w/m/y \\(e\\.g\\. `30d`, `6m`, `2y`\\), "
                 "or omitted for all time\\; Users/Distribution buttons under the reply show top "
                 "guest\\-inviters and a per\\-chat breakdown for that period"
                 if has_feature(hub_chat_id_for_limits, "stats") else ""

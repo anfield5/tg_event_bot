@@ -6,15 +6,18 @@ Payment itself is confirmed by hand (crypto, checked by the bot owner) -
 there is deliberately no payment automation here.
 """
 
+import platform
 import re
 import sqlite3
+import time
 from datetime import datetime, timedelta
 
+import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, CONTROL_SHEET_ID, logger
-from utils import escape_markdown, is_real_admin, require_dm_only, require_owner
+from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, CONTROL_SHEET_ID, BOT_VERSION, STARTED_AT, logger
+from utils import escape_markdown, is_real_admin, require_dm_only, require_owner, format_uptime
 from db import get_connection, get_all_features, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE, is_bot_locked, set_bot_locked
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
@@ -190,6 +193,31 @@ async def _push_control_sheet_chats_log() -> bool:
         cursor.execute("SELECT chat_id, date_bot_add, date_bot_remove FROM all_chats_bot_log")
         rows = cursor.fetchall()
     return await sync_control_sheet_chats_log(rows)
+
+
+async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Owner-only and DM-only (Type 3, like /lockbot). Shows which build is
+    actually RUNNING: the version, when the process started (so "did my
+    deploy really restart it?" has an answer) and the Python /
+    python-telegram-bot versions it runs on. Non-owners get silence, so the
+    command's existence isn't revealed.
+    """
+    if not await require_owner(update, OWNER_USER_IDS):
+        return
+    if not await require_dm_only(update, "version"):
+        return
+
+    started = datetime.fromtimestamp(STARTED_AT).astimezone().strftime("%d.%m.%Y %H:%M:%S %Z")
+    uptime = format_uptime(time.time() - STARTED_AT)
+    text = (
+        "🤖 *Bot version*\n"
+        f"Version: `{escape_markdown(BOT_VERSION)}`\n"
+        f"Started: {escape_markdown(started)} \\(up {escape_markdown(uptime)}\\)\n"
+        f"Python: `{escape_markdown(platform.python_version())}`\n"
+        f"python\\-telegram\\-bot: `{escape_markdown(telegram.__version__)}`"
+    )
+    await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 async def lockbot(update: Update, context: ContextTypes.DEFAULT_TYPE):

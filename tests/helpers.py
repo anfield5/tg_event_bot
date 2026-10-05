@@ -117,3 +117,16 @@ def make_context(bot=None, args=None, user_data=None):
 
     ctx.application.create_task  = MagicMock(side_effect=_discard_task)
     return ctx
+
+
+def sqlite_has_json1() -> bool:
+    """The waitlist-join trigger (db.init_db 0a11) needs SQLite's JSON1; tests of it skip without."""
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("SELECT json_array_length('[1]')")
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()

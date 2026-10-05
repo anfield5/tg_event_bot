@@ -34,6 +34,7 @@ COMMAND_DESTINATION_TYPE = {
     "switchgroup":    3,
     "start":          3,
     "lockbot":        3,
+    "version":        3,
     "allgroups":      3,
     "allchannels":    3,
     "updatefeature":  3,
@@ -108,6 +109,21 @@ async def require_dm_only(update, command_name: str) -> bool:
 def escape_markdown(text):
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
+
+def format_uptime(seconds) -> str:
+    """12 -> '12s', 125 -> '2m 5s', 7500 -> '2h 5m', 93784 -> '1d 2h 3m'."""
+    s = max(0, int(seconds))
+    days, rem = divmod(s, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
 
 def now2ddmmyy():
     return datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]

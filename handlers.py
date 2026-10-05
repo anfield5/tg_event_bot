@@ -1,5 +1,6 @@
 import json
 import re
+from collections import Counter
 from uuid import uuid4
 from datetime import datetime, timedelta
 
@@ -2463,14 +2464,7 @@ def _closed_event_ids_for_period(chat_id: str, period: str):
     cutoff = _stats_period_cutoff(period)
 
     def _within_period(created_date_raw):
-        if cutoff is None:
-            return True
-        if not created_date_raw:
-            return False
-        try:
-            return datetime.strptime(created_date_raw, "%d.%m.%Y %H:%M:%S.%f") >= cutoff
-        except ValueError:
-            return False
+        return _created_within_period(created_date_raw, cutoff)
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -2480,6 +2474,302 @@ def _closed_event_ids_for_period(chat_id: str, period: str):
     events_amount = len(all_rows)
     closed_event_ids = [r[0] for r in all_rows if r[1] == 2]
     return events_amount, closed_event_ids
+
+
+def _created_within_period(created_date_raw, cutoff) -> bool:
+    """
+    The single definition of "this event belongs to the period" (see
+    _compute_stats' docstring): strict-parse events.created_date; an event with
+    no/unreadable created_date is excluded from any specific period but
+    included in "all" (cutoff is None).
+    """
+    if cutoff is None:
+        return True
+    if not created_date_raw:
+        return False
+    try:
+        return datetime.strptime(created_date_raw, "%d.%m.%Y %H:%M:%S.%f") >= cutoff
+    except ValueError:
+        return False
+
+
+_STAT_DATE_FORMATS = (
+    "%d.%m.%Y %H:%M:%S.%f",   # now2ddmmyy(): events, command_log, bot add/remove dates
+    "%d.%m.%Y %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",      # subscription dates, waitlist timestamps
+    "%d.%m.%Y",
+    "%Y-%m-%d",
+)
+
+
+def _parse_stat_date(raw):
+    """Best-effort parse of any date string the bot has ever stored; None if unreadable."""
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    for fmt in _STAT_DATE_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _fmt_stat_number(x) -> str:
+    """19.0 -> '19', 19.4 -> '19.4'."""
+    if isinstance(x, float):
+        return f"{x:.1f}".rstrip("0").rstrip(".")
+    return str(x)
+
+
+def _event_attendance(cursor, event_ids) -> dict:
+    """
+    {event_id: (going, guests, notgoing)}. Same counting rules as _compute_stats:
+    one unified event_users query per event; a historical event that never got
+    event_users rows falls back to its frozen going/counters/notgoing data.
+    """
+    result = {}
+    for event_id in event_ids:
+        cursor.execute("SELECT status, guests FROM event_users WHERE event_id = ?", (event_id,))
+        rows = cursor.fetchall()
+        if rows:
+            going = sum(1 for status, _g in rows if status == "going")
+            guests = sum((g or 0) for _s, g in rows)
+            notgoing = sum(1 for status, _g in rows if status == "notgoing")
+        else:
+            cursor.execute(
+                "SELECT going_data, counters_data, notgoing_data FROM events WHERE event_id = ?", (event_id,)
+            )
+            going_raw, counters_raw, notgoing_raw = cursor.fetchone()
+            going = len(json.loads(going_raw or "[]"))
+            guests = sum(json.loads(counters_raw or "{}").values())
+            notgoing = len(json.loads(notgoing_raw or "[]"))
+        result[event_id] = (going, guests, notgoing)
+    return result
+
+
+def _compute_event_breakdown(chat_id: str, period: str = "all") -> dict:
+    """
+    Everything /stats shows beyond created/closed/headcount: how events ended
+    (closed / cancelled / still open), the guest share of attendance, "not going"
+    clicks, and - for closed events that had a -limit - how full they got and how
+    the waitlist behaved. Uses the same period rule as the rest of /stats.
+
+    "Hit the limit" = final headcount reached the limit, OR anyone ever joined the
+    waitlist (a waitlist only exists while an event is full). "Joined" is the
+    larger of the join counter (events.waitlist_joined, counted since it was
+    introduced) and the people still waiting at close, so an older event can never
+    show fewer joiners than it demonstrably had.
+    """
+    cutoff = _stats_period_cutoff(period)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT event_id, event_status, created_date, total_limit, waitlist_data, waitlist_joined "
+            "FROM events WHERE chat_id = ?", (chat_id,),
+        )
+        rows = [r for r in cursor.fetchall() if _created_within_period(r[2], cutoff)]
+        closed = [r for r in rows if r[1] == 2]
+        attendance = _event_attendance(cursor, [r[0] for r in closed])
+
+    created = len(rows)
+    going_total = sum(g for g, _x, _n in attendance.values())
+    guests_total = sum(x for _g, x, _n in attendance.values())
+    headcount = going_total + guests_total
+
+    limited = None
+    fills, headcounts, limits, hit, joined, waiting = [], [], [], 0, 0, 0
+    for event_id, _status, _created, limit, waitlist_raw, joined_raw in closed:
+        if not limit or limit <= 0:
+            continue
+        going, guests, _n = attendance[event_id]
+        event_headcount = going + guests
+        try:
+            still_waiting = len(json.loads(waitlist_raw or "[]"))
+        except ValueError:
+            still_waiting = 0
+        event_joined = max(joined_raw or 0, still_waiting)
+        fills.append(min(100.0, event_headcount * 100.0 / limit))
+        headcounts.append(event_headcount)
+        limits.append(limit)
+        if event_headcount >= limit or event_joined > 0:
+            hit += 1
+        joined += event_joined
+        waiting += still_waiting
+    if limits:
+        n = len(limits)
+        limited = {
+            "events": n,
+            "avg_fill_pct": int(round(sum(fills) / n)),
+            "avg_headcount": round(sum(headcounts) / n, 1),
+            "avg_limit": round(sum(limits) / n, 1),
+            "hit_limit": hit,
+            "waitlist_joined": joined,
+            "waitlist_waiting": waiting,
+        }
+
+    return {
+        "created": created,
+        "closed": len(closed),
+        "cancelled": sum(1 for r in rows if r[1] == -1),
+        "open": sum(1 for r in rows if r[1] in (0, 1)),
+        "completed_pct": int(round(len(closed) * 100.0 / created)) if created else None,
+        "headcount": headcount,
+        "guests": guests_total,
+        "guests_pct": int(round(guests_total * 100.0 / headcount)) if headcount else None,
+        "notgoing": sum(nn for _g, _x, nn in attendance.values()),
+        "limited": limited,
+    }
+
+
+def _compute_owner_stats(now=None) -> dict:
+    """
+    The bot-wide numbers behind /stats -o. `now` is injectable for tests.
+    - "PRO" means an ACTIVE subscription, exactly like is_premium(): type='PRO'
+      with a subs_date_end in the future. Nothing rewrites `type` when a
+      subscription lapses, so counting type='PRO' alone also counted expired ones;
+      those are FREE in practice and are reported as "expired" instead.
+    - Bot add/remove history comes from two places: chats the bot is in NOW
+      (all_groups/all_channels.date_bot_add) and chats it already left
+      (all_chats_bot_log, one row per completed stay).
+    - A group is "active" in a window if someone ran a command in it (command_log)
+      or an event was created/closed there. Commands typed in a DM can't be tied to
+      a hub, so they count toward the top commands but not toward any group.
+    - Event counts follow /stats: an event belongs to the period of its created_date.
+    """
+    now = now or datetime.now()
+    d7, d30 = now - timedelta(days=7), now - timedelta(days=30)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, chat_name, type, subs_date_end, date_bot_add, role FROM all_groups")
+        groups = cursor.fetchall()
+        cursor.execute("SELECT date_bot_add, role FROM all_channels")
+        channels = cursor.fetchall()
+        cursor.execute("SELECT date_bot_add, date_bot_remove FROM all_chats_bot_log")
+        log_rows = cursor.fetchall()
+        cursor.execute("SELECT event_id, chat_id, event_status, created_date, closed_date FROM events")
+        events = cursor.fetchall()
+        cursor.execute(
+            "SELECT chat_id, command, timestamp FROM command_log WHERE substr(timestamp, 7, 4) >= ?",
+            ("%04d" % d30.year,),
+        )
+        command_rows = cursor.fetchall()
+        attendance = _event_attendance(cursor, [e[0] for e in events if e[2] == 2])
+
+    # -- subscriptions --
+    active_pro = set()
+    expiring7 = expiring30 = expired30 = 0
+    for chat_id, _name, gtype, end_raw, _added, _role in groups:
+        if gtype != "PRO":
+            continue
+        end = _parse_stat_date(end_raw)
+        if end is None:
+            continue
+        if end > now:
+            active_pro.add(chat_id)
+            if end <= now + timedelta(days=7):
+                expiring7 += 1
+            if end <= now + timedelta(days=30):
+                expiring30 += 1
+        elif end >= d30:
+            expired30 += 1
+
+    # -- growth --
+    adds = [_parse_stat_date(g[4]) for g in groups]
+    adds += [_parse_stat_date(c[0]) for c in channels]
+    adds += [_parse_stat_date(row[0]) for row in log_rows]
+    removes = [_parse_stat_date(row[1]) for row in log_rows]
+
+    def _count_since(dates, since):
+        return sum(1 for d in dates if d is not None and d >= since)
+
+    # -- activity --
+    group_ids = {g[0] for g in groups}
+    names = {g[0]: (g[1] or g[0]) for g in groups}
+    commands = [(chat_id, cmd, _parse_stat_date(ts)) for chat_id, cmd, ts in command_rows]
+    evs = [(eid, chat_id, status, _parse_stat_date(created), _parse_stat_date(closed))
+           for eid, chat_id, status, created, closed in events]
+
+    def _active_groups(since):
+        ids = {c for c, _cmd, d in commands if d is not None and d >= since and c in group_ids}
+        for _eid, chat_id, _st, created, closed in evs:
+            if chat_id in group_ids and any(d is not None and d >= since for d in (created, closed)):
+                ids.add(chat_id)
+        return ids
+
+    active7, active30 = _active_groups(d7), _active_groups(d30)
+    recent = [e for e in evs if e[3] is not None and e[3] >= d30]
+
+    def _served(event_list):
+        return sum(attendance[e[0]][0] + attendance[e[0]][1] for e in event_list if e[2] == 2)
+
+    cmd_counts = Counter(cmd for _c, cmd, d in commands if d is not None and d >= d30)
+    group_cmds = Counter(c for c, _cmd, d in commands if d is not None and d >= d30 and c in group_ids)
+    group_events = Counter(e[1] for e in recent if e[1] in group_ids)
+    ranked = sorted(group_ids, key=lambda c: (-(group_cmds[c] + group_events[c]), names[c]))
+    top_groups = [
+        (names[c], group_cmds[c], group_events[c], "PRO" if c in active_pro else "FREE")
+        for c in ranked if group_cmds[c] + group_events[c] > 0
+    ][:5]
+
+    return {
+        "groups_total": len(groups),
+        "channels_total": len(channels),
+        "groups_admin": sum(1 for g in groups if g[5] == "ADMIN"),
+        "channels_admin": sum(1 for c in channels if c[1] == "ADMIN"),
+        "groups_pro": len(active_pro),
+        "groups_free": len(groups) - len(active_pro),
+        "expiring7": expiring7, "expiring30": expiring30, "expired30": expired30,
+        "added7": _count_since(adds, d7), "added30": _count_since(adds, d30),
+        "removed7": _count_since(removes, d7), "removed30": _count_since(removes, d30),
+        "active7": len(active7), "active30": len(active30),
+        "dormant": len(groups) - len(active30),
+        "events_created": len(evs), "events_closed": sum(1 for e in evs if e[2] == 2),
+        "events_created30": len(recent), "events_closed30": sum(1 for e in recent if e[2] == 2),
+        "served": _served(evs), "served30": _served(recent),
+        "top_commands": cmd_counts.most_common(5),
+        "top_groups": top_groups,
+    }
+
+
+def _build_owner_stats_text(s: dict) -> str:
+    E = escape_markdown
+    lines = [
+        f"{ICON_STATS} *Bot\\-wide Stats*",
+        "",
+        E(f"Bot added to groups(amount): {s['groups_total']}"),
+        E(f"Bot added to channels(amount): {s['channels_total']}"),
+        E(f"Bot added to groups with admin rights(amount): {s['groups_admin']}"),
+        E(f"Bot added to channels with admin rights(amount): {s['channels_admin']}"),
+        "",
+        E(f"Groups with FREE subscription(amount): {s['groups_free']}"),
+        E(f"Groups with PRO subscription(amount): {s['groups_pro']}"),
+        "",
+        "💳 *PRO subscriptions*",
+        E(f"Expiring within 7 days: {s['expiring7']}"),
+        E(f"Expiring within 30 days: {s['expiring30']}"),
+        E(f"Expired in the last 30 days: {s['expired30']}"),
+        "",
+        "📈 *Growth*",
+        E(f"Bot added: 7d {s['added7']} · 30d {s['added30']}"),
+        E(f"Bot removed: 7d {s['removed7']} · 30d {s['removed30']}"),
+        E(f"Net: 7d {s['added7'] - s['removed7']:+d} · 30d {s['added30'] - s['removed30']:+d}"),
+        "",
+        "🔥 *Activity*",
+        E(f"Active groups: 7d {s['active7']} · 30d {s['active30']} · dormant {s['dormant']}"),
+        E(f"Events, all time: {s['events_created']} created · {s['events_closed']} closed"),
+        E(f"Events, 30d: {s['events_created30']} created · {s['events_closed30']} closed"),
+        E(f"People served: {s['served']} (30d: {s['served30']})"),
+        "",
+        E("Top commands (30d):" if s["top_commands"] else "Top commands (30d): none"),
+    ]
+    for i, (cmd, n) in enumerate(s["top_commands"], 1):
+        lines.append(E(f"{i}. /{cmd} - {n}"))
+    lines += ["", E("Top groups (30d):" if s["top_groups"] else "Top groups (30d): none")]
+    for i, (name, cmds, evs, tier) in enumerate(s["top_groups"], 1):
+        lines.append(E(f"{i}. {name[:28]} - {cmds} commands, {evs} events ({tier})"))
+    return "\n".join(lines)
 
 
 def _compute_stats(chat_id: str, period: str = "all"):
@@ -2757,19 +3047,37 @@ def _distribution_keyboard(chat_id: str, period: str, page: int, total_pages: in
 
 def _build_stats_text(chat_id: str, period: str, group_name: str = None) -> str:
     events_amount, events_closed, total_members, average_members = _compute_stats(chat_id, period)
-    average_members_text = str(average_members).replace(".", "\\.")
+    b = _compute_event_breakdown(chat_id, period)
+    E = escape_markdown
 
-    header = f"{ICON_STATS} *Event Stats for {escape_markdown(group_name)}*" if group_name else f"{ICON_STATS} *Event Stats*"
-    period_label = escape_markdown(_stats_period_label(period))
+    header = f"{ICON_STATS} *Event Stats for {E(group_name)}*" if group_name else f"{ICON_STATS} *Event Stats*"
+    period_label = E(_stats_period_label(period))
 
-    return (
-        f"{header}\n"
-        f"_{period_label}_\n\n"
-        f"Events amount: {events_amount}\n"
-        f"Events closed: {events_closed}\n"
-        f"Total members amount: {total_members}\n"
-        f"Average members amount: {average_members_text}"
-    )
+    closed_line = f"Events closed: {events_closed}"
+    if b["completed_pct"] is not None:
+        closed_line += f" ({b['completed_pct']}% completed)"
+    lines = [
+        E(f"Events amount: {events_amount}"),
+        E(closed_line),
+        E(f"Events cancelled: {b['cancelled']}"),
+        E(f"Events open now: {b['open']}"),
+        E(f"Total members amount: {total_members}"),
+        E(f"Average members amount: {average_members}"),
+    ]
+    if b["headcount"] > 0:
+        lines.append(E(f"Guests: {b['guests_pct']}% of attendance ({b['guests']})"))
+    lines.append(E(f"Not going: {b['notgoing']}"))
+
+    lim = b["limited"]
+    if lim:
+        spots = f"{_fmt_stat_number(lim['avg_headcount'])} of {_fmt_stat_number(lim['avg_limit'])} spots"
+        lines += [
+            "",
+            E(f"Events with a limit: {lim['events']} (avg fill {lim['avg_fill_pct']}%, {spots})"),
+            E(f"Hit the limit: {lim['hit_limit']} of {lim['events']}"),
+            E(f"Waitlist: {lim['waitlist_joined']} joined, {lim['waitlist_waiting']} still waiting at close"),
+        ]
+    return f"{header}\n_{period_label}_\n\n" + "\n".join(lines)
 
 
 @register_hub_command("stats")
@@ -2789,36 +3097,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE, over
 
     /stats -o | -owner - owner-only, bypasses everything above entirely: a
     bot-wide report (how many groups/channels the bot is in, with/
-    without admin rights, and the FREE/PRO subscription split) rather
-    than any single hub's own activity.
+    without admin rights, the FREE/PRO split, PRO expiries, growth/churn, activity and
+    top commands/groups) rather than any single hub's own activity.
     """
     if context.args and context.args[0] in ("-o", "-owner"):
         if not await require_owner(update, OWNER_USER_IDS):
             return
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM all_groups")
-            groups_total = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM all_channels")
-            channels_total = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM all_groups WHERE role = 'ADMIN'")
-            groups_admin = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM all_channels WHERE role = 'ADMIN'")
-            channels_admin = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM all_groups WHERE type = 'FREE'")
-            groups_free = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM all_groups WHERE type = 'PRO'")
-            groups_pro = cursor.fetchone()[0]
-
-        text = (
-            f"{ICON_STATS} *Bot\\-wide Stats*\n\n"
-            f"Bot added to groups\\(amount\\): {groups_total}\n"
-            f"Bot added to channels\\(amount\\): {channels_total}\n"
-            f"Bot added to groups with admin rights\\(amount\\): {groups_admin}\n"
-            f"Bot added to channels with admin rights\\(amount\\): {channels_admin}\n\n"
-            f"Groups with FREE subscription\\(amount\\): {groups_free}\n"
-            f"Groups with PRO subscription\\(amount\\): {groups_pro}"
-        )
+        text = _build_owner_stats_text(_compute_owner_stats())
         await update.message.reply_text(text, parse_mode="MarkdownV2")
         return
 

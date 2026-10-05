@@ -4232,6 +4232,10 @@ class TestButtonHandlerCapacityAndPromotion:
         waitlist = json.loads(row[1])
         assert len(waitlist) == 1 and waitlist[0]["username"] == "dave"
         assert "Waitlist" in query.answer.call_args.kwargs.get("text", "")
+        from tests.helpers import sqlite_has_json1
+        if sqlite_has_json1():
+            joined = conn.execute("SELECT waitlist_joined FROM events WHERE event_id='ev1'").fetchone()[0]
+            assert joined == 1, "the real click handler's waitlist join must be counted"
 
     async def test_notgoing_click_promotes_oldest_waitlist_entry(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -4256,6 +4260,8 @@ class TestButtonHandlerCapacityAndPromotion:
         assert row == ("going",)
         waitlist_row = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()
         assert json.loads(waitlist_row[0]) == []
+        joined = conn.execute("SELECT waitlist_joined FROM events WHERE event_id='ev1'").fetchone()[0]
+        assert joined == 0, "a promotion is not a join - the counter only grows when someone JOINS"
         ctx.bot.send_message.assert_awaited_once()
         assert "moved from the Waitlist to Going" in ctx.bot.send_message.call_args.kwargs["text"]
 
@@ -8550,7 +8556,7 @@ class TestStatsDashCommand:
     async def test_owner_gets_correct_counts(self, db_path):
         conn = sqlite3.connect(db_path)
         conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, role) VALUES ('-1','G1','FREE','MEMBER')")
-        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, role) VALUES ('-2','G2','PRO','ADMIN')")
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, role, subs_date_end) VALUES ('-2','G2','PRO','ADMIN','2099-01-01 00:00:00')")
         conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, role) VALUES ('-3','G3','FREE','ADMIN')")
         conn.execute("INSERT INTO all_channels (chat_id, chat_name, role) VALUES ('-10','C1','MEMBER')")
         conn.execute("INSERT INTO all_channels (chat_id, chat_name, role) VALUES ('-11','C2','ADMIN')")

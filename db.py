@@ -112,6 +112,10 @@ def _seed_all_features(cursor):
          "Custom short names for child groups/channels, used with /shareevent."),
         ("owner_overview", "/allgroups, /allchannels (view everything the bot is in)", "OWNER", None,
          "Lists every group/channel the bot is in, paginated, with an optional -pro filter on /allgroups."),
+        ("version", "/version (running bot version)", "OWNER", None,
+         "Owner-only and DM-only. Shows the running bot version, when it started (and the uptime), and the "
+         "Python / python-telegram-bot versions. Gated on OWNER_USER_IDS, not chat admin status - the tier "
+         "here documents that; it does not open the command to anyone else."),
         ("stats", "/stats (event activity stats for this group)", "PRO", None,
          "Shows how many events this hub has created, how many were closed, and total/average headcount "
          "across every closed event - a quick snapshot of the bot's usage in this specific group."),
@@ -346,6 +350,7 @@ def init_db(db_path: str = DB_PATH):
             feature_snapshot TEXT DEFAULT NULL,
             total_limit INTEGER DEFAULT NULL,
             waitlist_data TEXT DEFAULT '[]',
+            waitlist_joined INTEGER DEFAULT 0,
             waitlist_visibility TEXT DEFAULT 'hidden',
             notgoing_visibility TEXT DEFAULT 'visible',
             clickability TEXT DEFAULT 'on',
@@ -884,6 +889,41 @@ def init_db(db_path: str = DB_PATH):
         cursor.execute("ALTER TABLE event_users ADD COLUMN first_name TEXT")
     if "last_name" not in event_users_cols:
         cursor.execute("ALTER TABLE event_users ADD COLUMN last_name TEXT")
+
+    # 0a11. events.waitlist_joined - how many times someone JOINED this event's
+    # waitlist. waitlist_data can't answer that: promotion deletes the entry, so a
+    # closed event only keeps the people who never got in. Fed by a trigger rather
+    # than by the click handlers because entries are appended in several places
+    # (master/child clicks, db.add_to_waitlist, ...) - a trigger sees them all.
+    # It only counts GROWTH of the list (promotions/leaves shrink it, so they never
+    # subtract); malformed JSON is ignored rather than failing the UPDATE. Needs
+    # SQLite's JSON1 - without it the trigger is simply not created and the waitlist
+    # keeps working exactly as before (stats then fall back to "still waiting").
+    # Created last, after every events migration: an events-table rebuild drops triggers.
+    cursor.execute("PRAGMA table_info(events)")
+    if "waitlist_joined" not in [col[1] for col in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE events ADD COLUMN waitlist_joined INTEGER DEFAULT 0")
+    cursor.execute("DROP TRIGGER IF EXISTS events_count_waitlist_joins")
+    try:
+        cursor.execute("SELECT json_array_length('[1]')")
+        has_json1 = True
+    except sqlite3.OperationalError:
+        has_json1 = False
+    if has_json1:
+        cursor.execute("""
+            CREATE TRIGGER events_count_waitlist_joins
+            AFTER UPDATE OF waitlist_data ON events
+            WHEN json_valid(NEW.waitlist_data)
+             AND json_valid(COALESCE(OLD.waitlist_data, '[]'))
+             AND json_array_length(NEW.waitlist_data) > json_array_length(COALESCE(OLD.waitlist_data, '[]'))
+            BEGIN
+                UPDATE events
+                   SET waitlist_joined = COALESCE(waitlist_joined, 0)
+                       + json_array_length(NEW.waitlist_data)
+                       - json_array_length(COALESCE(OLD.waitlist_data, '[]'))
+                 WHERE event_id = NEW.event_id;
+            END
+        """)
 
     conn.commit()
     conn.close()

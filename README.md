@@ -51,6 +51,12 @@ zone are chosen to minimize crossing lines.
 > **Notes on non-obvious schema decisions** (`db.py`'s own `init_db()`
 > is the definitive, always-current source of truth for exact column
 > lists; the diagram above is now regenerated to match):
+> - `events.waitlist_joined` counts how many times someone joined an event's
+>   waitlist. `waitlist_data` can't answer that - promotion deletes the entry, so a
+>   closed event only keeps the people who never got in. A trigger
+>   (`events_count_waitlist_joins`, created in `init_db`) adds the growth of
+>   `waitlist_data` to it, because entries are appended in several places; it is
+>   skipped on a SQLite build without JSON1 (the waitlist itself is unaffected).
 > - `events.waitlist_open` (the old boolean open/closed flag) has been
 >   physically dropped - superseded by `waitlist_visibility`
 >   (visible/hidden/onlycount), which no code path had read `waitlist_open`
