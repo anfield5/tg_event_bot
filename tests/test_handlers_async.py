@@ -1888,6 +1888,8 @@ class TestRefreshusers:
             await handlers.refreshusers(upd, ctx)
 
         assert ws.cell_updates["F2"] == [["LEFT"]]
+        log_rows = fake_ss.worksheets["UserPresenceLog"].appended_rows
+        assert len(log_rows) == 1 and log_rows[0][:2] == ["222", "-100123"], "the stay that just ended must be logged"
 
     async def test_does_not_touch_rows_from_other_places(self, db_path):
         """A Users-sheet row belonging to a DIFFERENT CHAT_ID must never be touched by this chat's refresh."""

@@ -21,14 +21,6 @@ from tests.helpers import make_chat, make_user, make_message, make_update, make_
 OWNER_ID = 555
 
 
-@pytest.fixture()
-def db_path(tmp_path, monkeypatch):
-    path = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_module, "DB_PATH", path)
-    db_module.init_db(db_path=path)
-    return path
-
-
 def _tiers(path):
     conn = sqlite3.connect(path)
     rows = dict(conn.execute("SELECT feature_key, min_tier FROM all_features").fetchall())

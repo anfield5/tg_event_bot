@@ -144,7 +144,6 @@ class TestFindingTheEvent:
 
     async def test_callback_data_fits_telegrams_64_byte_limit(self, db_path):
         _add_event(db_path, "abcd1234", "X", chat_id="-1001234567890123")
-        bot = make_bot()
         markup = handlers._events_picker_markup("-1001234567890123", [("abcd1234", "X", 0, "", "1")])
         for b in _buttons(markup):
             assert len(b.callback_data.encode()) <= 64
@@ -436,9 +435,9 @@ class TestHelpMentions:
             assert "/deleteevent" in await self._lifecycle_section(OWNER)
             assert "/deleteevent" not in await self._lifecycle_section(1)
 
-    def test_owner_help_documents_it_as_a_separate_not_dm_only_block(self, seeded_db):
+    def test_owner_help_lists_commands_that_also_work_in_groups_under_their_own_header(self, seeded_db):
         import help_system
         text = help_system._build_owner_help_text()
-        assert "/deleteevent" in text
-        assert "not DM" in text, "the header above says owner commands are DM-only - this one isn't"
-        assert text.index("/stats") < text.index("/deleteevent")
+        header = text.index("also work inside a group")
+        assert text.index("/version") < header, "DM-only commands stay above the header"
+        assert text.index("/stats") > header and text.index("/deleteevent") > header

@@ -30,14 +30,6 @@ def _subs(days_from_now, now=NOW):
     return (now + timedelta(days=days_from_now)).strftime("%Y-%m-%d %H:%M:%S")
 
 
-@pytest.fixture()
-def db_path(tmp_path, monkeypatch):
-    path = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_module, "DB_PATH", path)
-    db_module.init_db(db_path=path)
-    return path
-
-
 def _sql(db_path, statement, params=()):
     conn = sqlite3.connect(db_path)
     conn.execute(statement, params)

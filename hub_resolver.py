@@ -113,7 +113,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     immediately know what they can run DM commands for - or tells them
     plainly if they're not an admin anywhere yet.
     """
-    chat = update.effective_chat
     if not await require_dm_only(update, "start"):
         return
 
@@ -158,7 +157,6 @@ async def switchgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     and shows the picker again, so the next DM command can target a
     different group.
     """
-    chat = update.effective_chat
     if not await require_dm_only(update, "switchgroup"):
         return
 

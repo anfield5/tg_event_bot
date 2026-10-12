@@ -173,7 +173,7 @@ nothing to Sheets at all):
 | `Events` | EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, GOING_COUNT | row appended on `/newevent`, columns F:H updated on Save & Close - CREATED_DATE/CLOSED_AT reuse `events.created_date`/`closed_date` (real DB columns, see the schema note above), not a timestamp computed fresh at Sheets-write time |
 | `Actions` | EVENT_ID, ACTION, USER_NAME, USER_ID, DATE, CHAT_ID | every button click (going/notgoing/kick/save/...) - CHAT_ID is which chat the click happened in (the hub or a specific child chat) |
 | `EventUsers` | EVENT_ID, USER_ID | final attendee list, written once at Save & Close (main chat + every child chat combined) |
-| `UserPresenceLog` | USER_ID, CHAT_ID, DATE_start, DATE_end | logged when someone leaves a monitored/main chat |
+| `UserPresenceLog` | USER_ID, CHAT_ID, DATE_start, DATE_end | one row per ended stay, written BEFORE the person is flipped to LEFT, into the hub's sheet (monitored chats included); stays missing from it are backfilled on the next refresh |
 
 ## How the DB and Sheets interact
 

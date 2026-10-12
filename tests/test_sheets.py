@@ -9,7 +9,6 @@ DATE_end, ARCHIVED_USER_NAME - reordered from the previous
 USER_ID, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end,
 ARCHIVED_USER_NAME, FIRST_NAME, LAST_NAME.
 """
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -77,7 +76,7 @@ class TestSyncUsersSheetColumnOrder:
         assert calls.get("D2") == "newusername"       # USER_NAME
         assert calls.get("I2") == "olduser"            # ARCHIVED_USER_NAME
         assert calls.get("B2") == "Updated"            # FIRST_NAME
-        assert calls.get("C2") == "Name"               # LAST_NAME
+        assert "C2" not in calls  # last name unchanged -> not rewritten (saves a throttled API call)
 
     async def test_left_to_member_transition_updates_correct_cells(self):
         ws = MagicMock()
@@ -107,12 +106,12 @@ class TestSyncUsersSheetColumnOrder:
              "ARCHIVED_USER_NAME": ""},
         ])
         ws.update = AsyncMock()
+        ws.append_rows = AsyncMock()
         ss = MagicMock()
         ss.worksheet = AsyncMock(return_value=ws)
 
         with patch("sheets.get_sheet_for_chat", new_callable=AsyncMock, return_value="fake_id"), \
-             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=ss), \
-             patch("sheets.log_user_presence_if_not_exists", new_callable=AsyncMock):
+             patch("sheets.open_spreadsheet", new_callable=AsyncMock, return_value=ss):
             await sheets.sync_users_sheet("-100", [])  # nobody currently there -> this user "left"
 
         calls = {c.args[0]: c.args[1][0][0] for c in ws.update.call_args_list}
@@ -503,3 +502,28 @@ class TestDeleteEventFromSheet:
     def test_contiguous_runs(self):
         assert sheets._contiguous_runs([2, 3, 5, 8, 9, 10]) == [(2, 3), (5, 5), (8, 10)]
         assert sheets._contiguous_runs([]) == []
+
+
+class TestMarkEventRowCanceled:
+    """The Events-tab cancel step shared by the Cancel button and /newevent's orphan self-healing."""
+
+    def _ss(self, records):
+        ws = MagicMock()
+        ws.get_all_records = AsyncMock(return_value=records)
+        ws.update = AsyncMock()
+        ws.append_row = AsyncMock()
+        ss = MagicMock()
+        ss.worksheet = AsyncMock(return_value=ws)
+        return ss, ws
+
+    async def test_existing_row_is_updated_in_place(self):
+        ss, ws = self._ss([{"EVENT_ID": "x"}, {"EVENT_ID": "ev1"}])
+        await sheets.mark_event_row_canceled(ss, "ev1", "05.10.2026", ["fallback"])
+        ws.update.assert_awaited_once_with("F3:H3", [["05.10.2026", "CANCELED", 0]])
+        ws.append_row.assert_not_called()
+
+    async def test_missing_row_is_appended(self):
+        ss, ws = self._ss([{"EVENT_ID": "x"}])
+        await sheets.mark_event_row_canceled(ss, "ev1", "05.10.2026", ["fallback"])
+        ws.append_row.assert_awaited_once_with(["fallback"])
+        ws.update.assert_not_called()

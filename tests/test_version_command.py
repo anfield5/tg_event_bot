@@ -84,15 +84,6 @@ class TestFormatUptime:
 import sqlite3
 from unittest.mock import AsyncMock
 
-import db as db_module
-
-
-@pytest.fixture()
-def db_path(tmp_path, monkeypatch):
-    path = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_module, "DB_PATH", path)
-    db_module.init_db(db_path=path)
-    return path
 
 
 class _FakeWorksheet:

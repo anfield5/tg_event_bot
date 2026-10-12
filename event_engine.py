@@ -21,7 +21,6 @@ Covers:
 """
 
 import json
-import re
 import asyncio
 from datetime import datetime
 
@@ -31,12 +30,12 @@ from telegram.error import BadRequest
 
 from keyboard import create_event_keyboard
 from config import (
-    ICON_CANCEL_EVENT, ICON_CLOCK, ICON_GUEST, ICON_SHARED, ICON_STATS, ICON_STANDBY,
+    ICON_CANCEL_EVENT, ICON_CLOCK, ICON_GUEST, ICON_SHARED, ICON_STANDBY,
     ICON_WARNING, ICON_TOTAL, logger,
 )
 from utils import escape_markdown, now2ddmmyy, is_real_admin
 from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
-from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet
+from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet, mark_event_row_canceled
 
 
 # One lock per event_id so that two near-simultaneous button clicks on the
@@ -992,8 +991,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if event_status in (2, -1):
                     return
 
-                going_usernames    = {u.split(" (")[0] for u in going}
-
                 # ── Cross-chat protection ─────────────────────────────────────
                 # Now purely event_users-based - the master hub's own
                 # participants live there too (chat_id=main_chat_id), so a
@@ -1536,21 +1533,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not ss:
                     pass  # free tier / no sheet configured / expired - SQLite-only cancel, nothing more to do
                 else:
-                    ws      = await ss.worksheet("Events")
-                    records = await ws.get_all_records()
-                    found   = False
-                    for idx, r in enumerate(records, start=2):
-                        if str(r.get("EVENT_ID")) == str(event_id):
-                            # Update existing row to CANCELED
-                            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CANCELED", 0]])
-                            found = True
-                            break
-                    if not found:
-                        # Only append if row doesn't exist
-                        await ws.append_row([
-                            event_id, name, created_date or "", created_by_user_id or "",
-                            event_date or "", closed_date, "CANCELED", 0,
-                        ])
+                    await mark_event_row_canceled(ss, event_id, closed_date, [
+                        event_id, name, created_date or "", created_by_user_id or "",
+                        event_date or "", closed_date, "CANCELED", 0,
+                    ])
                     # Intentionally NOT calling sync_event_users_sheet here -
                     # a cancelled event must not write anything to EventUsers.
             except Exception as e:

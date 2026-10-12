@@ -10,16 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 sys.path.insert(0, ".")
-import db as db_module
 import scripts.sync_bot_roles as sync_roles
-
-
-@pytest.fixture()
-def db_path(tmp_path, monkeypatch):
-    path = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_module, "DB_PATH", path)
-    db_module.init_db(db_path=path)
-    return path
 
 
 def _make_bot(status_by_chat_id):

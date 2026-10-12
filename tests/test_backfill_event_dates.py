@@ -8,19 +8,9 @@ import sqlite3
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 sys.path.insert(0, ".")
-import db as db_module
 import scripts.backfill_event_dates as backfill
-
-
-@pytest.fixture()
-def db_path(tmp_path, monkeypatch):
-    path = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_module, "DB_PATH", path)
-    db_module.init_db(db_path=path)
-    return path
 
 
 def _insert_pro_hub(db_path, chat_id="-100", sheet_id="sheet123"):

@@ -10,13 +10,14 @@ from telegram.error import BadRequest
 
 from keyboard import create_event_keyboard
 from subscription import is_premium, has_feature, require_premium, require_feature
-from aliases import setalias, removealias, listalias
-from monitors import addmonitor, removemonitor, listmonitors
-from help_system import (
+# Re-exported on purpose: main.py (and many tests) take these names through `handlers`.
+from aliases import setalias, removealias, listalias  # noqa: F401
+from monitors import addmonitor, removemonitor, listmonitors  # noqa: F401
+from help_system import (  # noqa: F401
     userid, chatid, help_command, help_callback_handler, help_back_handler,
     upgrade_info_callback_handler,
 )
-from event_engine import (
+from event_engine import (  # noqa: F401  (update_all_shared_views, button_handler are re-exports)
     get_event_lock, schedule_view_refresh, update_all_shared_views, button_handler, _mention_link,
     _render_waitlist_local, _render_waitlist_all, _promotion_announcement_text,
 )
@@ -24,14 +25,14 @@ from event_engine import (
 from config import (
     DEFAULT_GOING_ICON, DEFAULT_NOTGOING_ICON, logger,
     ICON_SHARED, ICON_STATS, ICON_WARNING,
-    ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE, ICON_STANDBY,
+    ICON_CLOCK, ICON_NOTIFY, ICON_CLEAN, ICON_ADMIN_ONLY, ICON_GLOBE,
     OWNER_USER_IDS,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_owner
 from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
-    get_sheet_for_chat, open_spreadsheet, sync_users_sheet, delete_event_from_sheet,
+    get_sheet_for_chat, open_spreadsheet, sync_users_sheet, delete_event_from_sheet, mark_event_row_canceled,
 )
 
 
@@ -313,11 +314,6 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
         return
     message  = update.message
     args     = context.args
-    user_raw = (
-        update.effective_user.username
-        if update.effective_user.username
-        else update.effective_user.first_name
-    )
 
     if not args:
         await message.reply_text(
@@ -415,19 +411,10 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 sheet_target = await get_sheet_for_chat(chat_id)
                 ss = await open_spreadsheet(sheet_target)
                 if ss:
-                    ws = await ss.worksheet("Events")
-                    records = await ws.get_all_records()
-                    found = False
-                    for idx, r in enumerate(records, start=2):
-                        if str(r.get("EVENT_ID")) == str(old_event_id):
-                            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CANCELED", 0]])
-                            found = True
-                            break
-                    if not found:
-                        await ws.append_row([
-                            old_event_id, old_name, old_created_date or "", old_created_by or "",
-                            "", closed_date, "CANCELED", 0,
-                        ])
+                    await mark_event_row_canceled(ss, old_event_id, closed_date, [
+                        old_event_id, old_name, old_created_date or "", old_created_by or "",
+                        "", closed_date, "CANCELED", 0,
+                    ])
             except Exception as e:
                 logger.error(f"Sheets auto-cancel of orphaned event {old_event_id} failed: {e}")
             existing_active = None  # don't warn - the conflict is already resolved
@@ -1307,7 +1294,6 @@ async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE, override_c
     chat_id = await resolve_hub_chat_id(update, context, "adduser", override_chat_id)
     if chat_id is None:
         return
-    user_id = update.effective_user.id
 
     # Only admins can use this command
     if not await is_real_admin(context.bot, chat_id, update.effective_user, message=update.message):
@@ -1658,8 +1644,11 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
 
     # ── 3. Sync the Google Sheets "Users" tab too (no-op on free tier) ──────
     try:
-        await sync_users_sheet(chat_id, still_present)
-        lines.append(f"{ICON_STATS} Users tab in Google Sheets synced\\.")
+        synced = await sync_users_sheet(chat_id, still_present)
+        if synced is False:
+            lines.append(f"{ICON_WARNING} Users tab sync incomplete \\(see logs\\) \\- it will be retried on the next refresh\\.")
+        else:
+            lines.append(f"{ICON_STATS} Users tab in Google Sheets synced\\.")
     except Exception as e:
         logger.error(f"refreshusers: Users sheet sync failed: {e}")
         lines.append(f"{ICON_WARNING} Could not sync the Users tab in Google Sheets\\.")
@@ -1811,9 +1800,12 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
             }.values())
 
             # Sync to sheets with chat_id (each monitor gets its own chat_id)
-            await sync_users_sheet(monitor_chat_id, monitor_present, sheet_owner_chat_id=chat_id)
+            synced = await sync_users_sheet(monitor_chat_id, monitor_present, sheet_owner_chat_id=chat_id)
 
-            status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"
+            if synced is False:
+                status_line = f"  ⚠️ Partly synced \\(Users tab incomplete, will retry\\): `{escape_markdown(chat_name)}`"
+            else:
+                status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"
             if monitor_removed:
                 status_line += f" \\(-{len(monitor_removed)}\\)"
             if monitor_added:
@@ -2622,42 +2614,9 @@ def _compute_event_breakdown(chat_id: str, period: str = "all") -> dict:
     }
 
 
-def _compute_owner_stats(now=None) -> dict:
-    """
-    The bot-wide numbers behind /stats -o. `now` is injectable for tests.
-    - "PRO" means an ACTIVE subscription, exactly like is_premium(): type='PRO'
-      with a subs_date_end in the future. Nothing rewrites `type` when a
-      subscription lapses, so counting type='PRO' alone also counted expired ones;
-      those are FREE in practice and are reported as "expired" instead.
-    - Bot add/remove history comes from two places: chats the bot is in NOW
-      (all_groups/all_channels.date_bot_add) and chats it already left
-      (all_chats_bot_log, one row per completed stay).
-    - A group is "active" in a window if someone ran a command in it (command_log)
-      or an event was created/closed there. Commands typed in a DM can't be tied to
-      a hub, so they count toward the top commands but not toward any group.
-    - Event counts follow /stats: an event belongs to the period of its created_date.
-    """
-    now = now or datetime.now()
-    d7, d30 = now - timedelta(days=7), now - timedelta(days=30)
-
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, chat_name, type, subs_date_end, date_bot_add, role FROM all_groups")
-        groups = cursor.fetchall()
-        cursor.execute("SELECT date_bot_add, role FROM all_channels")
-        channels = cursor.fetchall()
-        cursor.execute("SELECT date_bot_add, date_bot_remove FROM all_chats_bot_log")
-        log_rows = cursor.fetchall()
-        cursor.execute("SELECT event_id, chat_id, event_status, created_date, closed_date FROM events")
-        events = cursor.fetchall()
-        cursor.execute(
-            "SELECT chat_id, command, timestamp FROM command_log WHERE substr(timestamp, 7, 4) >= ?",
-            ("%04d" % d30.year,),
-        )
-        command_rows = cursor.fetchall()
-        attendance = _event_attendance(cursor, [e[0] for e in events if e[2] == 2])
-
-    # -- subscriptions --
+def _owner_subscription_stats(groups, now) -> dict:
+    """PRO bookkeeping for /stats -o. PRO = ACTIVE (see _compute_owner_stats' docstring)."""
+    d30 = now - timedelta(days=30)
     active_pro = set()
     expiring7 = expiring30 = expired30 = 0
     for chat_id, _name, gtype, end_raw, _added, _role in groups:
@@ -2674,17 +2633,27 @@ def _compute_owner_stats(now=None) -> dict:
                 expiring30 += 1
         elif end >= d30:
             expired30 += 1
+    return {"active_pro": active_pro, "expiring7": expiring7, "expiring30": expiring30, "expired30": expired30}
 
-    # -- growth --
+
+def _owner_growth_stats(groups, channels, log_rows, now) -> dict:
+    """Chats the bot was added to / removed from in the last 7 and 30 days."""
+    d7, d30 = now - timedelta(days=7), now - timedelta(days=30)
     adds = [_parse_stat_date(g[4]) for g in groups]
     adds += [_parse_stat_date(c[0]) for c in channels]
     adds += [_parse_stat_date(row[0]) for row in log_rows]
     removes = [_parse_stat_date(row[1]) for row in log_rows]
 
-    def _count_since(dates, since):
+    def _since(dates, since):
         return sum(1 for d in dates if d is not None and d >= since)
 
-    # -- activity --
+    return {"added7": _since(adds, d7), "added30": _since(adds, d30),
+            "removed7": _since(removes, d7), "removed30": _since(removes, d30)}
+
+
+def _owner_activity_stats(groups, active_pro, command_rows, events, attendance, now) -> dict:
+    """Active/dormant groups, event totals, people served, top commands and top groups."""
+    d7, d30 = now - timedelta(days=7), now - timedelta(days=30)
     group_ids = {g[0] for g in groups}
     names = {g[0]: (g[1] or g[0]) for g in groups}
     commands = [(chat_id, cmd, _parse_stat_date(ts)) for chat_id, cmd, ts in command_rows]
@@ -2712,25 +2681,63 @@ def _compute_owner_stats(now=None) -> dict:
         (names[c], group_cmds[c], group_events[c], "PRO" if c in active_pro else "FREE")
         for c in ranked if group_cmds[c] + group_events[c] > 0
     ][:5]
-
     return {
-        "groups_total": len(groups),
-        "channels_total": len(channels),
-        "groups_admin": sum(1 for g in groups if g[5] == "ADMIN"),
-        "channels_admin": sum(1 for c in channels if c[1] == "ADMIN"),
-        "groups_pro": len(active_pro),
-        "groups_free": len(groups) - len(active_pro),
-        "expiring7": expiring7, "expiring30": expiring30, "expired30": expired30,
-        "added7": _count_since(adds, d7), "added30": _count_since(adds, d30),
-        "removed7": _count_since(removes, d7), "removed30": _count_since(removes, d30),
-        "active7": len(active7), "active30": len(active30),
-        "dormant": len(groups) - len(active30),
+        "active7": len(active7), "active30": len(active30), "dormant": len(groups) - len(active30),
         "events_created": len(evs), "events_closed": sum(1 for e in evs if e[2] == 2),
         "events_created30": len(recent), "events_closed30": sum(1 for e in recent if e[2] == 2),
         "served": _served(evs), "served30": _served(recent),
         "top_commands": cmd_counts.most_common(5),
         "top_groups": top_groups,
     }
+
+
+def _compute_owner_stats(now=None) -> dict:
+    """
+    The bot-wide numbers behind /stats -o. `now` is injectable for tests.
+    - "PRO" means an ACTIVE subscription, exactly like is_premium(): type='PRO' with a
+      subs_date_end in the future. Nothing rewrites `type` when a subscription lapses, so
+      counting type='PRO' alone also counted expired ones; those are FREE in practice and
+      are reported as "expired" instead.
+    - Bot add/remove history comes from two places: chats the bot is in NOW
+      (all_groups/all_channels.date_bot_add) and chats it already left (all_chats_bot_log).
+    - A group is "active" in a window if someone ran a command in it (command_log) or an event
+      was created/closed there. Commands typed in a DM can't be tied to a hub, so they count
+      toward the top commands but not toward any group.
+    - Event counts follow /stats: an event belongs to the period of its created_date.
+    """
+    now = now or datetime.now()
+    d30 = now - timedelta(days=30)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, chat_name, type, subs_date_end, date_bot_add, role FROM all_groups")
+        groups = cursor.fetchall()
+        cursor.execute("SELECT date_bot_add, role FROM all_channels")
+        channels = cursor.fetchall()
+        cursor.execute("SELECT date_bot_add, date_bot_remove FROM all_chats_bot_log")
+        log_rows = cursor.fetchall()
+        cursor.execute("SELECT event_id, chat_id, event_status, created_date, closed_date FROM events")
+        events = cursor.fetchall()
+        cursor.execute(
+            "SELECT chat_id, command, timestamp FROM command_log WHERE substr(timestamp, 7, 4) >= ?",
+            ("%04d" % d30.year,),
+        )
+        command_rows = cursor.fetchall()
+        attendance = _event_attendance(cursor, [e[0] for e in events if e[2] == 2])
+
+    subs = _owner_subscription_stats(groups, now)
+    stats = {
+        "groups_total": len(groups),
+        "channels_total": len(channels),
+        "groups_admin": sum(1 for g in groups if g[5] == "ADMIN"),
+        "channels_admin": sum(1 for c in channels if c[1] == "ADMIN"),
+        "groups_pro": len(subs["active_pro"]),
+        "groups_free": len(groups) - len(subs["active_pro"]),
+        "expiring7": subs["expiring7"], "expiring30": subs["expiring30"], "expired30": subs["expired30"],
+    }
+    stats.update(_owner_growth_stats(groups, channels, log_rows, now))
+    stats.update(_owner_activity_stats(groups, subs["active_pro"], command_rows, events, attendance, now))
+    return stats
 
 
 def _build_owner_stats_text(s: dict) -> str:

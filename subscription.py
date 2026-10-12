@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 
 from config import ICON_WARNING, ICON_STATS, OWNER_USER_IDS, CONTROL_SHEET_ID, BOT_VERSION, STARTED_AT, logger
 from utils import escape_markdown, is_real_admin, require_dm_only, require_owner, format_uptime
-from db import get_connection, get_all_features, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE, is_bot_locked, set_bot_locked
+from db import get_connection, get_all_features, update_feature_flag, _NO_CHANGE as _LIMIT_NO_CHANGE, set_bot_locked
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     sync_control_sheet_main, sync_control_sheet_botconfig, sync_control_sheet_channels,
@@ -540,8 +540,8 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     except Exception as e:
         logger.error(f"setsheet: could not open sheet {sheet_id}: {e}")
         await update.message.reply_text(
-            f"❌ Could not open that spreadsheet\\. Make sure the ID/URL is correct and the sheet is "
-            f"shared with the bot's service account \\(Editor access\\)\\.",
+            "❌ Could not open that spreadsheet\\. Make sure the ID/URL is correct and the sheet is "
+            "shared with the bot's service account \\(Editor access\\)\\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -571,7 +571,7 @@ async def setsheet(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
             conn.commit()
         except sqlite3.IntegrityError:
             await update.message.reply_text(
-                f"❌ That spreadsheet is already bound to a different group\\.",
+                "❌ That spreadsheet is already bound to a different group\\.",
                 parse_mode="MarkdownV2",
             )
             return

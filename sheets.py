@@ -167,11 +167,30 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
       - Any existing row for this CHAT_ID that ISN'T in current_members ->
         STATUS is set to "LEFT" and DATE_end is set to current date
         (their row/history is kept, not deleted).
+
+    UserPresenceLog (one row per completed stay: USER_ID, CHAT_ID,
+    DATE_start, DATE_end) is kept so that EVERY stay that ends gets a row:
+      - It is written FIRST, in one read + one append, and only then are
+        statuses flipped to LEFT. If the log write fails, nothing is flipped:
+        the person stays MEMBER and the next refresh retries (the log is
+        de-duplicated, so a retry never doubles a row). Without this a failed
+        log write left a LEFT row that nothing would ever log again.
+      - It goes into the sheet of `sheet_owner_chat_id` - the same one the
+        Users tab uses. (A monitored child chat has no sheet of its own; its
+        stays used to be looked up under the child's own id and silently
+        skipped, so only the hub itself was ever logged.)
+      - Rows that are ALREADY "LEFT" but missing from the log (an earlier
+        failed write, or the previous stay of someone who has just come back)
+        are logged too, before a rejoin overwrites their DATE_start/DATE_end.
+
+    Returns None when this hub has no sheet at all (nothing to do), True when
+    everything was written, and False when something couldn't be (details in
+    the log) - the Users/log changes that failed are retried by the next call.
     """
     sheet_target = await get_sheet_for_chat(sheet_owner_chat_id or chat_id)
     ss = await open_spreadsheet(sheet_target)
     if not ss:
-        return  # free tier / no sheet configured / subscription expired - nothing to write
+        return None  # free tier / no sheet configured / subscription expired - nothing to write
     try:
         ws = await ss.worksheet("Users")
         records = await ws.get_all_records()
@@ -181,7 +200,8 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
             key = (str(r.get("USER_ID", "")).strip(), str(r.get("CHAT_ID", "")).strip())
             index[key] = (idx, r)
 
-        current_keys = set()
+        # Who is here right now (people without an id/username can't be keyed).
+        members = []
         for member in current_members:
             if len(member) == 4:
                 user_id, username, first_name, last_name = member
@@ -190,52 +210,79 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                 first_name, last_name = None, None
             if not user_id or not username:
                 continue
-            key = (str(user_id), str(chat_id))
-            current_keys.add(key)
+            members.append((user_id, username, first_name, last_name))
+        current_keys = {(str(m[0]), str(chat_id)) for m in members}
 
+        now = now2ddmmyy()
+
+        # 1. Presence log FIRST (see the docstring): every stay that has ended,
+        #    from the sheet's state BEFORE anything below overwrites it.
+        leaving, stays = [], []
+        for (uid, place), (idx, rec) in index.items():
+            if place != str(chat_id):
+                continue
+            status = str(rec.get("STATUS", "")).strip().lower()
+            date_start = str(rec.get("DATE_start", "")).strip()
+            if status == "member" and (uid, place) not in current_keys:
+                leaving.append((idx, date_start))
+                stays.append((uid, place, date_start, now))
+            elif status == "left":
+                date_end = str(rec.get("DATE_end", "")).strip()
+                if date_end:
+                    stays.append((uid, place, date_start, date_end))
+        presence_ok = True
+        try:
+            await log_presence_stays(ss, stays)
+        except Exception as e:
+            presence_ok = False
+            logger.error(
+                f"Google Sheets UserPresenceLog write failed for {chat_id} - nobody is flipped to LEFT "
+                f"this round, the next refresh retries: {repr(e)}"
+            )
+
+        # 2. Members who are here now.
+        for user_id, username, first_name, last_name in members:
+            key = (str(user_id), str(chat_id))
             if key in index:
                 idx, rec = index[key]
                 old_name = str(rec.get("USER_NAME", "")).strip()
                 status = str(rec.get("STATUS", "")).strip().lower()
-                
+
                 if old_name and old_name != username:
                     archived     = str(rec.get("ARCHIVED_USER_NAME", "")).strip()
                     new_archived = f"{archived},{old_name}" if archived else old_name
                     await ws.update(f"D{idx}", [[username]])
                     await ws.update(f"I{idx}", [[new_archived]])
-                
-                if status == "left":
+
+                if status == "left" and presence_ok:
                     # LEFT -> MEMBER: update status, clear DATE_end, update DATE_start
+                    # (their previous stay was logged in step 1 before this overwrites it)
                     await ws.update(f"F{idx}", [["MEMBER"]])
                     await ws.update(f"G{idx}", [[now2ddmmyy()]])
                     await ws.update(f"H{idx}", [[""]])
                 # If status is already MEMBER, do nothing
 
-                if first_name:
+                # Only write what actually differs: this used to rewrite both cells for EVERY
+                # present member on EVERY refresh - 2 API calls per person, each throttled to
+                # ~1/s by gspread_asyncio, to store the values that were already there.
+                if first_name and str(rec.get("FIRST_NAME", "")).strip() != first_name:
                     await ws.update(f"B{idx}", [[first_name]])
-                if last_name:
+                if last_name and str(rec.get("LAST_NAME", "")).strip() != last_name:
                     await ws.update(f"C{idx}", [[last_name]])
             else:
                 # New user: add with MEMBER status
                 await ws.append_row([str(user_id), first_name or "", last_name or "", username, str(chat_id),
                                       "MEMBER", now2ddmmyy(), "", ""])
 
-        # Handle users who left the group
-        for key, (idx, rec) in index.items():
-            uid, place = key
-            if place == str(chat_id) and key not in current_keys:
-                status = str(rec.get("STATUS", "")).strip().lower()
-                if status == "member":
-                    # MEMBER -> LEFT: update status, set DATE_end, add to UserPresenceLog
-                    date_start = str(rec.get("DATE_start", "")).strip()
-                    await ws.update(f"F{idx}", [["LEFT"]])
-                    await ws.update(f"H{idx}", [[now2ddmmyy()]])
-                    # Add to UserPresenceLog only if not already logged
-                    await log_user_presence_if_not_exists(chat_id, uid, place, date_start, now2ddmmyy())
-                # If status is already LEFT, do nothing
+        # 3. Members who left: only now that their stay is safely in the log.
+        if presence_ok:
+            for idx, _date_start in leaving:
+                await ws.update(f"F{idx}", [["LEFT"]])
+                await ws.update(f"H{idx}", [[now]])
+        return presence_ok
     except Exception as e:
         logger.error(f"Google Sheets Users synchronization failed: {repr(e)}")
-
+        return False
 
 async def sync_event_users_sheet(chat_id, event_id, user_ids):
     """
@@ -258,30 +305,50 @@ async def sync_event_users_sheet(chat_id, event_id, user_ids):
         logger.error(f"Google Sheets EventUsers synchronization failed: {repr(e)}")
 
 
-async def log_user_presence_if_not_exists(chat_id, user_id, presence_chat_id, date_start, date_end):
+def _presence_key(user_id, chat_id, date_start, date_end):
     """
-    Logs user presence to UserPresenceLog sheet when a user leaves a monitored
-    group or the main group.
-    Columns: USER_ID, CHAT_ID, DATE_start, DATE_end
+    Identity of one logged stay: (user, chat, DATE_start) - a stay has exactly
+    one start. A stay with no recorded start falls back to its end date, so two
+    blank-start stays of the same person aren't mistaken for one another.
     """
-    sheet_target = await get_sheet_for_chat(chat_id)
-    ss = await open_spreadsheet(sheet_target)
-    if not ss:
-        return  # free tier / no sheet configured / subscription expired - nothing to write
+    uid, cid = str(user_id).strip(), str(chat_id).strip()
+    start, end = str(date_start or "").strip(), str(date_end or "").strip()
+    return (uid, cid, start) if start else (uid, cid, "", end)
+
+
+async def log_presence_stays(ss, stays) -> int:
+    """
+    Appends every stay in `stays` - (user_id, chat_id, date_start, date_end) -
+    that isn't already in the hub's UserPresenceLog tab, with ONE read and ONE
+    append however many there are. Returns how many rows were written.
+
+    A spreadsheet without that tab is tolerated (nothing to write to; a warning
+    is logged). Every other failure is RAISED, so the caller can leave the
+    "LEFT" flips undone and retry on the next refresh instead of ending up with
+    a LEFT row that has no log entry.
+    """
+    if not stays:
+        return 0
     try:
         ws = await ss.worksheet("UserPresenceLog")
-        records = await ws.get_all_records()
-
-        # if it exists in UserPresenceLog with same USER_ID, CHAT_ID and same DATE_start — we do NOT write a duplicate.
-        for r in records:
-            if (str(r.get("USER_ID", "")).strip() == str(user_id) and 
-                str(r.get("CHAT_ID", "")).strip() == str(presence_chat_id) and 
-                str(r.get("DATE_start", "")).strip() == str(date_start)):
-                return  # already logged
-
-        await ws.append_row([str(user_id), str(presence_chat_id), str(date_start), str(date_end)])
-    except Exception as e:
-        logger.error(f"Google Sheets UserPresenceLog check failed: {repr(e)}")
+    except WorksheetNotFound:
+        logger.warning("UserPresenceLog tab not found in this spreadsheet - presence history can't be recorded")
+        return 0
+    existing = await ws.get_all_records()
+    have = {
+        _presence_key(r.get("USER_ID"), r.get("CHAT_ID"), r.get("DATE_start"), r.get("DATE_end"))
+        for r in existing
+    }
+    rows = []
+    for uid, cid, start, end in stays:
+        key = _presence_key(uid, cid, start, end)
+        if key in have:
+            continue
+        have.add(key)
+        rows.append([str(uid), str(cid), str(start or ""), str(end or "")])
+    if rows:
+        await ws.append_rows(rows)
+    return len(rows)
 
 
 async def sync_control_sheet_main(rows: list) -> bool:
@@ -484,6 +551,22 @@ def _contiguous_runs(rows):
         else:
             runs.append((r, r))
     return runs
+
+
+async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row):
+    """
+    Marks the event's row in the Events tab CANCELED (CLOSED_AT, STATUS, GOING_COUNT = 0), or
+    appends `fallback_row` if the event has no row there yet. Shared by the Cancel button and
+    /newevent's self-healing of an orphaned event, which used to carry identical copies of this.
+    Takes the already-opened spreadsheet so each caller keeps its own sheet lookup. Raises on failure.
+    """
+    ws = await ss.worksheet("Events")
+    records = await ws.get_all_records()
+    for idx, r in enumerate(records, start=2):
+        if str(r.get("EVENT_ID")) == str(event_id):
+            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CANCELED", 0]])
+            return
+    await ws.append_row(fallback_row)
 
 
 async def delete_event_from_sheet(chat_id, event_id):

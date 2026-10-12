@@ -33,7 +33,7 @@ import asyncio
 import sqlite3
 
 sys.path.insert(0, ".")
-from db import init_db, DB_PATH, get_connection  # noqa: E402
+from db import init_db, DB_PATH  # noqa: E402
 from sheets import get_sheet_for_chat, open_spreadsheet  # noqa: E402
 
 
