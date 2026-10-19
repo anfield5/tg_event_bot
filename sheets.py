@@ -2,7 +2,7 @@ import json
 import asyncio
 import gspread_asyncio
 from gspread.exceptions import WorksheetNotFound
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import GOOGLE_CREDENTIALS_JSON, CONTROL_SHEET_ID, logger
 from utils import now2ddmmyy
@@ -128,7 +128,7 @@ async def get_sheet_for_chat(chat_id):
     return sheet_id or None
 
 
-async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=None):
+async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=None, left_members=None):
     """
     Syncs the "Users" worksheet for a given chat/place with its current
     (best-known) membership.
@@ -183,6 +183,12 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
         failed write, or the previous stay of someone who has just come back)
         are logged too, before a rejoin overwrites their DATE_start/DATE_end.
 
+    `left_members` - (user_id, username, first_name, last_name, left_at) for people a refresh confirmed
+    as gone. Anyone with NO Users row yet (never synced: they joined and left between two refreshes, or
+    never interacted with the bot) gets one with STATUS "LEFT", plus their UserPresenceLog row. Their join
+    time is unknown, so DATE_start is set one hour before `left_at`. People who already have a row, and
+    people who are actually present, are ignored here - the normal MEMBER -> LEFT path handles them.
+
     Returns None when this hub has no sheet at all (nothing to do), True when
     everything was written, and False when something couldn't be (details in
     the log) - the Users/log changes that failed are retried by the next call.
@@ -230,6 +236,17 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                 date_end = str(rec.get("DATE_end", "")).strip()
                 if date_end:
                     stays.append((uid, place, date_start, date_end))
+        # Confirmed leavers the sheet has never heard of (see the docstring).
+        new_left_rows = []
+        for l_uid, l_username, l_first, l_last, l_at in (left_members or []):
+            l_uid = str(l_uid)
+            if (l_uid, str(chat_id)) in index or (l_uid, str(chat_id)) in current_keys:
+                continue
+            l_end = str(l_at or now)
+            l_start = _shift_hours(l_end, -1)
+            stays.append((l_uid, str(chat_id), l_start, l_end))
+            new_left_rows.append([l_uid, l_first or "", l_last or "", l_username or "", str(chat_id),
+                                  "LEFT", l_start, l_end, ""])
         presence_ok = True
         try:
             await log_presence_stays(ss, stays)
@@ -279,6 +296,8 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
             for idx, _date_start in leaving:
                 await ws.update(f"F{idx}", [["LEFT"]])
                 await ws.update(f"H{idx}", [[now]])
+            if new_left_rows:
+                await ws.append_rows(new_left_rows)
         return presence_ok
     except Exception as e:
         logger.error(f"Google Sheets Users synchronization failed: {repr(e)}")
@@ -303,6 +322,17 @@ async def sync_event_users_sheet(chat_id, event_id, user_ids):
             logger.info("Roster was empty at commitment index. Skipping EventUsers rows insert.")
     except Exception as e:
         logger.error(f"Google Sheets EventUsers synchronization failed: {repr(e)}")
+
+
+def _shift_hours(date_str, hours):
+    """`date_str` moved by `hours`, in the bot's own stored format (DD.MM.YYYY HH:MM:SS.mmm); "" if unreadable."""
+    for fmt in ("%d.%m.%Y %H:%M:%S.%f", "%d.%m.%Y %H:%M:%S"):
+        try:
+            return (datetime.strptime(str(date_str).strip(), fmt) + timedelta(hours=hours)).strftime(
+                "%d.%m.%Y %H:%M:%S.%f")[:-3]
+        except ValueError:
+            continue
+    return ""
 
 
 def _presence_key(user_id, chat_id, date_start, date_end):

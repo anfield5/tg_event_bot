@@ -29,7 +29,8 @@ from config import (
     OWNER_USER_IDS,
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_owner
-from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated
+from utils import parse_stored_date as _parse_stat_date
+from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, delete_event_from_sheet, mark_event_row_canceled,
@@ -1520,6 +1521,7 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
 
         # ── 1. Remove confirmed-departed/invalid/unverifiable users ──────────
         removed        = []  # user_ids confirmed departed - NOT usernames, see DELETE below
+        left_info      = []  # (user_id, name, first, last) of the same people, to record them in the Sheet
         still_present  = []  # (user_id, LIVE username straight from Telegram) - verified currently in the chat
         current_admin_ids = {str(a.user.id) for a in admins}
 
@@ -1530,6 +1532,11 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
                 )
                 if m.status in ["left", "kicked"] and str(user_id) not in current_admin_ids:
                     removed.append(user_id)
+                    left_info.append((user_id,
+                                      _str_or_none(getattr(m.user, "username", None))
+                                      or _str_or_none(getattr(m.user, "first_name", None)) or username,
+                                      _str_or_none(getattr(m.user, "first_name", None)),
+                                      _str_or_none(getattr(m.user, "last_name", None))))
                 elif m.status in ["left", "kicked"]:
                     # get_chat_member disagrees with the admin list we just
                     # fetched - this happens for anonymous admins (Remain
@@ -1568,6 +1575,9 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
                 [(chat_id, uid) for uid in removed],
             )
             conn.commit()
+            # They are gone from the table now - queue them until the Sheet has them (see left_pending).
+            left_at = now2ddmmyy()
+            queue_left_members(chat_id, [(u, n, f, l, left_at) for u, n, f, l in left_info])
 
         # ── 2. Add missing chat administrators as 'active' ──────────────────────
         added = []
@@ -1644,7 +1654,10 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
 
     # ── 3. Sync the Google Sheets "Users" tab too (no-op on free tier) ──────
     try:
-        synced = await sync_users_sheet(chat_id, still_present)
+        pending_left = get_pending_left(chat_id)
+        synced = await sync_users_sheet(chat_id, still_present, left_members=pending_left)
+        if synced is not False:
+            clear_pending_left(chat_id, [p[0] for p in pending_left])
         if synced is False:
             lines.append(f"{ICON_WARNING} Users tab sync incomplete \\(see logs\\) \\- it will be retried on the next refresh\\.")
         else:
@@ -1737,6 +1750,7 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                 monitor_rows = cursor_mon.fetchall()
 
                 monitor_removed = []  # user_ids confirmed departed - NOT usernames
+                monitor_left_info = []  # (user_id, name, first, last) of the same people
                 monitor_present = []
 
                 for username, user_id, status in monitor_rows:
@@ -1746,6 +1760,11 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                         )
                         if m.status in ["left", "kicked"] and str(user_id) not in current_monitor_admin_ids:
                             monitor_removed.append(user_id)
+                            monitor_left_info.append((user_id,
+                                                      _str_or_none(getattr(m.user, "username", None))
+                                                      or _str_or_none(getattr(m.user, "first_name", None)) or username,
+                                                      _str_or_none(getattr(m.user, "first_name", None)),
+                                                      _str_or_none(getattr(m.user, "last_name", None))))
                         elif m.status in ["left", "kicked"]:
                             # Disagrees with the admin list just fetched -
                             # trust that over get_chat_member for the same
@@ -1772,6 +1791,9 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
                         [(monitor_chat_id, uid) for uid in monitor_removed],
                     )
                     conn_mon.commit()
+                    monitor_left_at = now2ddmmyy()
+                    queue_left_members(monitor_chat_id,
+                                       [(u, n, f, l, monitor_left_at) for u, n, f, l in monitor_left_info])
 
                 # Add missing admins for monitored group - reuses
                 # monitor_admins fetched above, no second API call.
@@ -1800,7 +1822,11 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
             }.values())
 
             # Sync to sheets with chat_id (each monitor gets its own chat_id)
-            synced = await sync_users_sheet(monitor_chat_id, monitor_present, sheet_owner_chat_id=chat_id)
+            pending_left = get_pending_left(monitor_chat_id)
+            synced = await sync_users_sheet(monitor_chat_id, monitor_present, sheet_owner_chat_id=chat_id,
+                                            left_members=pending_left)
+            if synced is not False:
+                clear_pending_left(monitor_chat_id, [p[0] for p in pending_left])
 
             if synced is False:
                 status_line = f"  ⚠️ Partly synced \\(Users tab incomplete, will retry\\): `{escape_markdown(chat_name)}`"
@@ -2485,26 +2511,9 @@ def _created_within_period(created_date_raw, cutoff) -> bool:
         return False
 
 
-_STAT_DATE_FORMATS = (
-    "%d.%m.%Y %H:%M:%S.%f",   # now2ddmmyy(): events, command_log, bot add/remove dates
-    "%d.%m.%Y %H:%M:%S",
-    "%Y-%m-%d %H:%M:%S",      # subscription dates, waitlist timestamps
-    "%d.%m.%Y",
-    "%Y-%m-%d",
-)
-
-
-def _parse_stat_date(raw):
-    """Best-effort parse of any date string the bot has ever stored; None if unreadable."""
-    if not raw:
-        return None
-    raw = str(raw).strip()
-    for fmt in _STAT_DATE_FORMATS:
-        try:
-            return datetime.strptime(raw, fmt)
-        except ValueError:
-            continue
-    return None
+def _str_or_none(value):
+    """Telegram objects can hold None (or, in tests, anything) where the DB wants text."""
+    return value if isinstance(value, str) and value else None
 
 
 def _fmt_stat_number(x) -> str:

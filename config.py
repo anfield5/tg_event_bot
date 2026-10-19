@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "4.5.1"
+BOT_VERSION = "4.6.0"
 
 # Moment this process started - what /version reports as "Started" / uptime.
 STARTED_AT = time.time()

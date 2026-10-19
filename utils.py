@@ -45,7 +45,7 @@ COMMAND_DESTINATION_TYPE = {
     # adduser, updateuser, listusers, refreshusers, refreshusersall,
     # help, waitlist, userid, chatid, setalias, removealias,
     # listaliases, addmonitor, removemonitor, listmonitors, status,
-    # stats.
+    # stats, who.
 }
 
 
@@ -178,3 +178,35 @@ async def is_real_admin(bot, chat_id, user, message=None) -> bool:
         return member.status in ("administrator", "creator")
     except Exception:
         return False
+
+
+# Every date format the bot has ever stored (events, command_log, bot add/remove dates, Sheets cells,
+# subscription end dates). Shared by /stats and /who so they read the same cells the same way.
+STORED_DATE_FORMATS = (
+    "%d.%m.%Y %H:%M:%S.%f",   # now2ddmmyy(): events, command_log, Actions / Users / UserPresenceLog cells
+    "%d.%m.%Y %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",      # subscription dates, waitlist timestamps
+    "%d.%m.%Y",
+    "%Y-%m-%d",
+)
+
+
+def parse_stored_date(raw):
+    """Best-effort parse of any date string the bot has ever stored; None if unreadable."""
+    from datetime import datetime as _datetime
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    for fmt in STORED_DATE_FORMATS:
+        try:
+            return _datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+# Names /who -c understands for "the main group" and "everything" - an alias can't shadow them.
+RESERVED_ALIASES = ("main", "all")
+
+# /who without an explicit number of hours looks this far back.
+WHO_DEFAULT_HOURS = 6

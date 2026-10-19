@@ -101,7 +101,8 @@ class TestHelpAudit:
     async def test_nothing_outdated_is_left_in_any_text(self, db_path):
         _make_pro(db_path)
         stale = [r"/stats -a\b", r"/help -a\b", r"free\|pro\|admin", r"\bADMIN\b",
-                 r"\badmin only\b"]   # creators can use the event buttons too
+                 r"\badmin only\b",   # creators can use the event buttons too
+                 r"<hours>"]            # /who's number of hours is optional (default 6), never shown as required
         for who in (1, OWNER):
             for name, text in (await _gather(who)).items():
                 for pattern in stale:

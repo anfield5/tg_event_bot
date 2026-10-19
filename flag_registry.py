@@ -176,6 +176,30 @@ FLAGS = {
         "gated_by_feature": None,
         "used_in": ["listusers"],
     },
+    "who_notgoing": {
+        "names": ["-ng", "-notgoing"],
+        "values": None,
+        "default": None,
+        "description": "People whose status in the LAST event changed to Not Going within the window - only those who had another status in that event first, a first-time Not Going doesn't count",
+        "gated_by_feature": None,
+        "used_in": ["who"],
+    },
+    "who_left": {
+        "names": ["-l", "-left"],
+        "values": None,
+        "default": None,
+        "description": "People who left the main group and every monitored group and channel",
+        "gated_by_feature": None,
+        "used_in": ["who"],
+    },
+    "who_chat": {
+        "names": ["-c", "-chat"],
+        "values": "alias|main|all",
+        "default": "all",
+        "description": "Limit the report to one chat - an alias from /listaliases, main for the main group, or all for the main group plus every monitored chat",
+        "gated_by_feature": None,
+        "used_in": ["who"],
+    },
     "minlevel": {
         "names": ["-minlevel"],
         "values": "free|pro|owner",
@@ -233,6 +257,7 @@ COMMANDS = {
     "shareevent":    {"label": "/shareevent",    "owner_only": False},
     "updateuser":    {"label": "/updateuser",    "owner_only": False},
     "listusers":     {"label": "/listusers",     "owner_only": False},
+    "who":           {"label": "/who",           "owner_only": False},
     "updatefeature": {"label": "/updatefeature", "owner_only": True},
     "allgroups":     {"label": "/allgroups",     "owner_only": True},
 }

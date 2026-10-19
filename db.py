@@ -119,6 +119,10 @@ def _seed_all_features(cursor):
         ("stats", "/stats (event activity stats for this group)", "PRO", None,
          "Shows how many events this hub has created, how many were closed, and total/average headcount "
          "across every closed event - a quick snapshot of the bot's usage in this specific group."),
+        ("who", "/who (recent Not Going changes and departures)", "PRO", None,
+         "Admins: who changed to Not Going in the latest event, or who left the main group and the monitored "
+         "chats, within the last N hours. Reads the Actions and UserPresenceLog tabs of the hub's Google Sheet, "
+         "so it needs a bound sheet."),
     ]
     seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(
@@ -925,6 +929,23 @@ def init_db(db_path: str = DB_PATH):
             END
         """)
 
+    # 0a12. left_pending - people a refresh confirmed as gone whose departure hasn't reached the
+    # Google Sheet yet. /refreshusers deletes them from main_group_users right away, so for someone
+    # with no Users row (never synced - e.g. they joined and left between two refreshes) this is the
+    # ONLY remaining evidence; if the sheet write fails it must survive until a later refresh succeeds.
+    # left_at is fixed at first detection, so a retry produces identical dates (no duplicate log rows).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS left_pending (
+            chat_id    TEXT NOT NULL,
+            user_id    TEXT NOT NULL,
+            username   TEXT,
+            first_name TEXT,
+            last_name  TEXT,
+            left_at    TEXT NOT NULL,
+            PRIMARY KEY (chat_id, user_id)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -1567,3 +1588,42 @@ def dedupe_waitlist(waitlist: list) -> list:
         if key not in person_seen or entry.get("timestamp", "") < person_seen[key].get("timestamp", ""):
             person_seen[key] = entry
     return list(person_seen.values()) + guest_entries
+
+
+# ---------------------------------------------------------------------------
+# left_pending: confirmed departures waiting to be written to the Google Sheet
+# ---------------------------------------------------------------------------
+
+def queue_left_members(chat_id: str, members: list) -> None:
+    """
+    members: (user_id, username, first_name, last_name, left_at) tuples. INSERT OR IGNORE: if the person
+    is already queued, the FIRST detection time is kept (a retry must not move their dates).
+    """
+    if not members:
+        return
+    with get_connection() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO left_pending (chat_id, user_id, username, first_name, last_name, left_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [(str(chat_id), str(u), n, f, l, t) for u, n, f, l, t in members],
+        )
+        conn.commit()
+
+
+def get_pending_left(chat_id: str) -> list:
+    """(user_id, username, first_name, last_name, left_at) for every queued departure of this chat."""
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT user_id, username, first_name, last_name, left_at FROM left_pending WHERE chat_id = ? "
+            "ORDER BY rowid", (str(chat_id),),
+        ).fetchall()
+
+
+def clear_pending_left(chat_id: str, user_ids: list) -> None:
+    """Drops these people from the queue once the sheet has them."""
+    if not user_ids:
+        return
+    with get_connection() as conn:
+        conn.executemany("DELETE FROM left_pending WHERE chat_id = ? AND user_id = ?",
+                         [(str(chat_id), str(u)) for u in user_ids])
+        conn.commit()

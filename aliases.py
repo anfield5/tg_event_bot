@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
 from config import ICON_WARNING
-from utils import escape_markdown, GROUP_ANONYMOUS_BOT_ID
+from utils import escape_markdown, GROUP_ANONYMOUS_BOT_ID, RESERVED_ALIASES
 from db import get_connection
 from subscription import require_premium
 from hub_resolver import resolve_hub_chat_id, register_hub_command
@@ -36,6 +36,14 @@ async def setalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     target_chat_input = args[0].strip()
     alias_name        = args[1].strip().lower()
     user_id           = update.effective_user.id
+
+    if alias_name in RESERVED_ALIASES:
+        await update.message.reply_text(
+            f"{ICON_WARNING} `{escape_markdown(alias_name)}` is a reserved name \\(/who uses it for the main group "
+            f"and for all chats\\) \\- pick another alias\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
 
     try:
         if target_chat_input.startswith("-") and target_chat_input[1:].isdigit():

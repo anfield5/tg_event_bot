@@ -35,6 +35,7 @@ from subscription import (
     _push_control_sheet_chats_log,
 )
 from utils import now2ddmmyy
+from who import who_command
 
 
 async def lock_gate(update, context):
@@ -384,6 +385,7 @@ def main():
     app.add_handler(CommandHandler("setsheet", setsheet))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("who", who_command))
     app.add_handler(CommandHandler("allgroups", allgroups_command))
     app.add_handler(CommandHandler("allchannels", allchannels_command))
 

@@ -5874,7 +5874,7 @@ class TestChildChatClickTracksUserForSheetsSync:
         ctx2 = make_context(bot=bot, args=[])
 
         sync_calls = []
-        async def fake_sync(cid, members, sheet_owner_chat_id=None):
+        async def fake_sync(cid, members, sheet_owner_chat_id=None, left_members=None):
             sync_calls.append((cid, members))
 
         with patch("handlers.sync_users_sheet", side_effect=fake_sync):
@@ -6234,7 +6234,7 @@ class TestRefreshusersallCoversHubItself:
         ctx = make_context(bot=bot, args=[])
 
         sync_calls = []
-        async def fake_sync(cid, members, sheet_owner_chat_id=None):
+        async def fake_sync(cid, members, sheet_owner_chat_id=None, left_members=None):
             sync_calls.append((cid, [m[1] for m in members], sheet_owner_chat_id))
 
         with patch("handlers.sync_users_sheet", side_effect=fake_sync):

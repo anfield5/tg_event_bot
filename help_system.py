@@ -21,6 +21,7 @@ from hub_resolver import _get_known_candidate_chats
 from db import get_all_features, get_shareevent_remaining_for_chat
 from utils import escape_markdown, get_admin_contact
 import flag_registry
+from utils import WHO_DEFAULT_HOURS
 
 
 async def _help_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,6 +119,14 @@ def _updateuser_flags_detail_text() -> str:
 def _listusers_flags_detail_text() -> str:
     """The -a/-p flag breakdown for /listusers, from flag_registry.py."""
     return flag_registry.render_flags_detail("listusers")
+
+
+def _who_flags_detail_text() -> str:
+    """The -ng/-l/-c flag breakdown for /who, from flag_registry.py."""
+    return (
+        flag_registry.render_flags_detail("who") +
+        f"Hours are optional \\(the last {WHO_DEFAULT_HOURS} by default\\), e\\.g\\. /who 48 \\-ng\\. At least one of \\-ng and \\-l is required\\.\n"
+    )
 
 
 def _updatefeature_flags_detail_text() -> str:
@@ -374,7 +383,13 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             + "/updateuser \\[username\\(s\\)\\] \\-a\\|\\-p \\- Mark tracked users active or passive\n"
             + (_updateuser_flags_detail_text() if users_expanded else "")
             + "/notify \\- Ping users who haven't responded\n"
-            "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group"
+            + (
+                "/who \\[hours\\] \\-ng\\|\\-l \\[\\-c alias\\] \\- Who changed to Not Going in the last event, "
+                f"or who left the group and the monitored chats, within the last N hours \\(default {WHO_DEFAULT_HOURS}\\)\n"
+                + (_who_flags_detail_text() if users_expanded else "")
+                if feature_available(hub_chat_id_for_limits, update.effective_user.id, "who") else ""
+            )
+            + "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group"
         ),
         "help_utility": (
             "🔧 *Utility Commands*\n\n"
@@ -403,7 +418,8 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/setalias \\[target\\_id\\] \\[aliasname\\] \\- Bind alias to chat ID\n"
             "/removealias \\[aliasname\\] \\- Remove alias\n"
             "/listaliases \\- Show all aliases\n\n"
-            "Aliases let you use memorable names instead of numeric chat IDs when sharing events"
+            "Aliases let you use memorable names instead of numeric chat IDs when sharing events\n"
+            "main and all are reserved names \\(/who uses them for the main group and for all chats\\), so an alias can't be called that"
         ),
         "help_distribution": (
             "📢 *Distribution Control*\n\n"
@@ -421,6 +437,10 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "\\(heavier/slower than plain /refreshusers, since it touches every monitored chat\\)\n\n"
             "Monitored chats are tracked for user presence \\(everyone who leaves is logged in the Sheet's UserPresenceLog\\) "
             "and can be synced with /refreshusersall\\. If a chat can't be fully synced the reply says so and the next refresh retries it\\."
+            + (
+                " To see who left them use /who \\[hours\\] \\-l\\."
+                if feature_available(hub_chat_id_for_limits, update.effective_user.id, "who") else ""
+            )
         ),
         "help_dm_access": (
             "💬 *DM Access*\n\n"
