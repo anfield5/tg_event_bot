@@ -17,8 +17,8 @@ from config import (
     ICON_KICK, ICON_RETURN, ICON_SAVE, ICON_VERIFICATION,
 )
 from subscription import is_premium, has_feature, feature_available
-from hub_resolver import _get_known_candidate_chats
-from db import get_all_features, get_shareevent_remaining_for_chat
+from hub_resolver import _get_known_candidate_chats, resolve_hub_chat_id, register_hub_command
+from db import get_all_features, get_shareevent_remaining_for_chat, get_connection
 from utils import escape_markdown, get_admin_contact
 import flag_registry
 from utils import WHO_DEFAULT_HOURS
@@ -182,14 +182,41 @@ async def userid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _group_label(context, chat_id: str) -> str:
+    """The group's name for a message: what the bot has stored, else asked from Telegram, else just the id."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT chat_name FROM all_groups WHERE chat_id = ?", (str(chat_id),)).fetchone()
+    if row and row[0]:
+        return row[0]
+    try:
+        chat = await context.bot.get_chat(int(chat_id))
+        return chat.title or chat.username or str(chat_id)
+    except Exception:
+        return str(chat_id)
+
+
+@register_hub_command("chatid")
+async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
-    Replies with the CURRENT chat's numeric ID - the exact value to pass to
-    /setsub, /addmonitor, etc. A chat_id isn't sensitive/secret, so this is
-    safe for anyone in the group/channel to run.
+    Replies with a chat's numeric ID - the exact value to pass to /setsub, /addmonitor, /shareevent, etc. A chat_id
+    isn't sensitive/secret, so this is safe for anyone in the group/channel to run.
+
+    In a group or channel that is the CURRENT chat. In a private DM it is the group this DM is working with (the
+    selected hub - the same one /status, /stats ... use; picked on the spot if none is selected yet): the DM's own
+    chat id is just your user id and is good for nothing. This is a read-only helper, so it does NOT need the PRO
+    "DM access" feature - otherwise the id of a FREE group, the one an owner needs for /setsub, couldn't be read.
     """
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(f"This chat's ID: {update.effective_chat.id}")
+        return
+
+    hub_chat_id = await resolve_hub_chat_id(update, context, "chatid", override_chat_id, dm_access_required=False)
+    if hub_chat_id is None:
+        return
+    label = await _group_label(context, hub_chat_id)
+    named = f" ({label})" if label != str(hub_chat_id) else ""
     await update.message.reply_text(
-        f"This chat's ID: {update.effective_chat.id}",
+        f"The selected group's ID: {hub_chat_id}{named}\nNot the group you meant? /switchgroup changes it."
     )
 
 
@@ -260,8 +287,10 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "/deleteevent \\[name or id\\] \\- Permanently delete one event: database, Google Sheet rows and its "
         "posts, after a confirmation\\. No argument lists the latest events; or pass part of the name or the event ID\\. "
         "Open it to others later with /updatefeature deleteevent \\-minlevel pro\\|free\\.\n"
-        "/reopen \\[on\\|off\\] \\- Switch the 🔓 Reopen button on or off under the group's newest closed or canceled "
-        "event; pressing it \\(owners only\\) puts that event back to open\\. No argument shows the current state\\."
+        "/reopen \\[on\\|off\\|name or id\\] \\- Switch the 🔓 Reopen buttons on or off under the group's recent closed or "
+        "canceled events; pressing one \\(owners only\\) puts that event back to open \\- any of them, but only one event "
+        "can be open at a time\\. With a name or an event ID it reopens that event right away\\. No argument shows the "
+        "current state\\."
     )
 
 
@@ -379,7 +408,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if effective_query_data == "help_lifecycle" and feature_available(
         await _help_target_chat_id(update, context), update.effective_user.id, "reopen"
     ):
-        lifecycle_reopen_note = "\n\nTo put a closed or canceled event back to open use /reopen on, then press the 🔓 Reopen button under it\\."
+        lifecycle_reopen_note = "\n\nTo put a closed or canceled event back to open use /reopen on, then press the 🔓 Reopen button under it \\(or /reopen with its name or ID for an older one\\)\\."
     help_sections = {
         "help_users": (
             "👥 *User Management*\n\n"
@@ -404,7 +433,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/start \\- \\(DM only\\) list the groups you administer and pick the one your DM commands target\n"
             "/switchgroup \\- \\(DM only\\) switch which group your commands target\n"
             "/userid \\- Show your own Telegram user ID\n"
-            "/chatid \\- Show this chat's ID"
+            "/chatid \\- Show this chat's ID \\(in a private DM: the ID of the group you picked\\)"
             + (
                 "\n/setsheet \\(DM only\\) \\[sheetid\\|sheeturl\\] \\- Bind this group to its own Google Sheet "
                 "\\(Users/Events/Actions/EventUsers/UserPresenceLog tabs\\)\n"

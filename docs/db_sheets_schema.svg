@@ -49,7 +49,7 @@
 <text x="350.0" y="477.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_add</text>
 <rect x="341.0" y="486.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
 <text x="350.0" y="495.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">role</text>
-<rect x="626.0" y="242.0" width="220" height="442" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="626.0" y="242.0" width="220" height="460" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
 <rect x="626.0" y="242.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
 <rect x="626.0" y="266.0" width="220" height="8" fill="#5F5E5A"/>
 <text x="636.0" y="258.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">events</text>
@@ -86,6 +86,7 @@
 <text x="636.0" y="648.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">closed_date</text>
 <rect x="627.0" y="657.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
 <text x="636.0" y="666.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">waitlist_joined</text>
+<text x="636.0" y="684.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">reopened_roster</text>
 <rect x="54.0" y="565.0" width="220" height="136" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
 <rect x="54.0" y="565.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
 <rect x="54.0" y="589.0" width="220" height="8" fill="#5F5E5A"/>

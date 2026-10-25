@@ -92,11 +92,11 @@ Setup takes about 30-45 minutes the first time. Have the Hub's and Child's ids a
 | 51 | — | Hub's Google Sheet | look at `Events` and `EventUsers` | Row `CLOSED` with the right `GOING_COUNT`; `EventUsers` rows for the going people | |
 | 52 | M1 | Hub | `/newevent Second` | Posted with **no** "already an active event" warning | |
 | 53 | M1 | Hub post | **Cancel** | Canceled; Events row `CANCELED`, no `EventUsers` rows | |
-| 54 | O | Hub | `/reopen on` | "Reopen mode is ON", naming the canceled `Second`; a 🔓 Reopen button appears under it | |
+| 54 | O | Hub | `/reopen on` | "Reopen mode is ON", saying it shows under the 2 newest closed or canceled events; a 🔓 Reopen button appears under **both** `Second` (canceled) and the older closed `Футбол Tour` | |
 | 55 | A | Hub post | **🔓 Reopen** (A is not an owner) | An "Owners only" popup; nothing changes | |
-| 56 | O | Hub post | **🔓 Reopen** | `Second` is open again: vote buttons are back, the `Events` row says `OPEN` | |
-| 57 | M1 | Hub post | **Cancel** | Canceled again (the Reopen button does not come back while the event is open) | |
-| 58 | O | Hub | `/reopen off` | "Reopen mode is OFF"; the button is gone from `Second` | |
+| 56 | O | Old `Футбол Tour` post | **🔓 Reopen** | The OLDER event is open again: vote buttons are back in every post, its `Events` row says `OPEN`, its `EventUsers` rows are gone, `Actions` has a `REOPEN` row - and the Reopen button is gone from `Second` too (only one event can be open) | |
+| 57 | M1 | Old `Футбол Tour` post | **Verify**, **Kick** one person, then **Save & Close Event** | Closed again: `EventUsers` holds exactly the new roster (the kicked person gone, nobody twice), the `Events` row is `CLOSED` with the new count, `Actions` has a `ROSTER_REMOVED` row for the kicked person; the Reopen buttons are back under both posts | |
+| 58 | O | Hub | `/reopen off` | "Reopen mode is OFF"; the buttons are gone from both posts | |
 | 59 | A | Hub | `/newevent Orphan` | Posted | |
 | 60 | A | Hub | delete the Orphan post by hand | The post is gone | |
 | 61 | A | Hub | `/newevent Third` | Created with **no** warning; Orphan is silently `CANCELED` | |

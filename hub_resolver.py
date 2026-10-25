@@ -188,7 +188,8 @@ async def switchgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                               command_name: str, override_chat_id: str = None):
+                               command_name: str, override_chat_id: str = None,
+                               dm_access_required: bool = True):
     """
     Returns the hub chat_id (str) the calling command should operate on, or
     None if the caller should just `return` (either an error was already
@@ -200,13 +201,16 @@ async def resolve_hub_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
     resolved hub must have the "dm_access" feature (see all_features) -
     FREE hubs must run commands inside the actual group chat instead. This
     does NOT apply to running commands directly in the group itself, only
-    to going through a private DM with the bot.
+    to going through a private DM with the bot. `dm_access_required=False`
+    skips that gate for a command that is only ever READING something the
+    person needs in order to set the group up in the first place (/chatid:
+    the id of a FREE group is exactly what an owner needs for /setsub).
     """
     chat = update.effective_chat
     is_dm = chat.type == "private"
 
     async def _gate(resolved_chat_id: str):
-        if not is_dm:
+        if not is_dm or not dm_access_required:
             return resolved_chat_id
         from subscription import has_feature  # lazy: subscription.py imports FROM this module at load time
         if has_feature(resolved_chat_id, "dm_access"):
@@ -284,10 +288,21 @@ class _ReplayUpdate:
 class _ReplayContext:
     """Same idea as _ReplayUpdate, but for CallbackContext - only .bot,
     .args, and .user_data are ever read by the replayed commands."""
-    def __init__(self, bot, args, user_data):
+    def __init__(self, bot, args, user_data, real_context=None):
         self.bot = bot
         self.args = args
         self.user_data = user_data
+        self._real_context = real_context
+
+    def __getattr__(self, name):
+        # Only reached for attributes NOT set above - application, chat_data, job_queue... The replayed command
+        # runs on behalf of the picker button's press, so those come from that press's own context. Without this
+        # /editevent, /shareevent and /reopen crashed on `context.application` AFTER doing their work (the edit
+        # was saved, the posts were never refreshed).
+        real = self.__dict__.get("_real_context")
+        if real is None or name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(real, name)
 
 
 async def hub_pick_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -342,5 +357,5 @@ async def hub_pick_callback_handler(update: Update, context: ContextTypes.DEFAUL
     await query.edit_message_text("Got it \\- running that now\\.\\.\\.", parse_mode="MarkdownV2")
 
     replay_update = _ReplayUpdate(message=query.message, chat=query.message.chat, user=query.from_user)
-    replay_context = _ReplayContext(bot=context.bot, args=pending["args"], user_data=context.user_data)
+    replay_context = _ReplayContext(bot=context.bot, args=pending["args"], user_data=context.user_data, real_context=context)
     await handler_fn(replay_update, replay_context, override_chat_id=chosen_chat_id)

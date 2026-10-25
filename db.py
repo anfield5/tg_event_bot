@@ -124,9 +124,10 @@ def _seed_all_features(cursor):
          "chats, within the last N hours. Reads the Actions and UserPresenceLog tabs of the hub's Google Sheet, "
          "so it needs a bound sheet."),
         ("reopen", "/reopen (take a closed or canceled event back to open)", "OWNER", None,
-         "Owner-level: /reopen on shows a Reopen button under the group's newest closed or canceled event - "
-         "pressing it puts the event back to open (voting works again); /reopen off hides the button. Only the "
-         "newest event can be reopened, and not while another event of the group is still open."),
+         "Owner-level: /reopen on shows a Reopen button under the group's newest closed or canceled events - "
+         "pressing one puts that event back to open (voting works again); /reopen off hides the buttons; "
+         "/reopen <name or id> reopens any older event directly. Only one event can be open at a time, so "
+         "no button shows (and none works) while another event of the group is open."),
     ]
     seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(
@@ -364,7 +365,8 @@ def init_db(db_path: str = DB_PATH):
             clickability TEXT DEFAULT 'on',
             created_by_user_id TEXT DEFAULT NULL,
             created_date TEXT DEFAULT NULL,
-            closed_date TEXT DEFAULT NULL
+            closed_date TEXT DEFAULT NULL,
+            reopened_roster TEXT DEFAULT NULL
         )
     """)
 
@@ -716,6 +718,11 @@ def init_db(db_path: str = DB_PATH):
     if "clickability" not in events_cols:
         cursor.execute("ALTER TABLE events ADD COLUMN clickability TEXT DEFAULT 'on'")
         cursor.execute("UPDATE events SET clickability = 'on' WHERE clickability IS NULL")
+
+    # 0a9c. Add `reopened_roster` - set by /reopen to the final roster the event had when it was closed ({user_id:
+    # name} as JSON), read and cleared by the next Save & Close to log who was added / removed in between.
+    if "reopened_roster" not in events_cols:
+        cursor.execute("ALTER TABLE events ADD COLUMN reopened_roster TEXT DEFAULT NULL")
 
     # 0a9. Add event_shares' per-share notgoing/waitlist visibility
     # override columns (-sngl/-swl flags on /shareevent) - pre-existing
@@ -1686,9 +1693,56 @@ def other_active_event(chat_id: str, event_id: str):
     return row[0] if row else None
 
 
-def reopen_button_offered(hub_chat_id: str, event_id: str) -> bool:
-    """Should this event's hub post carry the Reopen button: mode on, AND it is the newest event, AND it is closed/canceled."""
+REOPEN_BUTTON_LIMIT = 15   # how many of the newest closed / canceled events carry the button (each one is a post to edit)
+
+
+def reopen_button_events(hub_chat_id: str) -> list:
+    """
+    [(event_id, message_id)] of the hub's posts that should carry the Reopen button right now: the mode is on, NO
+    event of the hub is open or in verification (only one may be active at a time, so while one is, nothing can be
+    reopened and no button shows), and then the newest REOPEN_BUTTON_LIMIT closed or canceled events, newest first.
+    """
     if not is_reopen_active(hub_chat_id):
-        return False
-    latest = latest_event_of_hub(hub_chat_id)
-    return latest is not None and str(latest[0]) == str(event_id) and latest[1] in (2, -1)
+        return []
+    with get_connection() as conn:
+        if conn.execute("SELECT 1 FROM events WHERE chat_id = ? AND event_status IN (0, 1) LIMIT 1", (str(hub_chat_id),)).fetchone():
+            return []
+        return conn.execute(
+            "SELECT event_id, message_id FROM events WHERE chat_id = ? AND event_status IN (2, -1) ORDER BY ROWID DESC LIMIT ?",
+            (str(hub_chat_id), REOPEN_BUTTON_LIMIT),
+        ).fetchall()
+
+
+def reopen_button_offered(hub_chat_id: str, event_id: str) -> bool:
+    """Should this event's hub post carry the Reopen button right now (see reopen_button_events)."""
+    return any(str(eid) == str(event_id) for eid, _ in reopen_button_events(hub_chat_id))
+
+
+def reopen_posts_to_refresh(hub_chat_id: str) -> list:
+    """[(event_id, message_id)] - the posts whose keyboard has to be brought in line with the rule: the newest 2x
+    REOPEN_BUTTON_LIMIT closed / canceled events, so a post that just slid out of the window loses its button too."""
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT event_id, message_id FROM events WHERE chat_id = ? AND event_status IN (2, -1) ORDER BY ROWID DESC LIMIT ?",
+            (str(hub_chat_id), 2 * REOPEN_BUTTON_LIMIT),
+        ).fetchall()
+
+
+def get_reopened_roster(event_id: str):
+    """{user_id: name} the event's final roster had when it was reopened, or None (never reopened / already logged)."""
+    import json
+    with get_connection() as conn:
+        row = conn.execute("SELECT reopened_roster FROM events WHERE event_id = ?", (str(event_id),)).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        data = json.loads(row[0])
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def clear_reopened_roster(event_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE events SET reopened_roster = NULL WHERE event_id = ?", (str(event_id),))
+        conn.commit()

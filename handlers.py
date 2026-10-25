@@ -17,6 +17,7 @@ from help_system import (  # noqa: F401
     userid, chatid, help_command, help_callback_handler, help_back_handler,
     upgrade_info_callback_handler,
 )
+from event_engine import refresh_reopen_buttons
 from event_engine import (  # noqa: F401  (update_all_shared_views, button_handler are re-exports)
     get_event_lock, schedule_view_refresh, update_all_shared_views, button_handler, _mention_link,
     _render_waitlist_local, _render_waitlist_all, _promotion_announcement_text,
@@ -31,7 +32,7 @@ from config import (
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_owner
 from utils import parse_stored_date as _parse_stat_date
 from utils import has_extra_player_prompt, pop_extra_player_prompt
-from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
+from db import is_reopen_active, track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, delete_event_from_sheet, mark_event_row_canceled,
@@ -477,6 +478,10 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     except Exception as e:
         logger.error(f"Failed to send event message: {e}")
 
+    # A new event is now the active one - no other post may keep a Reopen button.
+    if is_reopen_active(str(chat_id)):
+        context.application.create_task(refresh_reopen_buttons(context.bot, str(chat_id), skip_event_id=event_id))
+
     # Log to Google Sheets Events tab (premium hubs only - free hubs write
     # nothing to Sheets at all, silently and by design)
     # Columns: EVENT_ID, EVENT_NAME, CREATED_AT, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT
@@ -641,6 +646,10 @@ async def _perform_event_deletion(context, chat_id, event_id) -> str:
             conn.execute("DELETE FROM event_shares WHERE event_id = ?", (event_id,))
             conn.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
             conn.commit()
+
+    # Deleting the active event frees the hub: the closed events may get their Reopen button back.
+    if is_reopen_active(str(chat_id)):
+        context.application.create_task(refresh_reopen_buttons(context.bot, str(chat_id)))
 
     targets = [(c, m) for c, m in [(chat_id, main_message_id)] + list(shares) if c and m]
     removed = 0
@@ -2376,7 +2385,8 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
 # Waitlist
 # ---------------------------------------------------------------------------
 
-async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@register_hub_command("waitlist")
+async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """
     Shows the waitlist for the most recently created event in whichever
     hub this command's own chat belongs to. Scoped by WHERE it's called
@@ -2389,24 +2399,32 @@ async def waitlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Not owner-only or admin-only - matches /status's own visibility (any
     member can check it), since seeing your position in line isn't a
     privileged action the way changing tiers/subscriptions is.
+
+    Also dual-callable like /stats and /listusers: typed in a private DM with the bot, the group comes from the
+    DM's selected hub (see hub_resolver.resolve_hub_chat_id) and the full, hub-style list is shown. A DM has no
+    event of its own, so using the DM's own chat id here - as this used to - could only ever answer
+    "No event found for this group".
     """
     calling_chat_id = str(update.effective_chat.id)
 
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT owner_chat_id FROM sub_chats WHERE chat_id = ?",
-            (calling_chat_id,),
-        )
-        sub_row = cursor.fetchone()
+    if update.effective_chat.type == "private":
+        hub_chat_id = await resolve_hub_chat_id(update, context, "waitlist", override_chat_id)
+        if hub_chat_id is None:
+            return
+        is_child_caller = False
+    else:
+        with get_connection() as conn:
+            sub_row = conn.execute(
+                "SELECT owner_chat_id FROM sub_chats WHERE chat_id = ?", (calling_chat_id,),
+            ).fetchone()
         is_child_caller = sub_row is not None and sub_row[0] is not None
         hub_chat_id = sub_row[0] if is_child_caller else calling_chat_id
 
-        cursor.execute(
+    with get_connection() as conn:
+        event_row = conn.execute(
             "SELECT event_id, waitlist_data FROM events WHERE chat_id = ? ORDER BY ROWID DESC LIMIT 1",
             (hub_chat_id,),
-        )
-        event_row = cursor.fetchone()
+        ).fetchone()
 
     if not event_row:
         await update.message.reply_text("❌ No event found for this group\\.", parse_mode="MarkdownV2")

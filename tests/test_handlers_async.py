@@ -2822,7 +2822,7 @@ class TestHubResolver:
         assert keyboard is not None, "must show an inline picker for 2+ admin groups"
         names = [b.text for row in keyboard.inline_keyboard for b in row]
         assert "Football" in names and "Basketball" in names
-        assert ctx.user_data["pending_hub_command"] == {"command": "listalias", "args": []}
+        assert ctx.user_data["pending_hub_command"] == {"command": "listaliases", "args": []}  # the real command name
 
     async def test_picking_a_group_replays_the_command_for_that_group_only(self, db_path):
         """The end-to-end flow: DM -> picker -> button tap -> the original

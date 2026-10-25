@@ -305,23 +305,40 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
 
 async def sync_event_users_sheet(chat_id, event_id, user_ids):
     """
-    Writes all going user_ids (master + child chats) to the EventUsers sheet.
-    Expects user_ids as a flat list of string IDs.
-    Columns: EVENT_ID, USER_ID
+    Makes the EventUsers tab hold EXACTLY this event's final roster: one row per person (the same id given twice is
+    written once), and nothing else of this event. Columns: EVENT_ID, USER_ID.
+
+    Whatever rows the event already has there are removed first - a re-save after /reopen whose own sheet cleanup
+    didn't happen, a retried save - and the roster is appended afterwards, so running it again, however often, ends in
+    the same state instead of doubling everybody. Other events' rows are never touched. With nobody going the old
+    rows are still removed. Removing is one batch request, bottom-to-top, only when there is something to remove: the
+    common first save is a plain append, exactly as before.
+
+    A hub with no sheet has nothing to do. Any failure is RAISED - the Save & Close pipeline turns it into the
+    "Google Sheets sync failed" warning in the chat. (It used to be swallowed into the log, so a failed write left
+    the tab empty without a word.)
     """
     sheet_target = await get_sheet_for_chat(chat_id)
     ss = await open_spreadsheet(sheet_target)
     if not ss:
         return  # free tier / no sheet configured / subscription expired - nothing to write
-    try:
-        ws = await ss.worksheet("EventUsers")
-        rows_to_append = [[event_id, str(uid)] for uid in user_ids if uid]
-        if rows_to_append:
-            await ws.append_rows(rows_to_append)
-        else:
-            logger.info("Roster was empty at commitment index. Skipping EventUsers rows insert.")
-    except Exception as e:
-        logger.error(f"Google Sheets EventUsers synchronization failed: {repr(e)}")
+
+    ws = await ss.worksheet("EventUsers")
+    roster = list(dict.fromkeys(str(uid) for uid in user_ids if uid))
+
+    column_a = await ws.col_values(1)
+    stale = [i for i, value in enumerate(column_a, start=1) if i > 1 and str(value).strip() == str(event_id)]
+    if stale:
+        requests = [
+            {"deleteDimension": {"range": {"sheetId": ws.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}}
+            for start, end in reversed(_contiguous_runs(stale))
+        ]
+        await ss.batch_update({"requests": requests})
+
+    if roster:
+        await ws.append_rows([[event_id, uid] for uid in roster])
+    else:
+        logger.info("Roster was empty at commitment index. Nothing to write to EventUsers.")
 
 
 def _shift_hours(date_str, hours):
@@ -602,8 +619,9 @@ async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row):
 async def reopen_event_in_sheet(chat_id, event_id, actions_row=None):
     """
     The Google Sheet half of reopening an event: its Events row goes back to what a freshly created event has
-    (CLOSED_AT empty, STATUS "OPEN", GOING_COUNT 0) and its EventUsers rows are removed. Save & Close only
-    APPENDS to EventUsers, so without this the next save would list everybody a second time.
+    (CLOSED_AT empty, STATUS "OPEN", GOING_COUNT 0) and its EventUsers rows are removed: an open event has no final
+    roster yet, and the next Save & Close writes the new one (it replaces whatever the event has there, so this is
+    tidiness plus a truthful sheet in the meantime - no longer what stops a doubled roster).
 
     Idempotent - pressing again after a failed attempt simply redoes the same two steps. The Events row goes first
     (harmless to repeat); if removing the EventUsers rows then fails the whole thing raises and the caller reopens

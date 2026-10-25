@@ -158,7 +158,7 @@ async def _sync_one_hub(chat_id: str, db_path: str, cutoff: datetime) -> tuple:
                     ws_eu = await ss.worksheet("EventUsers")
                     eu_existing = await ws_eu.get_all_records()
                     if not any(str(r.get("EVENT_ID", "")) == event_id for r in eu_existing):
-                        going_ids = [r["user_id"] for r in eu_rows if r["status"] == "going" and r["user_id"]]
+                        going_ids = list(dict.fromkeys(r["user_id"] for r in eu_rows if r["status"] == "going" and r["user_id"]))
                         if going_ids:
                             await ws_eu.append_rows([[event_id, str(uid)] for uid in going_ids])
                         event_users_backfilled += 1

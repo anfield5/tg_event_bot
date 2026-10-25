@@ -80,10 +80,29 @@ class TestSwitchStorage:
         db_module.set_reopen_mode(HUB, mode)
         assert db_module.reopen_button_offered(HUB, "ev1") is expected
 
-    def test_never_for_an_event_that_is_not_the_newest(self, db_path):
-        seed(db_path, "old", status=2); seed(db_path, "new", status=2)
+    def test_every_recent_closed_or_canceled_event_is_offered_not_just_the_newest(self, db_path):
+        seed(db_path, "old", status=2); seed(db_path, "new", status=-1)
         db_module.set_reopen_mode(HUB, True)
-        assert db_module.reopen_button_offered(HUB, "new") and not db_module.reopen_button_offered(HUB, "old")
+        assert db_module.reopen_button_offered(HUB, "new") and db_module.reopen_button_offered(HUB, "old")
+
+    @pytest.mark.parametrize("active", [0, 1])
+    def test_nothing_is_offered_while_any_event_is_active(self, db_path, active):
+        seed(db_path, "old", status=2); seed(db_path, "live", status=active)
+        db_module.set_reopen_mode(HUB, True)
+        assert not db_module.reopen_button_offered(HUB, "old") and db_module.reopen_button_events(HUB) == []
+
+    def test_only_the_newest_window_of_events_carries_the_button(self, db_path):
+        limit = db_module.REOPEN_BUTTON_LIMIT
+        for n in range(limit + 3):
+            seed(db_path, f"e{n}", status=2)
+        db_module.set_reopen_mode(HUB, True)
+        offered = [eid for eid, _ in db_module.reopen_button_events(HUB)]
+        assert len(offered) == limit and offered[0] == f"e{limit + 2}" and "e0" not in offered
+
+    def test_other_hubs_do_not_matter(self, db_path):
+        seed(db_path, "mine", status=2); seed(db_path, "theirs", status=0, hub="-999")
+        db_module.set_reopen_mode(HUB, True)
+        assert db_module.reopen_button_offered(HUB, "mine")
 
 
 # ── the keyboard ─────────────────────────────────────────────────────────────
@@ -137,11 +156,16 @@ class TestThePost:
         db_module.set_reopen_mode(HUB, True)
         assert callbacks((await hub_markup())[0]) == ["reopen_ev1"]
 
-    async def test_an_older_event_never_does(self, db_path):
+    async def test_an_older_event_gets_it_too_while_nothing_is_active(self, db_path):
         seed(db_path, "old", status=2); seed(db_path, "new", status=2)
         db_module.set_reopen_mode(HUB, True)
-        assert callbacks((await hub_markup("old"))[0]) == []
+        assert callbacks((await hub_markup("old"))[0]) == ["reopen_old"]
         assert callbacks((await hub_markup("new"))[0]) == ["reopen_new"]
+
+    async def test_no_post_gets_it_while_another_event_is_active(self, db_path):
+        seed(db_path, "old", status=2); seed(db_path, "live", status=0)
+        db_module.set_reopen_mode(HUB, True)
+        assert callbacks((await hub_markup("old"))[0]) == []
 
     async def test_shared_chats_never_get_it(self, db_path):
         seed(db_path)
@@ -164,20 +188,22 @@ async def command(args, user_id=OWNER, status="administrator"):
     msg = make_message(chat=chat)
     upd = make_update(chat=chat, user=make_user(user_id=user_id), message=msg)
     with patch("subscription.OWNER_USER_IDS", {OWNER}), \
-         patch("reopen.schedule_view_refresh", new=AsyncMock()) as refresh:
+         patch("reopen.reopen_event_in_sheet", new=AsyncMock(return_value=None)), \
+         patch("reopen.schedule_view_refresh", new=AsyncMock()), \
+         patch("reopen.refresh_reopen_buttons", new=AsyncMock()) as refresh:
         await reopen.reopen_command(upd, make_context(bot=bot, args=args))
     return msg, refresh
 
 
 class TestCommand:
-    async def test_on_switches_it_on_tells_where_and_refreshes_the_post(self, db_path):
-        seed(db_path, name="Football")
+    async def test_on_switches_it_on_tells_where_and_refreshes_the_buttons(self, db_path):
+        seed(db_path, "a", name="Football"); seed(db_path, "b", name="Chess")
         msg, refresh = await command(["on"])
         assert db_module.is_reopen_active(HUB)
         text = plain(msg.reply_text.call_args.args[0])
-        assert "ON" in text and "Football" in text and "owners can use it" in text
+        assert "ON" in text and "2 newest" in text and "owners can use them" in text and "/reopen <name or id>" in text
         refresh.assert_called_once()
-        assert refresh.call_args.args[1] == "ev1"
+        assert refresh.call_args.args[1] == HUB
 
     async def test_off_switches_it_off_and_refreshes(self, db_path):
         seed(db_path)
@@ -187,11 +213,14 @@ class TestCommand:
         assert "OFF" in plain(msg.reply_text.call_args.args[0]) and "gone" in plain(msg.reply_text.call_args.args[0])
         refresh.assert_called_once()
 
-    async def test_on_with_nothing_to_show_it_under_does_not_touch_any_post(self, db_path):
+    async def test_on_while_an_event_is_open_says_no_button_shows_yet(self, db_path):
         seed(db_path, status=0)
-        msg, refresh = await command(["on"])
-        assert db_module.is_reopen_active(HUB) and "next event" in plain(msg.reply_text.call_args.args[0])
-        refresh.assert_not_called()
+        msg, _ = await command(["on"])
+        assert db_module.is_reopen_active(HUB) and "open right now" in plain(msg.reply_text.call_args.args[0])
+
+    async def test_on_with_no_closed_event_yet_says_where_it_will_appear(self, db_path):
+        msg, _ = await command(["on"])
+        assert "no closed or canceled event yet" in plain(msg.reply_text.call_args.args[0])
 
     async def test_no_argument_just_reports(self, db_path):
         seed(db_path)
@@ -199,9 +228,44 @@ class TestCommand:
         assert "OFF" in plain(msg.reply_text.call_args.args[0]) and not db_module.is_reopen_active(HUB)
         refresh.assert_not_called()
 
-    async def test_a_wrong_argument_gets_the_usage(self, db_path):
+    async def test_anything_else_is_an_event_to_reopen_and_an_unknown_one_is_said_so(self, db_path):
+        seed(db_path, name="Football")
         msg, _ = await command(["maybe"])
-        assert "Usage" in plain(msg.reply_text.call_args.args[0]) and not db_module.is_reopen_active(HUB)
+        assert "No closed or canceled event" in plain(msg.reply_text.call_args.args[0])
+        assert not db_module.is_reopen_active(HUB) and state(db_path)[0] == 2
+
+    async def test_an_event_can_be_reopened_by_a_part_of_its_name_any_case(self, db_path):
+        seed(db_path, "old", name="Sunday Football"); seed(db_path, "new", name="Chess")
+        msg, _ = await command(["sunday", "FOOT"])
+        assert state(db_path, "old")[0] == 0 and state(db_path, "new")[0] == 2
+        assert "reopened" in msg.reply_text.call_args.args[0] and "Sunday Football" in msg.reply_text.call_args.args[0]
+
+    async def test_or_by_its_exact_id(self, db_path):
+        seed(db_path, "abc123", name="Football"); seed(db_path, "def456", name="Football")
+        await command(["abc123"])
+        assert state(db_path, "abc123")[0] == 0 and state(db_path, "def456")[0] == 2
+
+    async def test_two_matches_are_listed_with_their_ids_and_nothing_is_reopened(self, db_path):
+        seed(db_path, "abc123", name="Football"); seed(db_path, "def456", name="Football")
+        msg, _ = await command(["football"])
+        text = msg.reply_text.call_args.args[0]
+        assert "abc123" in text and "def456" in text and "id" in text
+        assert state(db_path, "abc123")[0] == 2 and state(db_path, "def456")[0] == 2
+
+    async def test_the_command_obeys_the_one_active_event_rule_too(self, db_path):
+        seed(db_path, "old", status=2, name="Football"); seed(db_path, "live", status=0, name="Running")
+        msg, _ = await command(["football"])
+        assert "Running" in msg.reply_text.call_args.args[0] and state(db_path, "old")[0] == 2
+
+    async def test_it_works_without_the_mode_being_on(self, db_path):
+        seed(db_path, name="Football")
+        await command(["football"])
+        assert state(db_path)[0] == 0 and not db_module.is_reopen_active(HUB)
+
+    async def test_for_anyone_without_the_feature_it_is_ignored_even_with_an_event_name(self, db_path):
+        seed(db_path, name="Football")
+        msg, _ = await command(["football"], user_id=1)
+        assert msg.reply_text.call_count == 0 and state(db_path)[0] == 2
 
     async def test_for_anyone_who_is_not_an_owner_the_command_is_ignored(self, db_path):
         seed(db_path)
@@ -227,7 +291,7 @@ class TestCommand:
 
 # ── the press ────────────────────────────────────────────────────────────────
 
-async def press(event_id="ev1", user_id=OWNER, in_chat=HUB, sheet=None, status="administrator"):
+async def press(event_id="ev1", user_id=OWNER, in_chat=HUB, sheet=None, status="administrator", buttons=None):
     query = MagicMock()
     query.data = f"reopen_{event_id}"
     query.message = MagicMock()
@@ -241,6 +305,7 @@ async def press(event_id="ev1", user_id=OWNER, in_chat=HUB, sheet=None, status="
     sheet_mock = sheet or AsyncMock(return_value=None)
     with patch("subscription.OWNER_USER_IDS", {OWNER}), \
          patch("reopen.reopen_event_in_sheet", new=sheet_mock), \
+         patch("reopen.refresh_reopen_buttons", new=buttons or AsyncMock()), \
          patch("reopen.schedule_view_refresh", new=AsyncMock()) as refresh:
         await reopen.reopen_callback_handler(upd, make_context(bot=bot))
     return query, sheet_mock, refresh
@@ -283,12 +348,21 @@ class TestThePress:
         seed(db_path, status=0); db_module.set_reopen_mode(HUB, True)
         assert "already open" in refused((await press())[0])
 
-    async def test_only_the_newest_event_can_be_reopened(self, db_path):
+    async def test_an_older_event_can_be_reopened_too(self, db_path):
         seed(db_path, "old", status=2); seed(db_path, "new", status=2)
         db_module.set_reopen_mode(HUB, True)
         query, sheet, _ = await press("old")
-        assert "newest event" in refused(query) and state(db_path, "old")[0] == 2
-        sheet.assert_not_called()
+        assert state(db_path, "old") == (0, None) and state(db_path, "new")[0] == 2
+        assert query.answer.call_args.kwargs.get("show_alert") is not True
+        sheet.assert_called_once()
+
+    async def test_the_other_posts_lose_their_button_once_one_event_is_open(self, db_path):
+        seed(db_path, "old", status=2); seed(db_path, "new", status=2)
+        db_module.set_reopen_mode(HUB, True)
+        buttons = AsyncMock()
+        await press("old", buttons=buttons)
+        buttons.assert_called_once()
+        assert buttons.call_args.args[1] == HUB and buttons.call_args.kwargs == {"skip_event_id": "old"}
 
     async def test_refused_while_another_event_is_still_open_and_it_is_named(self, db_path):
         seed(db_path, "older", status=0, name="Still running"); seed(db_path, "newer", status=2)

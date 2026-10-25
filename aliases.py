@@ -212,10 +212,10 @@ async def removealias(update: Update, context: ContextTypes.DEFAULT_TYPE, overri
     )
 
 
-@register_hub_command("listalias")
+@register_hub_command("listaliases")
 async def listalias(update: Update, context: ContextTypes.DEFAULT_TYPE, override_chat_id: str = None):
     """Shows all active routing aliases belonging to THIS hub group."""
-    hub_chat_id = await resolve_hub_chat_id(update, context, "listalias", override_chat_id)
+    hub_chat_id = await resolve_hub_chat_id(update, context, "listaliases", override_chat_id)
     if hub_chat_id is None:
         return
     if not await require_premium(update, "Aliases", chat_id=hub_chat_id):

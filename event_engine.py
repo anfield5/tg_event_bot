@@ -36,7 +36,7 @@ from config import (
 from utils import escape_markdown, now2ddmmyy, is_real_admin
 from utils import remember_extra_player_prompt
 from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
-from db import reopen_button_offered
+from db import reopen_button_offered, reopen_button_events, reopen_posts_to_refresh, get_reopened_roster, clear_reopened_roster, is_reopen_active
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet, mark_event_row_canceled
 
 
@@ -356,6 +356,30 @@ def _render_waitlist_count(waitlist: list) -> int:
     return len(waitlist)
 
 
+REOPEN_REFRESH_PAUSE = 0.35   # seconds between two keyboard edits - a burst of edits in one group draws Telegram flood limits
+
+
+async def refresh_reopen_buttons(bot, hub_chat_id: str, skip_event_id: str = None):
+    """
+    Brings the 🔓 Reopen button on the hub's closed / canceled posts in line with the rule (db.reopen_button_events):
+    puts it where it belongs, takes it off everywhere else. Only each post's KEYBOARD is edited, one post at a time with
+    a short pause. Called whenever the picture can change: /reopen on|off, an event being created, closed, canceled,
+    reopened or deleted. `skip_event_id` is a post that has just been re-rendered whole. A post that is gone or
+    already right is not an error.
+    """
+    offered = {str(eid) for eid, _ in reopen_button_events(hub_chat_id)}
+    for event_id, message_id in reopen_posts_to_refresh(hub_chat_id):
+        if not message_id or str(event_id) == str(skip_event_id):
+            continue
+        markup = create_event_keyboard(event_id, 2, "", "", reopen_available=True) if str(event_id) in offered else None
+        try:
+            await bot.edit_message_reply_markup(chat_id=int(hub_chat_id), message_id=int(message_id), reply_markup=markup)
+        except Exception as e:
+            if "not modified" not in str(e).lower():
+                logger.debug(f"Reopen button refresh skipped for {event_id}: {e}")
+        await asyncio.sleep(REOPEN_REFRESH_PAUSE)
+
+
 async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: str):
     """
     Re-renders EVERY view of one event after its state changed: the master
@@ -640,8 +664,8 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     verification_page = _verification_pages.get(event_id, 0)
 
-    # The 🔓 Reopen button (reopen.py): only on the hub's own post, only while an owner has the mode on, and
-    # only for the hub's newest event once it is closed or canceled.
+    # The 🔓 Reopen button (reopen.py): only on the hub's own post, only while an owner has the mode on, only for
+    # one of the hub's newest closed / canceled events, and only while no event of the hub is active.
     reopen_available = event_status in (2, -1) and reopen_button_offered(str(main_chat_id), event_id)
 
     master_keyboard = create_event_keyboard(
@@ -801,6 +825,31 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             ],
             return_exceptions=True,
         )
+
+    # An event that has just been closed or canceled changes who may be reopened: with it no longer active, the
+    # OTHER closed / canceled posts of the hub get their button.
+    if event_status in (2, -1) and is_reopen_active(str(main_chat_id)):
+        context.application.create_task(refresh_reopen_buttons(context.bot, str(main_chat_id), skip_event_id=event_id))
+
+
+async def _log_reopen_roster_diff(ss, hub_chat_id, event_id, all_rows) -> int:
+    """
+    For an event that was reopened (db.get_reopened_roster): appends one Actions row per person ADDED to / REMOVED from
+    the final roster since it was last closed - ROSTER_ADDED / ROSTER_REMOVED, with the PERSON in USER_NAME / USER_ID
+    (these are not clicks, so there is no clicker to name). Returns the number of rows written.
+    The individual clicks of the reopened period are in Actions already; this is their net result against what the
+    EventUsers tab held before the reopen.
+    """
+    before = get_reopened_roster(event_id)
+    if before is None:
+        return 0
+    after = {str(r[0]): (r[3] or str(r[0])) for r in all_rows if r[1] == "going" and r[0]}
+    stamp = now2ddmmyy()
+    rows = [[event_id, "ROSTER_ADDED", name, uid, stamp, str(hub_chat_id)] for uid, name in after.items() if uid not in before]
+    rows += [[event_id, "ROSTER_REMOVED", name, uid, stamp, str(hub_chat_id)] for uid, name in before.items() if uid not in after]
+    if rows:
+        await (await ss.worksheet("Actions")).append_rows(rows)
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -1483,7 +1532,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sheet_target = await get_sheet_for_chat(main_chat_id)
                 ss           = await open_spreadsheet(sheet_target)
                 if not ss:
-                    pass  # free tier / no sheet configured / expired - SQLite-only save, nothing more to do
+                    clear_reopened_roster(event_id)  # free tier / no sheet / expired - SQLite-only save; nothing to log
                 else:
                     # 1. Query event_users ONCE for the whole event_id (no
                     #    chat_id filter) - Variant B migration means the
@@ -1494,7 +1543,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     with get_connection() as conn_eu:
                         cursor_eu = conn_eu.cursor()
                         cursor_eu.execute(
-                            "SELECT user_id, status, guests FROM event_users WHERE event_id = ?",
+                            "SELECT user_id, status, guests, username FROM event_users WHERE event_id = ?",
                             (event_id,),
                         )
                         all_rows = cursor_eu.fetchall()
@@ -1505,14 +1554,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # username as a fallback identifying key - so a
                     # single query here already covers everyone, no
                     # separate scan of the frozen `going` list needed.
-                    all_going_ids = [r[0] for r in all_rows if r[1] == "going"]
+                    # One row per PERSON: the same user_id going in two chats (a legacy row, say) must not be
+                    # exported twice. dict.fromkeys keeps the order.
+                    all_going_ids = list(dict.fromkeys(r[0] for r in all_rows if r[1] == "going"))
 
                     # Compute total for Events sheet - going users plus
                     # every guest (including from non-going/notselected
                     # users), summed once across the whole event_id.
                     total_going = sum(
                         (1 if status == "going" else 0) + (guests or 0)
-                        for _uid, status, guests in all_rows
+                        for _uid, status, guests, _name in all_rows
                     )
 
                     # 4. Update Events sheet row
@@ -1530,10 +1581,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             event_date or "", closed_date, "CLOSED", total_going,
                         ])
 
-                    # 5. Write all going user_ids to EventUsers sheet
-                    context.application.create_task(
-                        sync_event_users_sheet(main_chat_id, event_id, all_going_ids)
-                    )
+                    # 5. Make the EventUsers tab hold exactly this roster. Awaited here, inside the same try as the
+                    #    Events row, so a failure reaches the "Google Sheets sync failed" warning below - as a
+                    #    background task it could only ever be logged.
+                    await sync_event_users_sheet(main_chat_id, event_id, all_going_ids)
+
+                    # 6. A REOPENED event: say in Actions who was added to / removed from the final roster since it was
+                    #    last closed. Only done once everything above worked; otherwise the snapshot stays for the next try.
+                    await _log_reopen_roster_diff(ss, main_chat_id, event_id, all_rows)
+                    clear_reopened_roster(event_id)
 
             except Exception as e:
                 logger.error(f"Sheets save pipeline failed: {e}")

@@ -131,6 +131,21 @@ zone are chosen to minimize crossing lines.
 >   which the DB never stored in the first place - only added when
 >   that event has zero genuine Actions rows already). Only ever adds
 >   missing rows, never edits an existing one, safe to run repeatedly.
+> - `scripts/audit_event_users.py` is the READ-ONLY counterpart: for every hub with a
+>   Sheet it checks that the event's roster in `event_users` matches the `EventUsers`
+>   tab (missing / extra / doubled ids, rows left over for an event that is open
+>   again) and the `Events` tab (status, GOING_COUNT), and lists people typed in by
+>   name whose real Telegram id is stored nowhere. With `--telegram --to <chat id>` it
+>   also reads each closed event's post back by forwarding it (the Bot API has no way
+>   to read an old message) - which can only confirm that a post is up to date with
+>   the DB, since the post is rendered from it, and which shows ids only for
+>   clickable names. Exit code 1 when it finds a problem. Never writes anything.
+> - `scripts/repair_event_users.py` fixes what the audit finds, taking the database as
+>   the truth (the posts are rendered from it): it replaces an event's `EventUsers`
+>   rows with its real roster, corrects or adds the `Events` row and removes the rows
+>   of an event that is not closed. A dry run unless `--apply` is given; with
+>   `--resolve-ids` it also gives people typed in by name their real Telegram id once
+>   the bot has seen them. It audits again afterwards and says what is left.
 
 - **Gray** = SQLite table (single database, source of truth)
 - **Blue** = Control Sheet - **one** spreadsheet, shared across the whole bot

@@ -18,7 +18,11 @@ runtime reconfiguration) and enforced for Type 3 via `utils.require_dm_only()`.
 from it is Type 1): `/help`, `/userid`, `/chatid`, `/status`, `/stats`,
 `/listusers`, `/listaliases`, `/listmonitors`, `/updateuser`,
 `/adduser`, `/setalias`, `/removealias`, `/addmonitor`,
-`/removemonitor`, `/refreshusers`, `/refreshusersall`, `/waitlist`.
+`/removemonitor`, `/refreshusers`, `/refreshusersall`, `/waitlist`, `/who`, `/reopen`.
+
+`/chatid` in a private DM answers with the id of the DM's **selected group** (and its name), not the DM's own chat id; it skips the PRO DM-access gate (`resolve_hub_chat_id(..., dm_access_required=False)`) because the id of a FREE group is what an owner needs for `/setsub`.
+
+Every dual-callable command is registered with `register_hub_command(<its real command name>)`: that name is what the DM group-picker stores and later replays, and what a FREE group's "DM is a PRO feature" notice tells the user to type. The replay runs on a stand-in update/context (`_ReplayUpdate`/`_ReplayContext`) - the context forwards anything it doesn't carry (`application`, `chat_data`, ...) to the context of the picker button's press.
 
 **Type 2 — dual-callable, but the substantive result always lands in
 the group**, regardless of where the command was typed:
@@ -91,11 +95,13 @@ No flags. Pings everyone tracked as active in this chat who hasn't voted yet on 
 No flags. Shows every user tracked for this chat, with status.
 
 ## /reopen
-`/reopen on | off` (no argument shows the state) - an **owner-level** feature (`reopen`, OWNER tier; for anyone without it the command is ignored without a word). It switches a per-hub mode, stored in the `reopen_mode` table (who and when are kept), that puts a **🔓 Reopen** button under the group's newest event once that event is **closed or canceled**; pressing it sends the event back to **open** (`event_status` 0, `closed_date` cleared) and re-renders the hub post and every shared post, so voting works again.
-- Only the hub's **newest** event can be reopened (`/editevent`, `/waitlist`, `/who`, `/notify` and `/newevent`'s "already active" check all look at the newest one), only from the hub post (child posts never carry the button), and **not while another event of the group is open or in verification** - the press is refused with a popup naming that event.
-- The button is visible to everyone while the mode is on (an inline keyboard can't be shown to one person); a non-owner gets an "Owners only" popup. The press is its own callback handler (`^reopen_`), not part of `button_handler`, because `button_handler` answers every callback before knowing what it is and a refusal needs its own popup.
-- Sheet side (`sheets.reopen_event_in_sheet`): the `Events` row goes back to `CLOSED_AT` empty / `OPEN` / `0`, the event's `EventUsers` rows are **removed** - Save & Close only appends there, so keeping them would list everybody twice after the next save - and an `Actions` row `REOPEN` names the owner. The sheet is cleaned first and the whole press abandoned if that fails ("nothing was changed"); redoing it is harmless.
-- The mode stays on after a press (the button just isn't shown while the event is open and comes back when it is closed or canceled again); `/reopen off` removes it.
+`/reopen on | off | <event name or id>` (no argument shows the state) - an **owner-level** feature (`reopen`, OWNER tier; for anyone without it the command is ignored without a word). `on`/`off` switch a per-hub mode, stored in the `reopen_mode` table (who and when are kept), that puts a **🔓 Reopen** button under the group's **recent closed or canceled events** (the newest `db.REOPEN_BUTTON_LIMIT` = 15); pressing one sends that event back to **open** (`event_status` 0, `closed_date` cleared) and re-renders the hub post and every shared post, so voting works again. `/reopen <part of the name | exact event id>` does the same for any event, old ones included, with the mode on or off (an ambiguous name lists the matching ids and reopens nothing).
+- **Any** closed or canceled event can be reopened, but only **one event of the group may be active at a time** (`/editevent`, `/waitlist`, `/who`, `/notify` and `/newevent`'s "already active" check all look at the newest one): while an event is open or in verification **no button is shown** (`db.reopen_button_events` returns nothing), and a press or the command is refused naming that event. Only the hub post carries the button (child posts never do).
+- The buttons are kept in line with that rule by `event_engine.refresh_reopen_buttons` - only each post's **keyboard** is edited, one post at a time with a 0.35 s pause (Telegram flood limits), the newest 2x15 closed/canceled posts so one that slid out of the window loses its button. It runs on `/reopen on|off`, after a close/cancel (the end of `update_all_shared_views`), when `/newevent` creates an event (the old posts lose the button), after a reopen (`perform_reopen`) and after `/deleteevent` of the active event (the old posts regain it). A gone or already-correct post is not an error.
+- The button is visible to everyone while the mode is on (an inline keyboard can't be shown to one person); a non-owner gets an "Owners only" popup. The press is its own callback handler (`^reopen_`), not part of `button_handler`, because `button_handler` answers every callback before knowing what it is and a refusal needs its own popup. Button and command share `reopen.perform_reopen`, which decides everything again under the event's lock.
+- Sheet side (`sheets.reopen_event_in_sheet`): the `Events` row goes back to `CLOSED_AT` empty / `OPEN` / `0`, the event's `EventUsers` rows are **removed** (an open event has no final roster; the next Save & Close writes the new one - it REPLACES whatever the event has there, see the `EventUsers` tab below) and an `Actions` row `REOPEN` names the owner. The sheet is cleaned first and the whole reopen abandoned if that fails ("nothing was changed"); redoing it is harmless.
+- **What changed while it was open again** is logged by the next Save & Close: `perform_reopen` stores the roster the event was closed with in `events.reopened_roster` (JSON `{user_id: name}`; `NULL` for a canceled event, which never had one), and `event_engine._log_reopen_roster_diff` appends one `Actions` row per person **added** (`ROSTER_ADDED`) or **removed** (`ROSTER_REMOVED`) - the person in `USER_NAME`/`USER_ID`, since these are not clicks - then clears it. It is kept, not cleared, when the Sheets write fails, so the next try still has it.
+- The mode stays on after a press (the buttons just aren't shown while an event is open and come back when it is closed or canceled again); `/reopen off` removes them.
 
 ## /who
 `/who [hours] -ng | -l [-c <alias|main|all>]` - admin-only, PRO-level feature `who` (adjustable with `/updatefeature`), needs the hub's Google Sheet; works from a DM like the other hub commands. `hours` is optional (1-8760; **6 when omitted**, so `/who -ng` means the last 6 hours); `-ng`/`-notgoing` and `-l`/`-left` are synonyms; `-c`/`-chat` narrows the report; at least one of `-ng`, `-l` is required and both may be combined.
@@ -120,7 +126,7 @@ Forwards the active event to a child group/channel.
 → Full spec: `docs/specs/commands/shareevent.md`
 
 ## /waitlist
-No flags. Admin-only: shows the full Waitlist, ignoring the event's own `-wl` visibility setting.
+No flags. Works from a private DM too: the group is the DM's selected hub (like `/stats`, `/listusers`; DM access is a PRO feature), and the full hub-style list is shown. Admin-only: shows the full Waitlist, ignoring the event's own `-wl` visibility setting.
 
 ## /setalias
 Alias names are stored lower-case; `main` and `all` are reserved (they mean "the main group" and "every tracked chat" in `/who -c`) and are refused.
@@ -323,6 +329,8 @@ The single source of truth for what's available at each tier. Seeded at startup 
 
 `created_date`/`closed_date` are real, persisted columns (not just written to the bound Google Sheet) — set via `now2ddmmyy()` at `/newevent` creation time and at Save&Close/Cancel/Directclose respectively. Both follow a "DB first, then Sheets reuses that exact value" pattern: the timestamp is computed once, written to the `events` row (via a plain `INSERT`/`UPDATE`), and the SAME in-memory value is reused for the Google Sheets Events tab export (if the hub is PRO with a bound sheet) — never recomputed a second time for the Sheet, which could otherwise drift from what was actually persisted. `closed_date` uses `COALESCE(?, closed_date)` in its own `UPDATE` so actions that don't close the event (kick, guest adjustments, `back`, pagination) never overwrite an already-set value with `NULL`.
 
+`reopened_roster` (TEXT, JSON `{user_id: name}`, normally `NULL`) is set by `/reopen` to the final roster the event had when it was closed and read-and-cleared by the next Save & Close, which logs the difference to the `Actions` tab (`ROSTER_ADDED` / `ROSTER_REMOVED`).
+
 **Variant B note:** `going_data`/`notgoing_data`/`counters_data`/`kicked_data` were the master hub's own source of truth *before* Variant B unified the master hub and every child chat under the single `event_users` table (see that table's own section below). These four columns are no longer written to by any button click or command — they're read exactly once per event, the very first time ANY code path touches that event after the Variant B deploy, to migrate their contents into `event_users` (see `db.migrate_event_to_event_users()`). After that one-time migration, they sit frozen, kept only so that an event nobody has touched yet doesn't render as empty (a fallback path in `update_all_shared_views` reads them directly if `event_users` has no rows yet for that event).
 
 | Trigger | Operation |
@@ -496,16 +504,21 @@ Pure append-only action log — one row per state-changing button click or Add E
 | Any state-changing click in the master hub or a child chat (going/notgoing/add/sub/dropall/kick/return/save/cancel) | `append_row`, `ACTION` = the raw action name, uppercased |
 | ± guest buttons specifically, in verification mode | `append_row`, `ACTION` logged as the friendlier `ADD_editmode`/`SUB_editmode` instead of the raw `incgst`/`decgst` |
 | Add Extra Member | `append_row`, `ACTION='ADD_EXTRA_PLAYER'`, `USER_NAME`/`USER_ID` = the **admin or creator who clicked**, not the person being added |
+| `/reopen` (button or command) | `append_row`, `ACTION='REOPEN'`, `USER_NAME`/`USER_ID` = the owner who reopened it |
+| Save & Close of an event that was **reopened** | one `append_rows` batch: `ACTION='ROSTER_ADDED'` / `'ROSTER_REMOVED'` for each person added to / removed from the final roster since it was last closed - `USER_NAME`/`USER_ID` = **the person**, not a clicker |
 
 ### Per-hub sheet — `EventUsers` tab
 **Columns:** EVENT_ID, USER_ID
 
-The final attendee roster — written exactly once per event, at Save & Close.
+The final attendee roster — **replaced** at every Save & Close, so the tab always holds exactly the event's final roster, never a doubled or stale one.
 
 | Trigger | Operation |
 |---|---|
-| Save & Close, successfully | `append_rows` (batch) — every going `user_id`, master hub **and** every child chat combined, one row each |
+| Save & Close, successfully | the event's existing rows here are removed first (one `batchUpdate`, only if there are any), then `append_rows` — every `going` `user_id`, the master hub **and** every other chat that holds participants of the event (shared or just monitored) combined, **one row per person** (kicked, not-going, waitlisted people and guests are not listed). People typed in with Add Extra Member and never resolved are written by their username |
+| `/reopen` | the event's rows are removed at once (it is open again and has no final roster yet); a later Save & Close writes the new one |
 | Cancel | **Nothing is written here at all** — intentionally, since a canceled event has no final attendee list |
+
+The write is part of the Save & Close pipeline, not a background task: if it fails the chat gets "Event saved, but Google Sheets sync failed" (it used to be only a log line, leaving the tab empty without a word).
 
 ### Per-hub sheet — `UserPresenceLog` tab
 **Columns:** USER_ID, CHAT_ID, DATE_start, DATE_end
