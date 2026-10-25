@@ -1,5 +1,7 @@
 import re
 from datetime import datetime
+import time as _time
+from collections.abc import MutableMapping
 
 # ---------------------------------------------------------------------------
 # Command destination classification
@@ -210,3 +212,85 @@ RESERVED_ALIASES = ("main", "all")
 
 # /who without an explicit number of hours looks this far back.
 WHO_DEFAULT_HOURS = 6
+
+
+# ---------------------------------------------------------------------------
+# "Add Extra Member": who is expected to type the username next
+# ---------------------------------------------------------------------------
+# The button click is a callback query - it always carries the REAL person. Their typed answer, though, arrives
+# from a different user id when they have "Remain anonymous" on: Telegram then posts it as GroupAnonymousBot
+# (sender_chat = the group). python-telegram-bot keeps user_data per user id, so the prompt stored at click time
+# is invisible to that message and the typed name used to be ignored. The prompt is therefore ALSO kept per
+# chat - but only a message that is itself an anonymous-admin post may read it, so an ordinary member's chatter
+# can never consume (or answer) an admin's prompt.
+
+EXTRA_PLAYER_USER_KEY = "awaiting_extra_player_for"     # context.user_data: event_id (they type as themselves)
+EXTRA_PLAYER_CHAT_KEY = "awaiting_extra_player"         # context.chat_data: {event_id, actor_id, actor_name, ts}
+EXTRA_PLAYER_PROMPT_TTL = 600                           # seconds - a stale prompt must not capture a later message
+
+
+def is_anonymous_admin_post(update) -> bool:
+    """True when this message was posted by an admin who has "Remain anonymous" on."""
+    user = getattr(update, "effective_user", None)
+    if user is not None and user.id == GROUP_ANONYMOUS_BOT_ID:
+        return True
+    sender_chat = getattr(getattr(update, "message", None), "sender_chat", None)
+    chat = getattr(update, "effective_chat", None)
+    return sender_chat is not None and chat is not None and getattr(sender_chat, "id", None) == getattr(chat, "id", object())
+
+
+def _chat_store(context):
+    store = getattr(context, "chat_data", None)
+    return store if isinstance(store, MutableMapping) else None
+
+
+def _fresh_chat_prompt(context):
+    store = _chat_store(context)
+    pending = store.get(EXTRA_PLAYER_CHAT_KEY) if store is not None else None
+    if not isinstance(pending, dict):
+        return None
+    if _time.time() - pending.get("ts", 0) > EXTRA_PLAYER_PROMPT_TTL:
+        store.pop(EXTRA_PLAYER_CHAT_KEY, None)
+        return None
+    return pending
+
+
+def remember_extra_player_prompt(context, event_id, actor) -> None:
+    """Called when someone presses Add Extra Member; `actor` is the person who pressed it."""
+    context.user_data[EXTRA_PLAYER_USER_KEY] = event_id
+    store = _chat_store(context)
+    if store is not None:
+        store[EXTRA_PLAYER_CHAT_KEY] = {
+            "event_id": event_id,
+            "actor_id": getattr(actor, "id", None),
+            "actor_name": getattr(actor, "username", None) or getattr(actor, "first_name", None),
+            "ts": _time.time(),
+        }
+
+
+def has_extra_player_prompt(update, context) -> bool:
+    """Non-destructive: should this text message be treated as the typed username?"""
+    if context.user_data.get(EXTRA_PLAYER_USER_KEY):
+        return True
+    return is_anonymous_admin_post(update) and _fresh_chat_prompt(context) is not None
+
+
+def pop_extra_player_prompt(update, context):
+    """
+    Consumes the prompt for the message being handled: {"event_id", "actor_id", "actor_name"} or None.
+    actor_id is None when the sender typed as themselves (the sender IS the actor); for an anonymous admin it
+    is the person who pressed the button, remembered at click time.
+    """
+    store = _chat_store(context)
+    event_id = context.user_data.pop(EXTRA_PLAYER_USER_KEY, None)
+    if event_id:
+        if store is not None:
+            store.pop(EXTRA_PLAYER_CHAT_KEY, None)       # spent - nobody else may answer it too
+        return {"event_id": event_id, "actor_id": None, "actor_name": None}
+    if is_anonymous_admin_post(update):
+        pending = _fresh_chat_prompt(context)
+        if pending is not None:
+            store.pop(EXTRA_PLAYER_CHAT_KEY, None)
+            return {"event_id": pending["event_id"], "actor_id": pending.get("actor_id"),
+                    "actor_name": pending.get("actor_name")}
+    return None

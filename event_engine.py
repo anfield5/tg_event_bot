@@ -34,7 +34,9 @@ from config import (
     ICON_WARNING, ICON_TOTAL, logger,
 )
 from utils import escape_markdown, now2ddmmyy, is_real_admin
+from utils import remember_extra_player_prompt
 from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
+from db import reopen_button_offered
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet, mark_event_row_canceled
 
 
@@ -452,12 +454,25 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         )
         shares = cursor.fetchall()
 
+        # Chats that hold participants of this event without being one of its shares: someone added through
+        # "Add Extra Member" who belongs to a MONITORED chat the event hasn't been shared to. There is no child
+        # post to edit for them, but they get their own "Going from <chat>" block in this post and count
+        # towards TOTAL - otherwise they would exist (with a Kick button in verification) yet be invisible
+        # in the lists and missing from the total.
+        share_ids = {str(s[0]) for s in shares}
+        cursor.execute(
+            "SELECT DISTINCT chat_id FROM event_users WHERE event_id = ? AND chat_id != ?",
+            (event_id, str(main_chat_id)),
+        )
+        extra_chat_ids = [str(r[0]) for r in cursor.fetchall() if str(r[0]) not in share_ids]
+        render_chats = list(shares) + [(cid, None, None, None, None, None) for cid in extra_chat_ids]
+
         # Fetch every share's event_users rows up front, while the
         # connection is open, instead of re-querying inside the loop below -
         # that loop also makes Telegram API calls (get_chat), which
         # shouldn't happen while holding a DB connection open.
         per_share_users = {}
-        for s_chat_id, _, _, _, _, _ in shares:
+        for s_chat_id, _, _, _, _, _ in render_chats:
             cursor.execute(
                 "SELECT username, status, guests, user_id FROM event_users "
                 "WHERE event_id = ? AND chat_id = ?",
@@ -469,7 +484,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     total_child_going       = 0
     child_addons_for_master = []
 
-    for s_chat_id, _, _, _, _, share_clc in shares:
+    for s_chat_id, _, _, _, _, share_clc in render_chats:
         users      = per_share_users[str(s_chat_id)]
         users_list = []
         notgoing_list = []
@@ -625,6 +640,10 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     verification_page = _verification_pages.get(event_id, 0)
 
+    # The 🔓 Reopen button (reopen.py): only on the hub's own post, only while an owner has the mode on, and
+    # only for the hub's newest event once it is closed or canceled.
+    reopen_available = event_status in (2, -1) and reopen_button_offered(str(main_chat_id), event_id)
+
     master_keyboard = create_event_keyboard(
         event_id, event_status, going_icon, notgoing_icon,
         master_going, master_counters,
@@ -636,6 +655,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         is_full=is_full,
         display_names=display_names,
         verification_page=verification_page,
+        reopen_available=reopen_available,
     )
 
     try:
@@ -1333,7 +1353,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if action == "addext":
                         if not add_extra_member_enabled:
                             return
-                        context.user_data["awaiting_extra_player_for"] = event_id
+                        remember_extra_player_prompt(context, event_id, query.from_user)
                         await query.message.reply_text(
                             "📝 *Verification Mode:* Type the extra member's username:",
                             parse_mode="MarkdownV2",

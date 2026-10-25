@@ -33,13 +33,13 @@ DM instead, so they're not left wondering if anything happened).
 
 **Type 3 — DM only, explicit error if called from a group**:
 `/switchgroup`, `/start`, `/lockbot`, `/allgroups`, `/allchannels`,
-`/updatefeature`, `/setsub`, `/setsheet`, `/showtable`. Enforced by
+`/updatefeature`, `/setsub`, `/setsheet`, `/showtable`, `/version`. Enforced by
 `require_dm_only()` at the top of each — replies with `⛔️ /<command>
 only works in a DM with the bot...` and returns, rather than silently
 doing nothing (the older convention `/start`/`/switchgroup` used
-before this was made explicit). For the 6 owner-only commands here
+before this was made explicit). For the 7 owner-only commands here
 (`lockbot`, `allgroups`, `allchannels`, `updatefeature`, `setsub`,
-`showtable`), the DM-only check runs **after** the owner check, not
+`showtable`, `version`), the DM-only check runs **after** the owner check, not
 before — a non-owner calling from a group must still get silence (the
 command's existence isn't revealed to them); only an owner calling
 from the wrong place sees the DM-only error. `/setsheet` keeps its own
@@ -56,7 +56,7 @@ No flags. First-touch onboarding — no group context yet, shows a welcome/help 
 No flags. DM-only. Lets a user pick which group their subsequent DM commands should target (the "sticky group" selection).
 
 ## /help
-**-a** / **-admin** — shows the owner-only section (`/setsub`, `/allgroups`, `/allchannels`, `/updatefeature`) instead of the normal main menu. Gated on `OWNER_USER_IDS`, not chat admin status.
+**-o** / **-owner** — shows the owner-only section (`/setsub`, `/allgroups`, `/allchannels`, `/updatefeature`) instead of the normal main menu. Gated on `OWNER_USER_IDS`, not chat admin status.
 *(no flag = normal main menu with tier-aware buttons)*
 
 ## /userid
@@ -69,6 +69,12 @@ No flags. Replies with the current chat's numeric ID.
 **-d** / **-date**, **-gi** / **-goingicon**, **-ni** / **-notgoingicon**, **-limit**, **-wl** / **-waitlist**, **-ngl** / **-notgoinglist**, **-clc** / **-clickability**
 Creates a new Going/Not-Going event in the current chat.
 → Full spec: `docs/specs/commands/newevent_editevent.md`
+
+## /deleteevent
+`/deleteevent` lists the latest 10 events of the hub as buttons; `/deleteevent <part of name or event id>` finds by exact `event_id` (the EVENT_ID column of the Sheet's Events tab) or by case-insensitive name substring (done in Python - SQLite's `LOWER()`/`LIKE` only fold ASCII, which would miss Cyrillic). One match goes straight to the confirmation screen, several are listed.
+Permanently removes ONE event: its `events` / `event_users` / `event_shares` rows, every row of it in the hub Sheet's `Events` / `Actions` / `EventUsers` tabs (one `batchUpdate` request, ranges applied bottom-to-top), and - best effort - its Telegram posts in the hub and every shared chat. Always asks for confirmation; irreversible.
+**Gating:** its own feature (`deleteevent` in `all_features`), seeded at `min_tier` **OWNER** = bot owners only (`OWNER_USER_IDS`); anyone else gets total silence and the `/help` line is hidden. The gate (`subscription.require_feature`) follows the CURRENT tier, so opening it up later is just `/updatefeature deleteevent -minlevel pro` (PRO hubs, with the usual upgrade message for FREE) or `-minlevel free` - no code change. Button presses re-check the gate, so a stale confirmation can't outlive a tier change.
+Order: Sheet first - if it can't be cleaned, NOTHING is deleted anywhere (no half-deleted event) - then the DB (one transaction, under the event's lock), then the posts. Admins may delete any event of the hub, other members only events they created; re-checked on every button press and scoped to the hub in the callback.
 
 ## /editevent
 *(identical flags to `/newevent` — see there; only "unset flag keeps current value" is `/editevent`-specific)*
@@ -83,6 +89,21 @@ No flags. Pings everyone tracked as active in this chat who hasn't voted yet on 
 
 ## /listusers
 No flags. Shows every user tracked for this chat, with status.
+
+## /reopen
+`/reopen on | off` (no argument shows the state) - an **owner-level** feature (`reopen`, OWNER tier; for anyone without it the command is ignored without a word). It switches a per-hub mode, stored in the `reopen_mode` table (who and when are kept), that puts a **🔓 Reopen** button under the group's newest event once that event is **closed or canceled**; pressing it sends the event back to **open** (`event_status` 0, `closed_date` cleared) and re-renders the hub post and every shared post, so voting works again.
+- Only the hub's **newest** event can be reopened (`/editevent`, `/waitlist`, `/who`, `/notify` and `/newevent`'s "already active" check all look at the newest one), only from the hub post (child posts never carry the button), and **not while another event of the group is open or in verification** - the press is refused with a popup naming that event.
+- The button is visible to everyone while the mode is on (an inline keyboard can't be shown to one person); a non-owner gets an "Owners only" popup. The press is its own callback handler (`^reopen_`), not part of `button_handler`, because `button_handler` answers every callback before knowing what it is and a refusal needs its own popup.
+- Sheet side (`sheets.reopen_event_in_sheet`): the `Events` row goes back to `CLOSED_AT` empty / `OPEN` / `0`, the event's `EventUsers` rows are **removed** - Save & Close only appends there, so keeping them would list everybody twice after the next save - and an `Actions` row `REOPEN` names the owner. The sheet is cleaned first and the whole press abandoned if that fails ("nothing was changed"); redoing it is harmless.
+- The mode stays on after a press (the button just isn't shown while the event is open and comes back when it is closed or canceled again); `/reopen off` removes it.
+
+## /who
+`/who [hours] -ng | -l [-c <alias|main|all>]` - admin-only, PRO-level feature `who` (adjustable with `/updatefeature`), needs the hub's Google Sheet; works from a DM like the other hub commands. `hours` is optional (1-8760; **6 when omitted**, so `/who -ng` means the last 6 hours); `-ng`/`-notgoing` and `-l`/`-left` are synonyms; `-c`/`-chat` narrows the report; at least one of `-ng`, `-l` is required and both may be combined.
+- **`-ng`** - people whose status in the **latest event** of the hub (newest by creation, any status) changed to Not Going at or after `now - hours`, read from the `Actions` tab. Only a real *change* counts: the person must have an earlier Going-type action (`GOING`, `ADD`, `SUB`, `DROPALL`) in that same event - a first-time Not Going is skipped. Admin rows (`KICK`, `RETURN`, ...) name the admin, not the person acted upon, so they say nothing about anybody's own status (kicks are therefore not reported). Someone who went back to Going afterwards is marked "(now Going again)". Known limit: a Going click that ended in the waitlist is logged as `GOING` too.
+- **`-l`** - every stay that ended in the window, from `UserPresenceLog` (names from `Users`; `Users` rows marked `LEFT` are a safety net), grouped by chat. The time shown is when a refresh *noticed* the departure.
+- **`-c`** - omitted or `all`: the main group + every monitored chat (for `-ng`: no filter at all); `main`: the main group; otherwise an alias from `/listaliases` or a chat id this hub knows (for `-ng` it filters by the chat the click came from; for `-l` the chat must be monitored). `main` and `all` are reserved, `/setalias` refuses them. The main group is deliberately **not** a monitor/alias: `/refreshusersall` already processes it first (adding it would process it twice), and an alias pointing at the hub is rejected by `/shareevent` as a self-share.
+
+Names are printed without `@` or links so that nobody listed gets a notification; a long report is split into messages under 4,000 characters.
 
 ## /refreshusers
 No flags. Re-syncs the tracked user list against Telegram's admin list and (if premium) the Users sheet tab; retries resolving previously-unresolvable entries before removing them.
@@ -102,6 +123,7 @@ Forwards the active event to a child group/channel.
 No flags. Admin-only: shows the full Waitlist, ignoring the event's own `-wl` visibility setting.
 
 ## /setalias
+Alias names are stored lower-case; `main` and `all` are reserved (they mean "the main group" and "every tracked chat" in `/who -c`) and are refused.
 No flags. Registers a short name for a chat_id.
 
 ## /removealias
@@ -125,6 +147,9 @@ No flags. *(owner-only)* Sets/changes a group/channel's subscription tier and ex
 ## /lockbot
 `on`/`off` argument, no flags. *(owner-only)* Global emergency switch — `on` makes the bot stop everyone not in `OWNER_USER_IDS`, across every chat at once (not scoped to one group), with one deliberate exception: Going/Not Going/ADD/Drop/ALL clicks on an already-posted event still work for everyone, so a lockdown doesn't strand people mid-RSVP. Enforced by a dedicated gate handler (`main.py`'s `lock_gate`) that runs before every other handler. A blocked command gets a reply with a button to message the bot owner (`utils.get_admin_contact()` — the same contact info shown in the premium-upgrade flow); a blocked button click gets a `show_alert` popup with the same contact URL as plain text. `off` restores normal availability.
 
+## /version
+No arguments. *(owner-only, DM-only)* Shows which build is actually RUNNING: the version (`BOT_VERSION`), when the process started and its uptime (so "did my deploy really restart it?" has an answer), and the Python / python-telegram-bot versions. Non-owners get silence, so the command's existence isn't revealed. Listed in BOTCONFIG as feature `version` at level OWNER ("no / no / yes" under FREE / PRO / OWNER) - informational: enforcement stays on `OWNER_USER_IDS`, like the `/setsub` and `/allgroups` rows, so lowering the level there does not open the command.
+
 ## /updatefeature
 **-minlevel**, **-limit** — *(owner-only)* changes a feature's own tier requirement and/or per-tier usage cap. **Note:** unrelated to `/newevent`'s `-limit` (event headcount) despite the identical flag string.
 
@@ -139,6 +164,9 @@ No flags. Shows subscription type, expiry, bound sheet.
 
 ## /stats
 No flags. Events created/closed + total/average headcount across closed events.
+Beyond created/closed/headcount, the per-group report shows how events ended (`cancelled`, `open now`, `% completed` = closed ÷ created), the guest share of attendance, "not going" clicks and - for closed events with a `-limit` - the average fill (e.g. 19.4 of 21 spots), how many events hit the limit, and the waitlist (`joined` / `still waiting at close`). "Hit the limit" = final headcount reached it OR anyone ever joined the waitlist. People who got IN from the waitlist can't be read back from `waitlist_data` (promotion deletes the entry), so `events.waitlist_joined` counts joins, fed by a SQLite trigger on `waitlist_data` (counted from the version that introduced it; "joined" is never shown lower than the people still waiting).
+The **👥 Users** screen opens with `Unique attendees: N` - how many DIFFERENT people (by user id) attended at least one closed event in the chosen period (all time by default; `/stats 30d` etc. narrows it). It is built from the same rows as the top lists: `going` people of the period's closed events in the hub and in every shared chat; guests, not-going and kicked people don't count, and someone who came to ten events counts once.
+`/stats -o | -owner` (owner-only) is the bot-wide report: group/channel counts, admin rights, FREE/PRO split (**PRO = active subscription**, same rule as `is_premium`: an expired `type='PRO'` row counts as FREE and shows up under "expired"), PRO expiring within 7/30 days and expired in the last 30, bot added/removed in 7/30 days (current chats' `date_bot_add` + `all_chats_bot_log`), active vs dormant groups (a command in `command_log` or an event created/closed), events created/closed and people served, and the top-5 commands and top-5 groups of the last 30 days with their tier. Commands typed in a DM can't be tied to a hub, so they count toward top commands only.
 
 ## /allgroups
 **-pro** *(owner-only, filters to PRO-tier groups only)*
@@ -166,7 +194,7 @@ No flags. *(owner-only)* Lists every channel the bot is in.
 - **Return** — admin-or-creator, restores a kicked person.
 - **[guest counter]** — non-clickable display.
 - **−** / **+** — admin-or-creator, adjusts this person's guest count by one.
-- **Add Extra Member** — admin-or-creator, prompts for a username to add manually.
+- **Add Extra Member** — admin-or-creator, prompts for a username (or numeric id) to add manually. The person is looked up, case-insensitively, in `main_group_users` of the hub, then of every chat the event is shared to, then of every chat the hub **monitors** (first match wins, hub first) and recorded under **that** chat, so they appear in its "Going from <chat>" block - for a monitored chat the event was never shared to the block exists in the hub post only (there is no child post), and they count in TOTAL. Someone already in the event keeps their row (no second one). Nobody knows them → plain text under the hub, plus a notice saying why. **Anonymous admins** ("Remain anonymous") work too: the button press is a callback query and carries the real admin, but the typed username arrives from `GroupAnonymousBot`, whose `user_data` is not the one the press filled - so the prompt is also kept in `chat_data` for 10 minutes, readable only by an anonymous-admin post (an ordinary member's message can never consume it), and the `Actions` row names the admin who pressed the button.
 - **🔙 Back** — admin-or-creator, reverts to open (`event_status` 0) for an accidentally-clicked Verify, without going through Save & Close or Cancel. Doesn't touch any kick/guest/extra-member data already changed while in verification, and doesn't set `closed_date`.
 - **Save & Close Event** — admin-or-creator, finalizes and exports the roster.
 - **◀️ Prev / N/M / Next ▶️** — pagination controls, shown only when there's more than one page (see below).
@@ -278,7 +306,7 @@ Backs the `/lockbot` global emergency switch. A single-row table by design — t
 Read on every single incoming command and callback query (`main.py`'s `lock_gate` handler, registered before every other handler) — deliberately a fast, index-free single-row lookup.
 
 ### `all_features`
-**Columns:** `feature_key` (PK), `feature_label`, `min_tier` (FREE/PRO/ADMIN), `limit_count`, `sort_order`, `description`
+**Columns:** `feature_key` (PK), `feature_label`, `min_tier` (FREE/PRO/OWNER), `limit_count`, `sort_order`, `description`
 
 The single source of truth for what's available at each tier. Seeded at startup from a hardcoded list. *(Renamed from `feature_flags` — old DBs get a one-time `ALTER TABLE ... RENAME TO`, data preserved.)*
 
@@ -291,7 +319,7 @@ The single source of truth for what's available at each tier. Seeded at startup 
 | One-time legacy migration (old per-tier limit columns) | UPDATE `limit_count` from whichever of the 3 old columns matched the row's current tier, then those 3 old columns are dropped |
 
 ### `events`
-**Columns:** `event_id` (PK), `chat_id` (NOT NULL), `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `going_data` (JSON, **frozen/vestigial** — see below), `notgoing_data` (JSON, **frozen/vestigial**), `counters_data` (JSON, **frozen/vestigial**), `event_date`, `kicked_data` (JSON, **frozen/vestigial**), `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON — still live, see below), `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`, `created_date`, `closed_date`
+**Columns:** `event_id` (PK), `chat_id` (NOT NULL), `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `going_data` (JSON, **frozen/vestigial** — see below), `notgoing_data` (JSON, **frozen/vestigial**), `counters_data` (JSON, **frozen/vestigial**), `event_date`, `kicked_data` (JSON, **frozen/vestigial**), `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON — still live, see below), `waitlist_joined`, `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`, `created_date`, `closed_date`
 
 `created_date`/`closed_date` are real, persisted columns (not just written to the bound Google Sheet) — set via `now2ddmmyy()` at `/newevent` creation time and at Save&Close/Cancel/Directclose respectively. Both follow a "DB first, then Sheets reuses that exact value" pattern: the timestamp is computed once, written to the `events` row (via a plain `INSERT`/`UPDATE`), and the SAME in-memory value is reused for the Google Sheets Events tab export (if the hub is PRO with a bound sheet) — never recomputed a second time for the Sheet, which could otherwise drift from what was actually persisted. `closed_date` uses `COALESCE(?, closed_date)` in its own `UPDATE` so actions that don't close the event (kick, guest adjustments, `back`, pagination) never overwrite an already-set value with `NULL`.
 
@@ -408,7 +436,7 @@ Same full-mirror pattern as `GROUPS`, sourced from `all_channels`.
 | Bot added to or removed from any channel | Full re-push |
 
 ### Control Sheet — `BOTCONFIG` tab
-**Columns:** FEATURE_KEY, FEATURE, FREE, PRO, ADMIN, DESCRIPTION
+**Columns:** FEATURE_KEY, FEATURE, FREE, PRO, OWNER, DESCRIPTION
 
 Full mirror of `all_features`.
 
@@ -487,3 +515,5 @@ The final attendee roster — written exactly once per event, at Save & Close.
 | A tracked person found no longer present during `/refreshusers`/`/refreshusersall` (the `Users` tab MEMBER→LEFT transition) | `append_row` — but only if no existing row already has the exact same `(USER_ID, CHAT_ID, DATE_start)` combination, to avoid duplicate log entries |
 
 Never updated or deleted — a pure log.
+Every stay that ends gets a row, however the `Users` row turned `LEFT` (`sheets.sync_users_sheet`): the log is written FIRST - one read + one append - and only then are statuses flipped, so a failed write leaves the person `MEMBER` and the next `/refreshusers` / `/refreshusersall` retries (rows are de-duplicated by user + chat + `DATE_start`, falling back to `DATE_end` when there is no start). It is written to the sheet of the HUB, which is what makes monitored chats log too. Rows that are already `LEFT` but missing from the log (an earlier failed write, or the previous stay of someone who just rejoined) are backfilled before a rejoin overwrites their dates. If the log can't be written the refresh says so (`⚠️ ... incomplete`) instead of reporting success.
+People a refresh confirms as gone (`left`/`kicked` from `getChatMember`) who have **no** `Users` row yet - they joined and left between two refreshes, or never interacted with the bot - get one too: a `LEFT` row and a log row, with `DATE_start` one hour before `DATE_end` because their join time is unknown. `/refreshusers` deletes them from `main_group_users` immediately, so until the sheet has them they wait in the `left_pending` table (the first detection time is kept, so a retry writes identical dates and can't double a log row); the entry is dropped once the sync succeeds, or when the hub has no sheet at all.

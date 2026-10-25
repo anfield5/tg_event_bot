@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "4.6.0"
+BOT_VERSION = "4.7.0"
 
 # Moment this process started - what /version reports as "Started" / uptime.
 STARTED_AT = time.time()
@@ -82,6 +82,7 @@ ICON_ADD            = "+"   # also used for "Add Extra Member"
 ICON_REMOVE         = "-"
 ICON_CANCEL_EVENT   = "🚫"
 ICON_SAVE           = "💾"
+ICON_REOPEN         = "🔓"
 
 # Message / status icons
 ICON_SHARED         = "↪️"

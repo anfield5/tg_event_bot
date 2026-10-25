@@ -123,6 +123,10 @@ def _seed_all_features(cursor):
          "Admins: who changed to Not Going in the latest event, or who left the main group and the monitored "
          "chats, within the last N hours. Reads the Actions and UserPresenceLog tabs of the hub's Google Sheet, "
          "so it needs a bound sheet."),
+        ("reopen", "/reopen (take a closed or canceled event back to open)", "OWNER", None,
+         "Owner-level: /reopen on shows a Reopen button under the group's newest closed or canceled event - "
+         "pressing it puts the event back to open (voting works again); /reopen off hides the button. Only the "
+         "newest event can be reopened, and not while another event of the group is still open."),
     ]
     seed_rows = [row[:4] + (i,) + row[4:] for i, row in enumerate(seed_rows)]  # insert sort_order before description
     cursor.executemany(
@@ -946,6 +950,18 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
+    # 0a13. reopen_mode - whether the owner-controlled "🔓 Reopen" button is switched on for a hub (see
+    # reopen.py). Its own table, not a column on all_groups: a hub's row there is created and dropped as the bot
+    # joins and leaves, and who/when switched it is worth keeping.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS reopen_mode (
+            chat_id TEXT PRIMARY KEY,
+            active  INTEGER NOT NULL DEFAULT 0,
+            set_by  TEXT,
+            set_at  TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -1627,3 +1643,52 @@ def clear_pending_left(chat_id: str, user_ids: list) -> None:
         conn.executemany("DELETE FROM left_pending WHERE chat_id = ? AND user_id = ?",
                          [(str(chat_id), str(u)) for u in user_ids])
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# reopen_mode: the owner-controlled "Reopen" button (see reopen.py)
+# ---------------------------------------------------------------------------
+
+def is_reopen_active(chat_id: str) -> bool:
+    with get_connection() as conn:
+        row = conn.execute("SELECT active FROM reopen_mode WHERE chat_id = ?", (str(chat_id),)).fetchone()
+    return bool(row and row[0])
+
+
+def set_reopen_mode(chat_id: str, active: bool, by_user_id=None) -> None:
+    """Switches the mode for one hub, remembering who did it and when."""
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO reopen_mode (chat_id, active, set_by, set_at) VALUES (?, ?, ?, ?)",
+            (str(chat_id), 1 if active else 0, None if by_user_id is None else str(by_user_id),
+             datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]),
+        )
+        conn.commit()
+
+
+def latest_event_of_hub(chat_id: str):
+    """(event_id, event_status, name) of the hub's most recently CREATED event, or None."""
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT event_id, event_status, name FROM events WHERE chat_id = ? ORDER BY ROWID DESC LIMIT 1",
+            (str(chat_id),),
+        ).fetchone()
+
+
+def other_active_event(chat_id: str, event_id: str):
+    """Name of the newest OTHER event of this hub that is still open or in verification, else None."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT name FROM events WHERE chat_id = ? AND event_id != ? AND event_status IN (0, 1) "
+            "ORDER BY ROWID DESC LIMIT 1",
+            (str(chat_id), str(event_id)),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def reopen_button_offered(hub_chat_id: str, event_id: str) -> bool:
+    """Should this event's hub post carry the Reopen button: mode on, AND it is the newest event, AND it is closed/canceled."""
+    if not is_reopen_active(hub_chat_id):
+        return False
+    latest = latest_event_of_hub(hub_chat_id)
+    return latest is not None and str(latest[0]) == str(event_id) and latest[1] in (2, -1)

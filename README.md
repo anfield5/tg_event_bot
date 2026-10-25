@@ -61,6 +61,8 @@ zone are chosen to minimize crossing lines.
 >   Sheet yet. `/refreshusers` deletes them from `main_group_users` immediately, so for someone with no
 >   `Users` row it is the only evidence left. Entries are dropped once the sheet has them; the stored
 >   time is the first detection, so a retry writes identical dates (no duplicate log rows).
+> - `reopen_mode` says, per hub, whether the owner-controlled 🔓 Reopen button is switched on (who switched it
+>   and when are kept). It is a table of its own because a hub's `all_groups` row comes and goes with the bot.
 > - `events.waitlist_open` (the old boolean open/closed flag) has been
 >   physically dropped - superseded by `waitlist_visibility`
 >   (visible/hidden/onlycount), which no code path had read `waitlist_open`

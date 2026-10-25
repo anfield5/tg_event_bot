@@ -1,9 +1,13 @@
 # Manual Testing Guide
 
 This is a guide for testing the **live bot in real Telegram groups** —
-not the automated `pytest` suite (that already covers 583+ scenarios on
+not the automated `pytest` suite (that already covers 1000+ tests on
 every commit). Use this when verifying a deploy, hunting a
 reported bug, or sanity-checking a big refactor before it goes out.
+
+> **The prioritised release plan is `docs/manual_testing.md`** (46 cases, 12 of them
+> smoke, with selection rules per changed area). This file keeps the per-topic
+> checklists below and the Regression Watch List at the end.
 
 **How to mark results:** check items off in place, right in this file —
 `- [ ] T1` → `- [x] T1 ✅ 27.08 v3.31.0`. Keeping the result next to the
@@ -143,7 +147,7 @@ executing all ~130 detailed scenarios every time isn't realistic.
   to byte-identical text on collapse.
 - [ ] Same toggle pattern works in **Users** section (`/updateuser`
   flags) and **Distribution** section (`/shareevent` flags).
-- [ ] Owner screen (`/help -a`) accordion: expanding `/updatefeature`'s
+- [ ] Owner screen (`/help -o`) accordion: expanding `/updatefeature`'s
   flags collapses `/allgroups`' flags if it was open, and vice versa -
   only one expanded at a time, ever.
 - [ ] Non-owner tapping an owner-screen toggle gets a "this section is
@@ -228,6 +232,14 @@ executing all ~130 detailed scenarios every time isn't realistic.
 
 ---
 
+### Added since v4.3 - covered by cases in `docs/manual_testing.md`
+- `/deleteevent` and the orphaned-event self-healing → **H1-H3**
+- `/version` → **J1**; the OWNER tier, `/updatefeature -minlevel`, BOTCONFIG → **E3**
+- extended `/stats` and `/stats -o` → **I1, I2**
+- `UserPresenceLog` for every ended stay (monitored chats included) → **F5, F6**
+- visible Google Sheets failures and the recovery script → **F3, F4**
+- `/start`, creator rights on event buttons → **G4, D3**
+
 ## Part 3 — Regression Watch List
 
 Specific things that broke once already this session — worth an extra
@@ -262,3 +274,12 @@ checklist above already covers the general area.
 | `/refreshusersall` "Failed" hid the real reason | The whole per-chat block is wrapped in a broad `except Exception`, but the reported line only showed the chat name, never *why* - made a real failure (`invalid_grant: Invalid grant: account not found`, a Google OAuth error) undiagnosable from the bot's own reply | `handlers.py::refreshusersall` (failure line now includes a truncated `str(e)`) |
 | `open_spreadsheet`'s OAuth calls had no retry | `agcm.authorize()` + `gc.open_by_key()` are the only Google API call in `sheets.py` that sits outside any try/except (every other call is caught inside `sync_users_sheet` etc.) - a transient `invalid_grant` (documented as sometimes caused by server clock skew or a flaky token refresh, not always a genuinely revoked key) propagated straight up through `refreshusersall`'s outer catch with zero retry | `sheets.py::open_spreadsheet` (retries once by default, only for `invalid_grant`, before giving up) |
 | `events.waitlist_open` never actually used | Superseded by `waitlist_visibility` when it was added, but the old boolean column itself was never removed - full audit of every table's columns confirmed it was the only genuinely dead one (`all_features.sort_order` and `event_shares.share_id` looked unused by a naive grep too, but are legitimately consumed internally - `ORDER BY sort_order` inside `db.py`, and a surrogate autoincrement PK respectively) | `db.py::init_db` (backfills `waitlist_visibility` from the old boolean for any pre-existing row, then drops the column outright) |
+| `/deleteevent` leaving half-deleted events | An event lives in 3 places (SQLite rows, Sheet rows in 3 tabs, Telegram posts) and only the Sheet step can fail for outside reasons. If the DB went first and the Sheet then failed, the Sheet rows would be orphaned with nothing left in the DB to find them by. Also: name search must be done in Python (SQLite LOWER/LIKE don't fold Cyrillic), and button presses are open to everyone in the chat so permission + hub scoping are re-checked on every press | `handlers.py::_perform_event_deletion` (Sheet first, abort with nothing deleted on failure; then DB; then best-effort posts), `sheets.py::delete_event_from_sheet` (single batch, bottom-to-top), `_match_events`, `_deletable_events` |
+| Two different things were both called "ADMIN" | The top feature tier (gated on `OWNER_USER_IDS`, i.e. WHO is asking) and the bot's own role in a chat (`all_groups.role`, its Telegram admin status) shared one word, and "admin" also means a group's admins - easy to wire the wrong check. The tier is now OWNER (existing rows converted in `init_db`, BOTCONFIG's third tier column, `/updatefeature -minlevel free\|pro\|owner`) and the owner-only flags of `/help` and `/stats` are `-o`. `role = 'ADMIN'` (the bot's own rights) and every "group admin" wording are deliberately unchanged | `db.py::init_db` (ADMIN->OWNER conversion), `subscription.py` (`feature_available` / `require_feature` / `/updatefeature` levels), `sheets.py` (BOTCONFIG header) |
+| `/stats -o` counted expired PRO as PRO; waitlist history lost | Nothing rewrites `all_groups.type` when a subscription lapses (`is_premium` checks the end date), so counting `type = 'PRO'` also counted expired ones. And `promote_next_from_waitlist` deletes the entry, so `waitlist_data` of a closed event holds only people who never got in - "how many went through the waitlist" was unrecoverable. PRO is now active-only (expired ones reported separately); `events.waitlist_joined` is fed by a trigger (several code paths append to the waitlist) | `handlers.py::_compute_owner_stats`, `db.py::init_db` (0a11: column + `events_count_waitlist_joins` trigger, skipped when SQLite has no JSON1) |
+| UserPresenceLog rows missing | `sync_users_sheet` looked the log's sheet up under the monitored CHILD chat's id (no sheet of its own) while the Users tab used the hub's - so only the hub itself was ever logged and every monitored chat was silently skipped. Also: the flip to `LEFT` happened before the log write, so a failed write left a `LEFT` row nothing would ever log again; a rejoin overwrote a stay that had never been logged; and every failure was swallowed while the command said "synced" | `sheets.py::sync_users_sheet` + `log_presence_stays` (log first, hub sheet, batched, self-healing; returns None/True/False) and the two refresh commands' warning lines |
+| A member who left was never recorded in the sheet | The Users tab / `UserPresenceLog` were only written on a `MEMBER -> LEFT` transition, which needs an existing `Users` row. Someone who joined and left between two refreshes, or never interacted with the bot, had none - and `/refreshusers` then deleted them from the DB, destroying the last evidence. Now confirmed leavers are queued in `left_pending` and written as a `LEFT` row + log row (join time = leave time - 1 h) | `sheets.py::sync_users_sheet(left_members=...)`, `db.py::queue_left_members` / `get_pending_left` / `clear_pending_left`, both refresh commands |
+| Add Extra Member couldn't find a member of a monitored chat | The search covered the hub and the chats the event was *shared* to, never the chats the hub *monitors* - so a person tracked only in a monitored chat the event wasn't shared to was never found and became plain text in the hub list. Also: exact-case match only, no id match, and nothing told the admin why a name didn't resolve. Chats outside `event_shares` had no "Going from" block, so recording someone there would have left a Kick button for a person missing from the lists and from TOTAL | `handlers.py::_find_tracked_person` / `handle_extra_player_input`, `event_engine.py::update_all_shared_views` (`render_chats`) |
+| Add Extra Member did nothing for an admin with "Remain anonymous" | The prompt ("waiting for the username") lived in `context.user_data`, which python-telegram-bot keeps per user id. The button press carries the real admin, but their typed answer is posted as `GroupAnonymousBot` (a different id, an empty `user_data`), so `global_text_router` never saw a pending prompt and the name was silently ignored - and the permission check was never the problem (`is_real_admin` trusts anonymous posts). Tests had always set `user_data` by hand for the same user, so they could not see it | `utils.py::remember_extra_player_prompt` / `pop_extra_player_prompt` / `has_extra_player_prompt` (also per chat, TTL 10 min, anonymous posts only), `handlers.py::global_text_router` |
+| No way to correct an event after Save & Close / Cancel | A closed or canceled event was final: its buttons are gone for good. `/reopen` (owner-level) adds a 🔓 Reopen button on demand. Care taken because of how the rest works: `sync_event_users_sheet` only APPENDS, so a reopen must remove the event's `EventUsers` rows first or the next save doubles the roster; `button_handler` answers every callback up front, so the press has its own handler to be able to show refusal popups; only the newest event may be reopened and not beside another open one, because the commands that look at "the latest event" would otherwise act on the wrong event | `reopen.py`, `sheets.py::reopen_event_in_sheet`, `db.py::reopen_button_offered`, `keyboard.py` (`reopen_available`), `event_engine.py::update_all_shared_views` |
+| Orphaned event never clears itself | If an admin manually deletes the event's Telegram message, the DB still has it as "active" forever - every subsequent `/newevent` warned about a conflict nobody could resolve through that gone message. A short-lived `/cancelevent` command was tried first but rejected architecturally (reactive - requires the admin to notice and remember a new command) in favor of a self-healing design | `handlers.py::newevent` (`_message_still_exists()` pings the old message via copy+immediate-delete - never touches its real content/keyboard, unlike reconstructing and re-sending its markup would; a genuinely gone message is silently auto-cancelled in DB+Sheets with zero warning shown, a live one warns exactly as before) |

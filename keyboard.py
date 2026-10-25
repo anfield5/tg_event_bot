@@ -42,12 +42,15 @@ def create_event_keyboard(
     is_full: bool = False,
     display_names: dict = None,
     verification_page: int = 0,
+    reopen_available: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Generates dynamic inline keyboards.
 
     event_status == -1  → empty keyboard (event canceled)
     event_status == 2   → empty keyboard (event closed)
+                          ...except the master post while reopen mode is on (reopen_available=True): one
+                          "🔓 Reopen" button, see reopen.py. Child posts never get it.
     event_status == 0   → Going / Not Going / Add & Sub guest / Close button
     event_status == 1   → Verification mode:
                     Each participant is rendered over TWO rows:
@@ -83,6 +86,8 @@ def create_event_keyboard(
     the group's own tier).
     """
     if event_status in (-1, 2):
+        if reopen_available and not is_child:
+            return InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Reopen", callback_data=f"reopen_{event_id}")]])
         return InlineKeyboardMarkup([])
 
     buttons = []

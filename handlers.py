@@ -30,6 +30,7 @@ from config import (
 )
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_owner
 from utils import parse_stored_date as _parse_stat_date
+from utils import has_extra_player_prompt, pop_extra_player_prompt
 from db import track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
@@ -2226,16 +2227,39 @@ async def track_everyone_message(update: Update, context: ContextTypes.DEFAULT_T
 # Extra player input handler
 # ---------------------------------------------------------------------------
 
+def _find_tracked_person(cursor, candidate_chat_ids, typed):
+    """
+    Looks a typed username (or numeric user id) up in main_group_users, chat by chat in the order given - the
+    first chat that knows the person wins. Per chat: the exact username first (the common case), then a
+    forgiving pass: case-insensitive - done in Python, because SQLite's LOWER() ignores non-ASCII letters, so a
+    Cyrillic name would never match - and by numeric user id.
+    Returns (chat_id, user_id, stored_username) or None.
+    """
+    typed_cf = typed.casefold()
+    typed_is_id = typed.isascii() and typed.lstrip("-").isdigit()
+    for cid in candidate_chat_ids:
+        cursor.execute(
+            "SELECT user_id, username FROM main_group_users WHERE chat_id = ? AND username = ?", (cid, typed),
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            return cid, row[0], row[1]
+        cursor.execute("SELECT user_id, username FROM main_group_users WHERE chat_id = ?", (cid,))
+        for uid, uname in cursor.fetchall():
+            if uid and ((uname and uname.casefold() == typed_cf) or (typed_is_id and str(uid) == typed)):
+                return cid, uid, uname or typed
+    return None
+
+
 async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles raw text when an admin is expected to type an extra player's username
     during verification mode (event_status == 1).
     """
-    event_id = context.user_data.get("awaiting_extra_player_for")
-    if not event_id:
+    prompt = pop_extra_player_prompt(update, context)
+    if prompt is None:
         return
-
-    context.user_data.pop("awaiting_extra_player_for", None)
+    event_id = prompt["event_id"]
     chat_id  = str(update.effective_chat.id)
     raw_text = update.message.text.strip()
 
@@ -2247,6 +2271,7 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("❌ Invalid username.")
         return
 
+    resolved = False
     lock = get_event_lock(event_id)
     async with lock:
         try:
@@ -2260,50 +2285,46 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
 
                 ensure_event_migrated(cursor, event_id, hub_chat_id)
 
-                # Search every chat relevant to this event (the hub itself,
-                # plus every child chat it's been shared to) for a real,
-                # resolved user_id for this username - not just wherever the
-                # admin happens to be typing from. The target person is very
-                # often a member of a monitored/shared CHILD chat only,
-                # never the hub itself - using the admin's own chat_id
-                # blindly here previously caused a fake, duplicate
-                # event_users row (keyed under the wrong chat_id) instead of
-                # correctly attaching the guest to the person's real,
-                # existing membership.
+                # Every chat this event can see: the hub itself, every chat it has been shared to, AND every chat
+                # the hub MONITORS. The person is very often a member of a monitored child chat only - and that
+                # chat need not be one this event was shared to; the search used to stop at the shares, so such a
+                # person was never found and ended up in the hub's list as plain text.
                 cursor.execute("SELECT chat_id FROM event_shares WHERE event_id = ?", (event_id,))
-                candidate_chat_ids = [hub_chat_id] + [r[0] for r in cursor.fetchall()]
+                shared_chat_ids = [str(r[0]) for r in cursor.fetchall()]
+                cursor.execute(
+                    "SELECT chat_id FROM sub_chats WHERE owner_chat_id = ? AND is_monitored = 1", (str(hub_chat_id),),
+                )
+                monitored_chat_ids = [str(r[0]) for r in cursor.fetchall()]
+                candidate_chat_ids = list(dict.fromkeys([str(hub_chat_id)] + shared_chat_ids + monitored_chat_ids))
 
-                resolved_chat_id = None
-                user_id = None
-                for candidate_chat_id in candidate_chat_ids:
-                    cursor.execute(
-                        "SELECT user_id FROM main_group_users WHERE chat_id = ? AND username = ?",
-                        (candidate_chat_id, target_username),
-                    )
-                    row = cursor.fetchone()
-                    if row and row[0]:
-                        resolved_chat_id = candidate_chat_id
-                        user_id = row[0]
-                        break
+                found = _find_tracked_person(cursor, candidate_chat_ids, target_username)
+                resolved = found is not None
+                if found:
+                    resolved_chat_id, user_id, display_username = found
+                else:
+                    # Not tracked in any chat relevant to this event - fall back to the admin's own chat_id,
+                    # using the raw username as the identifying key since there's no real id to attach this to.
+                    resolved_chat_id, user_id, display_username = chat_id, target_username, target_username
 
-                if resolved_chat_id is None:
-                    # Not tracked in any chat relevant to this event - fall
-                    # back to the admin's own chat_id (previous behavior),
-                    # using the raw username as a fallback identifying key
-                    # since there's no real id to attach this to anywhere.
-                    resolved_chat_id = chat_id
-                    user_id = target_username
+                # Already in this event (e.g. they voted from a child chat)? Reuse that row - a second one
+                # would count the same person twice.
+                cursor.execute(
+                    "SELECT chat_id, status FROM event_users WHERE event_id = ? AND user_id = ?",
+                    (event_id, str(user_id)),
+                )
+                prior = cursor.fetchall()
+                if prior:
+                    resolved_chat_id = next((r[0] for r in prior if r[1] == "going"), prior[0][0])
 
                 cursor.execute(
-                    "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND username = ?",
-                    (event_id, resolved_chat_id, target_username),
+                    "SELECT status, guests FROM event_users WHERE event_id = ? AND chat_id = ? AND user_id = ?",
+                    (event_id, resolved_chat_id, str(user_id)),
                 )
                 existing = cursor.fetchone()
                 if not existing or existing[0] != "going":
-                    existing_guests = existing[1] if existing else 0
                     cursor.execute(
                         "INSERT OR REPLACE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'going', ?)",
-                        (event_id, resolved_chat_id, user_id, target_username, existing_guests if existing else 0),
+                        (event_id, resolved_chat_id, user_id, display_username, existing[1] if existing else 0),
                     )
 
                 conn.commit()
@@ -2316,15 +2337,34 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
     except Exception:
         pass
 
+    if not resolved:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=(
+                    f"{ICON_WARNING} `{escape_markdown(target_username)}` isn't known in this group, in the chats this "
+                    f"event is shared to, or in the chats it monitors \\- added as plain text\\. They are matched to "
+                    f"their own chat once the bot has seen them \\(joined while it was running, or used a button\\)\\."
+                ),
+                parse_mode="MarkdownV2",
+            )
+        except Exception as e:
+            logger.error(f"Extra player 'not found' notice failed: {e}")
+
     try:
         sheet_target = await get_sheet_for_chat(chat_id)
         if sheet_target:
             ss           = await open_spreadsheet(sheet_target)
             ws           = await ss.worksheet("Actions")
-            # Record the user who clicked the button, not the added player
-            user_raw = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+            # Record the person who clicked the button, not the added player. An anonymous admin's typed message
+            # comes from GroupAnonymousBot - the real clicker was remembered together with the prompt.
+            if prompt["actor_id"] is not None:
+                user_raw, actor_id = prompt["actor_name"] or str(prompt["actor_id"]), prompt["actor_id"]
+            else:
+                user_raw = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+                actor_id = update.effective_user.id
             await ws.append_row([
-                event_id, "ADD_EXTRA_PLAYER", user_raw, str(update.effective_user.id), now2ddmmyy(), str(chat_id),
+                event_id, "ADD_EXTRA_PLAYER", user_raw, str(actor_id), now2ddmmyy(), str(chat_id),
             ])
     except Exception as e:
         logger.error(f"Sheets extra player log failed: {e}")
@@ -2906,6 +2946,28 @@ def _compute_top_users(chat_id: str, period: str = "all", top_n: int = 3):
     return top_by_attendance, top_by_total, top_by_average
 
 
+def _count_unique_attendees(chat_id: str, period: str = "all") -> int:
+    """
+    How many DIFFERENT people attended (status 'going') at least one closed event of this hub in the period -
+    the same population the Users screen's top lists come from: event_users rows of the period's closed events,
+    in the hub and in every chat the event was shared to. Someone who came to ten events counts once. Guests
+    are not people the bot knows, so they are not counted; kicked / not-going people did not attend.
+    """
+    _, closed_event_ids = _closed_event_ids_for_period(chat_id, period)
+    closed_event_ids = list(closed_event_ids)
+    people = set()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for start in range(0, len(closed_event_ids), 500):            # SQLite caps the number of ? in one query
+            chunk = closed_event_ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            cursor.execute(
+                f"SELECT DISTINCT user_id FROM event_users WHERE status = 'going' AND event_id IN ({marks})", chunk
+            )
+            people.update(str(row[0]) for row in cursor.fetchall() if row[0])
+    return len(people)
+
+
 def _build_top_users_text(chat_id: str, period: str, group_name: str = None) -> str:
     top_by_attendance, top_by_total, top_by_average = _compute_top_users(chat_id, period)
 
@@ -2928,9 +2990,12 @@ def _build_top_users_text(chat_id: str, period: str, group_name: str = None) -> 
     total_section = _section("Most guests invited \\(total\\)", top_by_total, "guests")
     average_section = _section("Most guests invited \\(average per event\\)", top_by_average, "guests/event")
 
+    unique_attendees = _count_unique_attendees(chat_id, period)
+
     return (
         f"{header}\n"
         f"_{period_label}_\n\n"
+        f"👥 *Unique attendees:* {unique_attendees}\n\n"
         f"{attendance_section}\n\n"
         f"{total_section}\n\n"
         f"{average_section}"
@@ -3245,7 +3310,7 @@ async def stats_back_callback_handler(update: Update, context: ContextTypes.DEFA
 
 async def global_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Routes all text messages: extra-player input first, then @everyone tracking."""
-    if context.user_data.get("awaiting_extra_player_for"):
+    if has_extra_player_prompt(update, context):
         await handle_extra_player_input(update, context)
         return
     await track_everyone_message(update, context)

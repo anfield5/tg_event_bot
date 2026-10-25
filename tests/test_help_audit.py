@@ -123,7 +123,7 @@ class TestHelpAudit:
         header = text.index("also work inside a group")
         for dm_only in ("/setsub", "/lockbot", "/allgroups", "/allchannels", "/updatefeature", "/showtable", "/version"):
             assert text.index(dm_only) < header, dm_only
-        for anywhere in ("/stats", "/deleteevent"):
+        for anywhere in ("/stats", "/deleteevent", "/reopen"):
             assert text.index(anywhere) > header, anywhere
 
     async def test_utility_documents_start_and_hides_features_the_hub_lacks(self, db_path):

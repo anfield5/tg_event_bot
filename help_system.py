@@ -259,7 +259,9 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "FREE/PRO split, PRO expiries, growth and churn, activity and top commands/groups\\.\n"
         "/deleteevent \\[name or id\\] \\- Permanently delete one event: database, Google Sheet rows and its "
         "posts, after a confirmation\\. No argument lists the latest events; or pass part of the name or the event ID\\. "
-        "Open it to others later with /updatefeature deleteevent \\-minlevel pro\\|free\\."
+        "Open it to others later with /updatefeature deleteevent \\-minlevel pro\\|free\\.\n"
+        "/reopen \\[on\\|off\\] \\- Switch the 🔓 Reopen button on or off under the group's newest closed or canceled "
+        "event; pressing it \\(owners only\\) puts that event back to open\\. No argument shows the current state\\."
     )
 
 
@@ -373,6 +375,11 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await _help_target_chat_id(update, context), update.effective_user.id, "deleteevent"
     ):
         lifecycle_delete_note = "\n\nTo erase an event completely \\(database, Google Sheet rows and its posts\\) use /deleteevent\\."
+    lifecycle_reopen_note = ""
+    if effective_query_data == "help_lifecycle" and feature_available(
+        await _help_target_chat_id(update, context), update.effective_user.id, "reopen"
+    ):
+        lifecycle_reopen_note = "\n\nTo put a closed or canceled event back to open use /reopen on, then press the 🔓 Reopen button under it\\."
     help_sections = {
         "help_users": (
             "👥 *User Management*\n\n"
@@ -408,8 +415,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             + (
                 "\n/stats \\[period\\] \\- Event activity stats for this group \\(events created, closed, "
                 "cancelled/open, total/average headcount, guest share, limit fill and waitlist\\)\\. period is `<number><unit>` \\- d/w/m/y \\(e\\.g\\. `30d`, `6m`, `2y`\\), "
-                "or omitted for all time\\; Users/Distribution buttons under the reply show top "
-                "guest\\-inviters and a per\\-chat breakdown for that period"
+                "or omitted for all time\\; Users/Distribution buttons under the reply show the number of unique attendees with the top attendance and guest lists, and a per\\-chat breakdown, for that period"
                 if has_feature(hub_chat_id_for_limits, "stats") else ""
             )
         ),
@@ -457,7 +463,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"  • {ICON_CANCEL_EVENT} Cancel \\- admin or event creator, cancels immediately \\(CANCELED in Events sheet\\)\n"
             f"  • {ICON_KICK} Kick / {ICON_RETURN} Return \\- admin or event creator, toggle person in/out of going list\n"
             f"  • \\- / \\+ \\- admin or event creator, adjust guest count\n"
-            f"  • \\{ICON_ADD} Add Extra Member \\- admin or event creator, add by username\n"
+            f"  • \\{ICON_ADD} Add Extra Member \\- admin or event creator, add by username \\(also finds members of monitored chats\\)\n"
             f"  • {ICON_SAVE} Save & Close Event \\- admin or event creator, finalize and export to EventUsers\n\n"
             f"Verify and Add Extra Member are both locked in per\\-event at "
             f"creation time \\- changing either via /updatefeature never affects an "
@@ -465,6 +471,7 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"OPEN\\-state button closes the event directly instead of entering review\\.\n\n"
             f"See /newevent's own \\🔽 More button \\(main /help screen\\) for its flags\\."
             f"{lifecycle_delete_note}"
+            f"{lifecycle_reopen_note}"
         ),
     }
     

@@ -599,6 +599,58 @@ async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row):
     await ws.append_row(fallback_row)
 
 
+async def reopen_event_in_sheet(chat_id, event_id, actions_row=None):
+    """
+    The Google Sheet half of reopening an event: its Events row goes back to what a freshly created event has
+    (CLOSED_AT empty, STATUS "OPEN", GOING_COUNT 0) and its EventUsers rows are removed. Save & Close only
+    APPENDS to EventUsers, so without this the next save would list everybody a second time.
+
+    Idempotent - pressing again after a failed attempt simply redoes the same two steps. The Events row goes first
+    (harmless to repeat); if removing the EventUsers rows then fails the whole thing raises and the caller reopens
+    nothing. `actions_row`, if given, is appended to the Actions tab afterwards on a best-effort basis (a failure
+    there is logged, never raised: the reopen itself has already happened in the sheet).
+
+    Returns None when this hub has no sheet; otherwise {"events_row": bool, "event_users_removed": int}.
+    A missing Events / EventUsers tab is skipped. Any connection/auth/API failure is RAISED.
+    """
+    ss = await open_spreadsheet(await get_sheet_for_chat(chat_id))
+    if not ss:
+        return None
+
+    updated = False
+    try:
+        ws = await ss.worksheet("Events")
+        for idx, r in enumerate(await ws.get_all_records(), start=2):
+            if str(r.get("EVENT_ID")) == str(event_id):
+                await ws.update(f"F{idx}:H{idx}", [["", "OPEN", 0]])
+                updated = True
+                break
+    except WorksheetNotFound:
+        pass
+
+    removed = 0
+    try:
+        eu = await ss.worksheet("EventUsers")
+        column_a = await eu.col_values(1)
+        rows = [i for i, value in enumerate(column_a, start=1) if i > 1 and str(value).strip() == str(event_id)]
+        removed = len(rows)
+        requests = [
+            {"deleteDimension": {"range": {"sheetId": eu.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}}
+            for start, end in reversed(_contiguous_runs(rows))
+        ]
+        if requests:
+            await ss.batch_update({"requests": requests})
+    except WorksheetNotFound:
+        pass
+
+    if actions_row:
+        try:
+            await (await ss.worksheet("Actions")).append_row(actions_row)
+        except Exception as e:
+            logger.error(f"Google Sheets Actions log of the reopen failed: {repr(e)}")
+    return {"events_row": updated, "event_users_removed": removed}
+
+
 async def delete_event_from_sheet(chat_id, event_id):
     """
     Removes EVERY row belonging to `event_id` from the hub's Events, Actions
