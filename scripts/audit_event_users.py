@@ -442,6 +442,43 @@ async def audit_hub(chat_id, db_path, cutoff, bot=None, to_chat_id=None, post_li
     return findings, stats
 
 
+def describe_hub_error(db_path, chat_id, error) -> str:
+    """One line for a hub that could not be read at all: which hub and sheet, what Google said, and what that usually means."""
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT chat_name, sheet_id FROM all_groups WHERE chat_id = ?", (str(chat_id),)).fetchone()
+    finally:
+        conn.close()
+    name = f"\u00ab{row[0]}\u00bb, " if row and row[0] else ""
+    sheet = f"sheet {row[1]}: " if row and row[1] else ""
+    reason = str(error)
+    text = f"{name}{sheet}{type(error).__name__}: {reason[:220]}"
+    if "PERMISSION_DENIED" in reason or "403" in reason:
+        text += (" - the bot's service account has no access to this spreadsheet: share it with that account as Editor "
+                 "(or fix the binding with /setsheet). Saving events in this hub fails the same way.")
+    elif "NOT_FOUND" in reason or "404" in reason:
+        text += " - the spreadsheet no longer exists or its id is wrong: bind the right one with /setsheet."
+    return text
+
+
+def results_to_dict(results) -> dict:
+    """The run as plain data (for --json): per hub its findings and stats, an error, or None when it has no Sheet."""
+    out = {}
+    for chat, (findings, stats) in results.items():
+        if findings is not None:
+            out[chat] = {"findings": [asdict(f) for f in findings], "stats": stats}
+        else:
+            out[chat] = {"error": stats["error"]} if stats and stats.get("error") else None
+    return out
+
+
+def has_problems(results) -> bool:
+    return any(
+        (fs is None and st and st.get("error")) or any(f.severity == PROBLEM for f in (fs or []))
+        for fs, st in results.values()
+    )
+
+
 async def _run(target_chat_id=None, days=60, db_path=DB_PATH, telegram=False, to_chat_id=None, post_limit=15):
     init_db(db_path=db_path)
     cutoff = None if days is None else datetime.now() - timedelta(days=days)
@@ -463,7 +500,10 @@ async def _run(target_chat_id=None, days=60, db_path=DB_PATH, telegram=False, to
     results = {}
     try:
         for chat_id in chat_ids:
-            findings, stats = await audit_hub(chat_id, db_path, cutoff, bot=bot, to_chat_id=to_chat_id, post_limit=post_limit)
+            try:
+                findings, stats = await audit_hub(chat_id, db_path, cutoff, bot=bot, to_chat_id=to_chat_id, post_limit=post_limit)
+            except Exception as e:   # one hub's sheet failing (no access, deleted...) must not hide all the others
+                findings, stats = None, {"error": describe_hub_error(db_path, chat_id, e)}
             results[chat_id] = (findings, stats)
     finally:
         if bot_cm is not None:
@@ -476,7 +516,11 @@ def _print_report(results, days):
     window = "all time" if days is None else f"the last {days} day(s)"
     for chat_id, (findings, stats) in results.items():
         if findings is None:
-            print(f"\nHub {chat_id}: no usable Google Sheet - skipped.")
+            if stats and stats.get("error"):
+                problems += 1
+                print(f"\nHub {chat_id}: COULD NOT BE AUDITED - {stats['error']}")
+            else:
+                print(f"\nHub {chat_id}: no usable Google Sheet - skipped.")
             continue
         hub_problems = [f for f in findings if f.severity == PROBLEM]
         problems += len(hub_problems)
@@ -504,7 +548,6 @@ if __name__ == "__main__":
     days = None if args.all_time else args.days
     results = asyncio.run(_run(args.chat_id, days, telegram=args.telegram, to_chat_id=args.to, post_limit=args.limit))
     if args.json:
-        print(json.dumps({chat: ({"findings": [asdict(f) for f in fs], "stats": st} if fs is not None else None)
-                          for chat, (fs, st) in results.items()}, ensure_ascii=False, indent=2))
-        sys.exit(1 if any(f.severity == PROBLEM for fs, _ in results.values() if fs for f in fs) else 0)
+        print(json.dumps(results_to_dict(results), ensure_ascii=False, indent=2))
+        sys.exit(1 if has_problems(results) else 0)
     sys.exit(1 if _print_report(results, days) else 0)

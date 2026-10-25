@@ -196,7 +196,13 @@ async def _run(target_chat_id=None, days=60, db_path=DB_PATH, apply=False, resol
     else:
         chat_ids = [r[0] for r in conn.execute("SELECT chat_id FROM all_groups WHERE sheet_id IS NOT NULL AND sheet_id != ''")]
     conn.close()
-    return {chat_id: await repair_hub(chat_id, db_path, cutoff, apply=apply, resolve_ids=resolve_ids) for chat_id in chat_ids}
+    results = {}
+    for chat_id in chat_ids:
+        try:
+            results[chat_id] = await repair_hub(chat_id, db_path, cutoff, apply=apply, resolve_ids=resolve_ids)
+        except Exception as e:   # one hub's sheet failing (no access, deleted...) must not stop the others
+            results[chat_id] = (None, audit.describe_hub_error(db_path, chat_id, e), None)
+    return results
 
 
 def _print_report(results, apply) -> int:
@@ -204,7 +210,11 @@ def _print_report(results, apply) -> int:
     wrong = 0
     for chat_id, (plan, done, left) in results.items():
         if plan is None:
-            print(f"\nHub {chat_id}: no usable Google Sheet - skipped.")
+            if isinstance(done, str):
+                wrong += 1
+                print(f"\nHub {chat_id}: COULD NOT BE REPAIRED - {done}")
+            else:
+                print(f"\nHub {chat_id}: no usable Google Sheet - skipped.")
             continue
         print(f"\nHub {chat_id}: {len(plan)} step(s) {'applied' if apply else 'planned'}")
         outcomes = {id(step): note for step, note in (done or [])}
@@ -233,4 +243,4 @@ if __name__ == "__main__":
     parser.add_argument("--resolve-ids", action="store_true", help="Also give typed-in people their real Telegram id in event_users when the bot has seen them since (edits the DB).")
     args = parser.parse_args()
     outcome = asyncio.run(_run(args.chat_id, None if args.all_time else args.days, apply=args.apply, resolve_ids=args.resolve_ids))
-    sys.exit(1 if _print_report(outcome, args.apply) and args.apply else 0)
+    sys.exit(1 if _print_report(outcome, args.apply) else 0)
