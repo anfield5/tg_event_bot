@@ -19,7 +19,7 @@ This script, for every PRO hub with a sheet_id configured:
   3. Appends a row for every DB event NOT yet in the sheet - using the
      exact same 8-column layout /newevent's own write uses (EVENT_ID,
      EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS,
-     GOING_COUNT).
+     AMOUNT).
   4. For any CLOSED event that's missing, ALSO backfills its EventUsers
      rows (event_id, user_id for everyone who was "going"), matching
      exactly what Save & Close itself writes.
@@ -66,7 +66,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 sys.path.insert(0, ".")
-from db import init_db, DB_PATH  # noqa: E402
+from db import init_db, DB_PATH, headcount_from_rows  # noqa: E402
 from sheets import get_sheet_for_chat, open_spreadsheet  # noqa: E402
 
 STATUS_LABELS = {-1: "CANCELED", 0: "OPEN", 1: "VERIFICATION", 2: "CLOSED"}
@@ -141,7 +141,7 @@ async def _sync_one_hub(chat_id: str, db_path: str, cutoff: datetime) -> tuple:
             status_label = STATUS_LABELS.get(row["event_status"], "OPEN")
             going_count = 0
             if row["event_status"] == 2:
-                going_count = sum((1 if r["status"] == "going" else 0) + (r["guests"] or 0) for r in eu_rows)
+                going_count = headcount_from_rows([(r["status"], r["guests"]) for r in eu_rows])["total"]
             try:
                 await ws_events.append_row([
                     event_id, row["name"] or "", row["created_date"] or "",

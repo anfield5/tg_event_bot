@@ -128,6 +128,58 @@ async def get_sheet_for_chat(chat_id):
     return sheet_id or None
 
 
+_UNDECIDED = object()
+
+
+async def _full_name_column(ws, rec: dict):
+    """
+    The column letter of ARCHIVED_FULL_NAME in this Users tab, adding its header the first time if the tab has exactly the
+    nine standard columns (A..I) - or None when the column can't be had: J already belongs to something else, or the tab
+    is not the standard shape. `rec` is any row of the tab as get_all_records returned it: its keys ARE the header row,
+    in order, so no extra read is needed.
+    """
+    headers = list(rec.keys())
+    if FULL_NAME_COLUMN in headers:
+        return _column_letter(headers.index(FULL_NAME_COLUMN) + 1)
+    if len(headers) == 9:
+        await ws.update("J1", [[FULL_NAME_COLUMN]])
+        return "J"
+    logger.warning(f"Users tab has {len(headers)} columns and no {FULL_NAME_COLUMN} - earlier full names are not archived here")
+    return None
+
+
+FULL_NAME_COLUMN = "ARCHIVED_FULL_NAME"   # column J of the Users tab, right after ARCHIVED_USER_NAME (I)
+FULL_NAME_SEPARATOR = " | "                # not a comma: a display name can contain one ("Smith, John")
+FULL_NAME_KEEP = 20                        # the newest N earlier names are kept - some people change theirs constantly
+
+
+def _archive_with(archived: str, old: str, separator: str, current: str, keep: int = 0):
+    """
+    The archive cell's new text after `old` is retired, or None when there is nothing to add: `old` is empty, is only a
+    case change of `current` (Telegram usernames are case-insensitive), or is already listed (A -> B -> A must not list
+    A twice). `keep` > 0 keeps only the newest `keep` entries.
+    """
+    old = (old or "").strip()
+    if not old or old.casefold() == (current or "").strip().casefold():
+        return None
+    entries = [e.strip() for e in (archived or "").split(separator.strip() if separator == "," else separator) if e.strip()]
+    if any(e.casefold() == old.casefold() for e in entries):
+        return None
+    entries.append(old)
+    if keep:
+        entries = entries[-keep:]
+    return separator.join(entries)
+
+
+def _full_name(first, last) -> str:
+    return f"{(first or '').strip()} {(last or '').strip()}".strip()
+
+
+def _column_letter(position: int):
+    """1-based position -> A..Z, or None beyond Z (the Users tab never gets that wide)."""
+    return chr(64 + position) if 1 <= position <= 26 else None
+
+
 async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=None, left_members=None):
     """
     Syncs the "Users" worksheet for a given chat/place with its current
@@ -140,7 +192,8 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
     be written for those entries.
 
     Columns: USER_ID, FIRST_NAME, LAST_NAME, USER_NAME, CHAT_ID, STATUS,
-    DATE_start, DATE_end, ARCHIVED_USER_NAME.
+    DATE_start, DATE_end, ARCHIVED_USER_NAME, ARCHIVED_FULL_NAME (the last one is
+    optional - see below).
     A row is uniquely identified by (USER_ID, CHAT_ID) - the same person can
     have separate rows for separate places/groups managed by this bot.
 
@@ -160,6 +213,12 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
         is appended to ARCHIVED_USER_NAME (comma-separated), and USER_NAME is
         updated to the current one. If they were previously "LEFT", their
         STATUS flips back to "MEMBER" and DATE_end is cleared.
+      - When FIRST_NAME / LAST_NAME change, the earlier "First Last" is kept in
+        ARCHIVED_FULL_NAME (column J), separated by " | ", without repeats, the
+        newest 20. The column is optional: the header is added to J1 the first time
+        it is needed if the tab has exactly the nine standard columns, and nothing is
+        archived (nothing breaks) if J already holds some other column of yours.
+        Removing a last name is not noticed - the old one stays, as before.
       - FIRST_NAME/LAST_NAME are (re)written whenever we have a fresh value
         for them, even for an already-known row - covers someone who
         changed their Telegram name, or whose name simply wasn't captured
@@ -258,6 +317,7 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
             )
 
         # 2. Members who are here now.
+        full_name_col = _UNDECIDED      # where ARCHIVED_FULL_NAME lives; looked up the first time a name has changed
         for user_id, username, first_name, last_name in members:
             key = (str(user_id), str(chat_id))
             if key in index:
@@ -266,10 +326,12 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                 status = str(rec.get("STATUS", "")).strip().lower()
 
                 if old_name and old_name != username:
-                    archived     = str(rec.get("ARCHIVED_USER_NAME", "")).strip()
-                    new_archived = f"{archived},{old_name}" if archived else old_name
                     await ws.update(f"D{idx}", [[username]])
-                    await ws.update(f"I{idx}", [[new_archived]])
+                    # A change of letter case only is the same username to Telegram, and a name that is already
+                    # listed (A -> B -> A) is not listed twice.
+                    new_archived = _archive_with(str(rec.get("ARCHIVED_USER_NAME", "")), old_name, ",", username)
+                    if new_archived is not None:
+                        await ws.update(f"I{idx}", [[new_archived]])
 
                 if status == "left" and presence_ok:
                     # LEFT -> MEMBER: update status, clear DATE_end, update DATE_start
@@ -282,10 +344,25 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                 # Only write what actually differs: this used to rewrite both cells for EVERY
                 # present member on EVERY refresh - 2 API calls per person, each throttled to
                 # ~1/s by gspread_asyncio, to store the values that were already there.
-                if first_name and str(rec.get("FIRST_NAME", "")).strip() != first_name:
+                old_first, old_last = str(rec.get("FIRST_NAME", "")).strip(), str(rec.get("LAST_NAME", "")).strip()
+                if first_name and old_first != first_name:
                     await ws.update(f"B{idx}", [[first_name]])
-                if last_name and str(rec.get("LAST_NAME", "")).strip() != last_name:
+                if last_name and old_last != last_name:
                     await ws.update(f"C{idx}", [[last_name]])
+
+                # The earlier "First Last" is about to be overwritten above - keep it. What the cells hold AFTER those
+                # writes is the person's name from now on, so that is what the old one is compared with.
+                now_first = first_name if first_name and old_first != first_name else old_first
+                now_last = last_name if last_name and old_last != last_name else old_last
+                old_full, now_full = _full_name(old_first, old_last), _full_name(now_first, now_last)
+                if old_full and old_full != now_full:
+                    if full_name_col is _UNDECIDED:
+                        full_name_col = await _full_name_column(ws, rec)
+                    if full_name_col:
+                        new_archive = _archive_with(str(rec.get(FULL_NAME_COLUMN, "")), old_full, FULL_NAME_SEPARATOR,
+                                                    now_full, keep=FULL_NAME_KEEP)
+                        if new_archive is not None:
+                            await ws.update(f"{full_name_col}{idx}", [[new_archive]])
             else:
                 # New user: add with MEMBER status
                 await ws.append_row([str(user_id), first_name or "", last_name or "", username, str(chat_id),
@@ -602,7 +679,7 @@ def _contiguous_runs(rows):
 
 async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row):
     """
-    Marks the event's row in the Events tab CANCELED (CLOSED_AT, STATUS, GOING_COUNT = 0), or
+    Marks the event's row in the Events tab CANCELED (CLOSED_AT, STATUS, AMOUNT = 0), or
     appends `fallback_row` if the event has no row there yet. Shared by the Cancel button and
     /newevent's self-healing of an orphaned event, which used to carry identical copies of this.
     Takes the already-opened spreadsheet so each caller keeps its own sheet lookup. Raises on failure.
@@ -619,7 +696,7 @@ async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row):
 async def reopen_event_in_sheet(chat_id, event_id, actions_row=None):
     """
     The Google Sheet half of reopening an event: its Events row goes back to what a freshly created event has
-    (CLOSED_AT empty, STATUS "OPEN", GOING_COUNT 0) and its EventUsers rows are removed: an open event has no final
+    (CLOSED_AT empty, STATUS "OPEN", AMOUNT 0) and its EventUsers rows are removed: an open event has no final
     roster yet, and the next Save & Close writes the new one (it replaces whatever the event has there, so this is
     tidiness plus a truthful sheet in the meantime - no longer what stops a doubled roster).
 

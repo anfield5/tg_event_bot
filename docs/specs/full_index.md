@@ -479,9 +479,10 @@ One row per (person, chat) they were ever tracked in — never deleted, only sta
 No row is ever deleted from this tab — only the `STATUS`/date columns change.
 
 ### Per-hub sheet — `Events` tab
-**Columns:** EVENT_ID, EVENT_NAME, CREATED_AT, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT
+**Columns:** EVENT_ID, EVENT_NAME, CREATED_AT, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT (A..H - the bot writes a row with `append_row` and F:H as a block, and the scripts read it by POSITION; the template's header names vary: AMOUNT / GOING_COUNT, CREATED_AT / CREATED_DATE)
 
-*(Note: the project README lists these last two as `CREATED_DATE`/`GOING_COUNT` — that's stale; the actual code comment and every write site use `CREATED_AT`/`AMOUNT`.)*
+**AMOUNT** is the event's headcount at Save & Close - `db.headcount_from_rows`: every person who is `going` PLUS every guest, from every chat of the event; 0 while the event is open or canceled. It is a snapshot written to the Sheet only: the database keeps no copy, `/stats` and the audit scripts recompute it from `event_users`. The post's "TOTAL Going" is the same number. Guests are added independently of the host's own status (Not Going and "only ever added guests" rows keep them), so guests of people who are not going are in it. The capacity check behind `-limit` (`event_engine._current_headcount`) is narrower: going people and **their** guests only - the two agree unless a not-going / kicked host has guests.
+
 
 | Trigger | Operation |
 |---|---|

@@ -48,7 +48,7 @@ EVENT = {"event_id": "ev1", "name": "Match", "status": 2}
 
 
 def good_row(count):
-    return {"EVENT_ID": "ev1", "STATUS": "CLOSED", "GOING_COUNT": count}
+    return {"EVENT_ID": "ev1", "STATUS": "CLOSED", "AMOUNT": count}
 
 
 class TestTheRoster:
@@ -121,7 +121,7 @@ class TestDbAgainstTheSheet:
     def test_the_events_row(self, db_path):
         seed(db_path); person(db_path, 1, "alice", guests=1)
         assert codes(self._check(db_path, ["1"], events_row=None)) == ["EVENTS_ROW_MISSING"]
-        assert codes(self._check(db_path, ["1"], events_row={"STATUS": "OPEN", "GOING_COUNT": 2})) == ["EVENTS_STATUS"]
+        assert codes(self._check(db_path, ["1"], events_row={"STATUS": "OPEN", "AMOUNT": 2})) == ["EVENTS_STATUS"]
         assert codes(self._check(db_path, ["1"], events_row=good_row(5))) == ["EVENTS_COUNT"]
         assert codes(self._check(db_path, ["1"], events_row=good_row("n/a"))) == ["EVENTS_COUNT"]
 

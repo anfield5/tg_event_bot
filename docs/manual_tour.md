@@ -89,7 +89,7 @@ Setup takes about 30-45 minutes the first time. Have the Hub's and Child's ids a
 | 48 | M1 | Hub post | **Return** on A | A is back | |
 | 49 | M1 | Hub post | **Add Extra Member**, then type `@username` | Added - under its own chat's "Going from" block if the person belongs to a monitored chat; plain text plus a notice if the bot never saw them | |
 | 50 | M1 | Hub post | **Save & Close Event** | Closed, buttons gone | |
-| 51 | — | Hub's Google Sheet | look at `Events` and `EventUsers` | Row `CLOSED` with the right `GOING_COUNT`; `EventUsers` rows for the going people | |
+| 51 | — | Hub's Google Sheet | look at `Events` and `EventUsers` | Row `CLOSED` with the right `AMOUNT`; `EventUsers` rows for the going people | |
 | 52 | M1 | Hub | `/newevent Second` | Posted with **no** "already an active event" warning | |
 | 53 | M1 | Hub post | **Cancel** | Canceled; Events row `CANCELED`, no `EventUsers` rows | |
 | 54 | O | Hub | `/reopen on` | "Reopen mode is ON", saying it shows under the 2 newest closed or canceled events; a 🔓 Reopen button appears under **both** `Second` (canceled) and the older closed `Футбол Tour` | |

@@ -39,7 +39,7 @@ class Tab:
         return [dict(zip(header, r + [""] * (len(header) - len(r)))) for r in self.rows[1:]]
 
     async def update(self, rng, values):
-        m = re.match(r"([A-Z])(\d+):[A-Z]\d+", rng)
+        m = re.match(r"([A-Z])(\d+)(?::[A-Z]\d+)?$", rng)
         start, row = ord(m.group(1)) - ord("A"), int(m.group(2))
         for offset, value in enumerate(values[0]):
             self.rows[row - 1][start + offset] = value
@@ -57,7 +57,7 @@ class Book:
     def __init__(self):
         self.batch_calls = []
         self.tabs = {
-            "Events": Tab(1, ["EVENT_ID", "EVENT_NAME", "CREATED_DATE", "CREATED_BY", "EVENT_DATE", "CLOSED_AT", "STATUS", "GOING_COUNT"],
+            "Events": Tab(1, ["EVENT_ID", "EVENT_NAME", "CREATED_DATE", "CREATED_BY", "EVENT_DATE", "CLOSED_AT", "STATUS", "AMOUNT"],
                           [["ev1", "Match", "c", "42", "", "", "OPEN", 0]]),
             "EventUsers": Tab(2, ["EVENT_ID", "USER_ID"]),
             "Actions": Tab(3, ["EVENT_ID", "ACTION", "USER_NAME", "USER_ID", "DATE", "CHAT_ID"]),

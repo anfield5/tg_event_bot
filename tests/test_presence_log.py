@@ -236,10 +236,11 @@ class TestUsersTabWritesOnlyWhatChanged:
         assert await _sync(_Ss(users, _Ws()), [("1", "u1", "A", "B")]) is True
         assert users.updates == []
 
-    async def test_a_changed_first_name_writes_only_that_cell(self):
+    async def test_a_changed_first_name_writes_that_cell_and_keeps_the_old_name(self):
+        """Nothing else is touched: the new name, and the earlier full name archived (header added once, cell J2)."""
         users = _Ws([_row()])
         await _sync(_Ss(users, _Ws()), [("1", "u1", "New", "B")])
-        assert users.updates == [("B2", [["New"]])]
+        assert users.updates == [("B2", [["New"]]), ("J1", [["ARCHIVED_FULL_NAME"]]), ("J2", [["A B"]])]
 
     async def test_a_name_missing_from_the_sheet_is_written(self):
         users = _Ws([{**_row(), "FIRST_NAME": "", "LAST_NAME": ""}])

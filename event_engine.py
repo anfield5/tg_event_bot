@@ -36,7 +36,7 @@ from config import (
 from utils import escape_markdown, now2ddmmyy, is_real_admin
 from utils import remember_extra_player_prompt
 from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
-from db import reopen_button_offered, reopen_button_events, reopen_posts_to_refresh, get_reopened_roster, clear_reopened_roster, is_reopen_active
+from db import headcount_from_rows, reopen_button_offered, reopen_button_events, reopen_posts_to_refresh, get_reopened_roster, clear_reopened_roster, is_reopen_active
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet, mark_event_row_canceled
 
 
@@ -1561,10 +1561,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Compute total for Events sheet - going users plus
                     # every guest (including from non-going/notselected
                     # users), summed once across the whole event_id.
-                    total_going = sum(
-                        (1 if status == "going" else 0) + (guests or 0)
-                        for _uid, status, guests, _name in all_rows
-                    )
+                    total_going = headcount_from_rows([(r[1], r[2]) for r in all_rows])["total"]
 
                     # 4. Update Events sheet row
                     ws      = await ss.worksheet("Events")

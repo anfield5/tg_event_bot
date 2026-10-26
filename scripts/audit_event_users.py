@@ -4,7 +4,7 @@ Read-only audit: do the places that record WHO came to an event agree with each 
   1. SQLite `event_users`      - the bot's own records: per event and chat, user_id, names, status, guests.
                                  Everything else is built from this.
   2. Google Sheet `EventUsers` - what Save & Close exported: EVENT_ID, USER_ID (ids only, no names).
-     Google Sheet `Events`     - STATUS and GOING_COUNT of each event.
+     Google Sheet `Events`     - STATUS and AMOUNT of each event.
   3. The event's post in the group (only with --telegram) - what people actually SEE.
 
 For every hub that has a Sheet, and every event created in the last N days, it reports (problems exit with code 1):
@@ -16,7 +16,7 @@ For every hub that has a Sheet, and every event created in the last N days, it r
                          EventUsers rows exist for an event that is open / canceled again (a reopen whose sheet
                          cleanup didn't happen)
     EVENTS_ROW_MISSING / EVENTS_STATUS / EVENTS_COUNT
-                         the Events tab disagrees with the DB (status, or GOING_COUNT vs going + guests)
+                         the Events tab disagrees with the DB (status, or AMOUNT vs going + guests)
     DB_SAME_PERSON_TWICE one person going in two chats of the same event
     SHEET_ORPHAN_EVENT   (info) EventUsers rows of an event the DB doesn't know
     EVENTUSERS_TAB_MISSING
@@ -34,7 +34,7 @@ For every hub that has a Sheet, and every event created in the last N days, it r
   NO_REAL_ID (info)
     People typed in with Add Extra Member whom the bot has never seen: the post shows their name, but their real
     Telegram id is stored NOWHERE - the DB and the EventUsers tab hold the USERNAME in the id column. The script lists
-    them (and says when the same username is now known with a real id).
+    them (and says when the same username is now known with a real id; scripts/fix_eventusers_ids.py then puts the id in).
 
 Never writes anything. To FIX what it finds, use scripts/repair_event_users.py (a dry run until you add --apply).
 Run from the project root, against your real database.db:
@@ -54,7 +54,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 
 sys.path.insert(0, ".")
-from db import init_db, DB_PATH  # noqa: E402
+from db import init_db, DB_PATH, headcount_from_rows  # noqa: E402
 from sheets import get_sheet_for_chat, open_spreadsheet  # noqa: E402
 
 DATE_FMT = "%d.%m.%Y %H:%M:%S.%f"
@@ -109,8 +109,9 @@ def db_roster(conn, event_id) -> dict:
         "rows": rows,
         "going_rows": going_rows,
         "ids": ids,
-        # the same formula Save & Close uses for GOING_COUNT: every going person plus every guest, from any row
-        "headcount": sum((1 if r[5] == "going" else 0) + (r[6] or 0) for r in rows),
+        # the one definition (db.headcount_from_rows): every going person plus every guest, from any row
+        "headcount": headcount_from_rows([(r[5], r[6]) for r in rows])["total"],
+        "breakdown": headcount_from_rows([(r[5], r[6]) for r in rows]),
         "names": {str(r[1]): (r[2] or r[3] or str(r[1])) for r in going_rows},
         "placeholders": [uid for uid in ids if not _is_real_id(uid)],
         "in_two_chats": sorted(uid for uid, chats in chats_of.items() if len(chats) > 1),
@@ -211,12 +212,12 @@ def compare_event(event: dict, roster: dict, sheet_ids: list, events_row, resolv
             add("EVENTS_STATUS", PROBLEM, f"Events tab says {sheet_status or 'empty'}, the DB says {SHEET_STATUS[status]}")
         if status == 2:
             try:
-                count = int(str(events_row.get("GOING_COUNT", "")).strip())
+                count = int(str(events_row.get("AMOUNT", "")).strip())
             except ValueError:
-                add("EVENTS_COUNT", PROBLEM, f"GOING_COUNT is {events_row.get('GOING_COUNT')!r}, not a number")
+                add("EVENTS_COUNT", PROBLEM, f"AMOUNT is {events_row.get('AMOUNT')!r}, not a number")
             else:
                 if count != roster["headcount"]:
-                    add("EVENTS_COUNT", PROBLEM, f"GOING_COUNT is {count}, the DB has {roster['headcount']} (going + guests)")
+                    add("EVENTS_COUNT", PROBLEM, f"AMOUNT is {count}, the DB has {roster['headcount']} (going + guests)")
     return findings
 
 
@@ -362,26 +363,48 @@ async def read_post(bot, from_chat_id, message_id, to_chat_id):
 # Running it
 # ---------------------------------------------------------------------------
 
+EVENTS_COLUMNS = ("EVENT_ID", "EVENT_NAME", "CREATED_DATE", "CREATED_BY", "EVENT_DATE", "CLOSED_AT", "STATUS", "AMOUNT")
+
+
+async def read_events_tab(ss) -> list:
+    """
+    [(sheet row number, {column: value})] of the Events tab, the columns read BY POSITION (A..H) - the way the bot
+    writes them (an append_row, and F:H updated as a block). The header names are the template's own and differ in
+    the documentation (AMOUNT / GOING_COUNT, CREATED_AT / CREATED_DATE), so nothing here depends on them.
+    """
+    from gspread.exceptions import WorksheetNotFound
+
+    try:
+        values = await (await ss.worksheet("Events")).get_all_values()
+    except WorksheetNotFound:
+        return []
+    rows = []
+    for number, row in enumerate(values[1:], start=2):
+        padded = list(row) + [""] * (len(EVENTS_COLUMNS) - len(row))
+        if str(padded[0]).strip():
+            rows.append((number, dict(zip(EVENTS_COLUMNS, padded))))
+    return rows
+
+
 async def read_sheet_state(ss):
     """-> ({event_id: [USER_ID, ...]} from the EventUsers tab, or None when that tab is missing,
-            {event_id: Events-tab row as a dict}). Two reads, whatever the size."""
+            {event_id: the Events-tab row as a dict, plus "_row": its sheet row number}). Two reads, whatever the size."""
     from gspread.exceptions import WorksheetNotFound
 
     try:
         eu_values = await (await ss.worksheet("EventUsers")).get_all_values()
     except WorksheetNotFound:
         eu_values = None
-    try:
-        events_records = await (await ss.worksheet("Events")).get_all_records()
-    except WorksheetNotFound:
-        events_records = []
+    events_rows = {}
+    for number, record in await read_events_tab(ss):
+        events_rows.setdefault(str(record["EVENT_ID"]).strip(), {**record, "_row": number})
     by_event = None
     if eu_values is not None:
         by_event = {}
         for row in eu_values[1:]:
             if len(row) >= 2 and str(row[0]).strip():
                 by_event.setdefault(str(row[0]).strip(), []).append(str(row[1]).strip())
-    return by_event, {str(r.get("EVENT_ID", "")).strip(): r for r in events_records}
+    return by_event, events_rows
 
 
 async def audit_hub(chat_id, db_path, cutoff, bot=None, to_chat_id=None, post_limit=15) -> tuple:

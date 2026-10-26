@@ -13,10 +13,11 @@ For every hub that has a Sheet, and every event created in the last N days:
 
   closed event, EventUsers differs from the DB   -> the event's EventUsers rows are REPLACED: its old rows removed, one
                                                     row per going person written (the same call Save & Close makes)
-  closed event, Events row missing / wrong       -> the row is added, or its CLOSED_AT / STATUS / GOING_COUNT corrected
+  closed event, Events row missing / wrong       -> the row is added, or its CLOSED_AT / STATUS / AMOUNT corrected
   open / canceled event with EventUsers rows     -> those rows are removed (an unfinished event has no final roster)
   open / canceled event, Events row wrong        -> its STATUS corrected
-  --resolve-ids                                  -> people typed in by name (their "id" is their username) whom the bot
+  --resolve-ids                                  -> (scripts/fix_eventusers_ids.py does this for every event and reads the
+                                                    Users tab too) people typed in by name (their "id" is their username) whom the bot
                                                     has SINCE seen with a real Telegram id get that id in event_users
                                                     first, so the EventUsers rows carry it too. Opt-in: it edits the DB.
 
@@ -54,7 +55,7 @@ class Step:
 
 
 def events_row_values(info: dict, headcount: int) -> list:
-    """CLOSED_AT, STATUS, GOING_COUNT exactly as the bot writes them for an event in this state."""
+    """CLOSED_AT, STATUS, AMOUNT exactly as the bot writes them for an event in this state."""
     status = info["status"]
     if status == 2:
         return [info["closed_date"] or "", "CLOSED", headcount]
@@ -93,7 +94,7 @@ def plan_event(info: dict, roster: dict, sheet_ids: list, events_row, resolvable
         add(ADD_ROW, f"add the event's row to the Events tab ({events_row_values(info, roster['headcount'])[1]})")
     elif codes & {"EVENTS_STATUS", "EVENTS_COUNT"}:
         values = events_row_values(info, roster["headcount"])
-        add(FIX_ROW, f"set the Events row to CLOSED_AT={values[0] or 'empty'}, STATUS={values[1]}, GOING_COUNT={values[2]}")
+        add(FIX_ROW, f"set the Events row to CLOSED_AT={values[0] or 'empty'}, STATUS={values[1]}, AMOUNT={values[2]}")
     return steps
 
 
@@ -107,8 +108,8 @@ def _event_info(row) -> dict:
 
 async def _events_row_index(ss, event_id):
     ws = await ss.worksheet("Events")
-    for idx, record in enumerate(await ws.get_all_records(), start=2):
-        if str(record.get("EVENT_ID")) == str(event_id):
+    for idx, record in await audit.read_events_tab(ss):
+        if str(record["EVENT_ID"]).strip() == str(event_id):
             return ws, idx
     return ws, None
 

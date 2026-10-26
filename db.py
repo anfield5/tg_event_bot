@@ -1461,6 +1461,36 @@ def get_shareevent_remaining_for_chat(chat_id: str, db_path: str = None):
     return limit, lowest_remaining
 
 
+def headcount_from_rows(rows) -> dict:
+    """
+    The number an event is reported with - "TOTAL Going" in the post and the count in the Events tab: every person who
+    is going PLUS every guest, whoever brought them. A guest belongs to the row that added it, and a guest is added
+    independently of the sponsor's own status (someone who clicked Not Going, or who only ever added guests, keeps
+    them), so guests of people who are not going count too. `rows`: (status, guests) pairs of ONE event, all chats.
+
+    NB: the capacity check behind -limit (event_engine._current_headcount) is a DIFFERENT, narrower count - going
+    people and THEIR guests only.
+    """
+    going = guests = guests_of_not_going = 0
+    for status, count in rows:
+        count = count or 0
+        guests += count
+        if status == "going":
+            going += 1
+        else:
+            guests_of_not_going += count
+    return {"going": going, "guests": guests, "guests_of_not_going": guests_of_not_going, "total": going + guests}
+
+
+def event_headcount(event_id: str, db_path: str = None) -> dict:
+    """headcount_from_rows for one event, read from event_users (all its chats)."""
+    conn = sqlite3.connect(db_path or DB_PATH)
+    try:
+        return headcount_from_rows(conn.execute("SELECT status, guests FROM event_users WHERE event_id = ?", (str(event_id),)).fetchall())
+    finally:
+        conn.close()
+
+
 def get_event_total_going_headcount(event_id: str, db_path: str = None) -> int:
     """
     Total headcount currently counted against an event's total_limit: every

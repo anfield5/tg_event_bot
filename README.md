@@ -134,7 +134,7 @@ zone are chosen to minimize crossing lines.
 > - `scripts/audit_event_users.py` is the READ-ONLY counterpart: for every hub with a
 >   Sheet it checks that the event's roster in `event_users` matches the `EventUsers`
 >   tab (missing / extra / doubled ids, rows left over for an event that is open
->   again) and the `Events` tab (status, GOING_COUNT), and lists people typed in by
+>   again) and the `Events` tab (status, AMOUNT), and lists people typed in by
 >   name whose real Telegram id is stored nowhere. With `--telegram --to <chat id>` it
 >   also reads each closed event's post back by forwarding it (the Bot API has no way
 >   to read an old message) - which can only confirm that a post is up to date with
@@ -146,6 +146,17 @@ zone are chosen to minimize crossing lines.
 >   of an event that is not closed. A dry run unless `--apply` is given; with
 >   `--resolve-ids` it also gives people typed in by name their real Telegram id once
 >   the bot has seen them. It audits again afterwards and says what is left.
+> - `scripts/fix_eventusers_ids.py` makes sure the `EventUsers` tab holds real numeric
+>   user ids: where a row has a username (someone typed in with Add Extra Member before
+>   the bot had seen them) it looks the name up - case-insensitively, also among earlier
+>   usernames - in the hub's `Users` tab and the tracked users of the hub's chats, and
+>   writes the id into the tab AND into `event_users` (the tab is written from it). Names
+>   nobody is known by, names that fit several ids and people already listed with their
+>   id are left alone and listed. A dry run unless `--apply`; never guesses.
+> - `scripts/check_events_amount.py` checks the last column of the `Events` tab (the
+>   headcount written at Save & Close: going people plus every guest, from every chat;
+>   0 for an open or canceled event) against `event_users`, shows both numbers and how
+>   the database one is made up, and with `--apply` corrects only the wrong cells.
 
 - **Gray** = SQLite table (single database, source of truth)
 - **Blue** = Control Sheet - **one** spreadsheet, shared across the whole bot
@@ -190,8 +201,8 @@ nothing to Sheets at all):
 
 | Tab | Columns | Written by |
 |---|---|---|
-| `Users` | USER_ID, FIRST_NAME, LAST_NAME, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME | `/refreshusers`, `/refreshusersall` - one row per (user, chat); STATUS flips MEMBER/LEFT rather than deleting rows |
-| `Events` | EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, GOING_COUNT | row appended on `/newevent`, columns F:H updated on Save & Close - CREATED_DATE/CLOSED_AT reuse `events.created_date`/`closed_date` (real DB columns, see the schema note above), not a timestamp computed fresh at Sheets-write time |
+| `Users` | USER_ID, FIRST_NAME, LAST_NAME, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME, ARCHIVED_FULL_NAME | `/refreshusers`, `/refreshusersall` - one row per (user, chat); STATUS flips MEMBER/LEFT rather than deleting rows; an earlier @username goes to ARCHIVED_USER_NAME (comma-separated), an earlier "First Last" to ARCHIVED_FULL_NAME (column J, " \| "-separated, newest 20; the header is added automatically if J is free) |
+| `Events` | EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT (some templates call it GOING_COUNT - the bot and the scripts go by column position) | row appended on `/newevent`, columns F:H updated on Save & Close - CREATED_DATE/CLOSED_AT reuse `events.created_date`/`closed_date` (real DB columns, see the schema note above), not a timestamp computed fresh at Sheets-write time |
 | `Actions` | EVENT_ID, ACTION, USER_NAME, USER_ID, DATE, CHAT_ID | every button click (going/notgoing/kick/save/...) - CHAT_ID is which chat the click happened in (the hub or a specific child chat) |
 | `EventUsers` | EVENT_ID, USER_ID | final attendee list, written once at Save & Close (main chat + every child chat combined) |
 | `UserPresenceLog` | USER_ID, CHAT_ID, DATE_start, DATE_end | one row per ended stay, written BEFORE the person is flipped to LEFT, into the hub's sheet (monitored chats included); stays missing from it are backfilled on the next refresh |

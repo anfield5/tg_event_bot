@@ -464,7 +464,7 @@ class Book:
 
 
 def book():
-    header = ["EVENT_ID", "EVENT_NAME", "CREATED_DATE", "CREATED_BY", "EVENT_DATE", "CLOSED_AT", "STATUS", "GOING_COUNT"]
+    header = ["EVENT_ID", "EVENT_NAME", "CREATED_DATE", "CREATED_BY", "EVENT_DATE", "CLOSED_AT", "STATUS", "AMOUNT"]
     return Book({
         "Events": Tab(1, [header, ["ev1", "Party", "c", "u", "", "01.10.2026", "CLOSED", 7], ["ev2", "Other", "c", "u", "", "02.10.2026", "CLOSED", 3]]),
         "EventUsers": Tab(2, [["EVENT_ID", "USER_ID"], ["ev1", "1"], ["ev2", "9"], ["ev1", "2"], ["ev1", "3"], ["ev2", "8"]]),
