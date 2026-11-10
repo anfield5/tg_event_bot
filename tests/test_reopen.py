@@ -2,6 +2,7 @@
 /reopen - the owner-level 🔓 Reopen button: mode switch, the button on the hub post, the press itself, and the
 Google Sheet cleanup that keeps the next Save & Close from listing everybody twice.
 """
+from pathlib import Path
 import re
 import sqlite3
 import sys
@@ -534,7 +535,7 @@ class TestSheetCleanup:
 
 class TestAroundIt:
     def test_it_is_registered(self):
-        text = open("main.py", encoding="utf-8").read()
+        text = Path("main.py").read_text(encoding="utf-8")
         assert 'CommandHandler("reopen", reopen_command)' in text
         assert 'pattern="^reopen_"' in text
         assert text.index('pattern="^reopen_"') < text.index("CallbackQueryHandler(button_handler)")

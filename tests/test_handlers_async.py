@@ -165,7 +165,7 @@ class TestNewevent:
     @pytest.fixture(autouse=True)
     def _patch_sheets(self):
         """Suppress all Google Sheets calls globally for this class."""
-        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock) as gs, \
+        with patch("handlers.get_sheet_for_chat", new_callable=AsyncMock), \
              patch("handlers.open_spreadsheet",   new_callable=AsyncMock) as os_:
             ws = AsyncMock()
             ws.append_row = AsyncMock()
@@ -3063,7 +3063,6 @@ class TestStickyHubSelection:
     async def test_switchpick_button_sets_new_selection_without_replaying_a_command(self, db_path):
         import hub_resolver
         bot = make_bot()
-        dm_chat = make_chat(chat_id=555555, chat_type="private")
         ctx = make_context(bot=bot, args=[])
 
         query = MagicMock()
@@ -4664,6 +4663,7 @@ class TestNeweventEditeventLimitFlag:
 
 # ── Waitlist rendering: visible/hidden/onlycount (v3.24.0) ────────────────────
 
+@pytest.mark.usefixtures("lists_expanded")
 class TestWaitlistVisibilityRendering:
     """update_all_shared_views' Waitlist section across all 3 visibility
     modes, in both the main hub's own post and a child chat's post."""
@@ -7668,6 +7668,7 @@ class TestNotgoingVisibilityFlags:
         assert "carol" not in text
 
 
+@pytest.mark.usefixtures("lists_expanded")
 class TestChildChatNotgoingDisplay:
     """Item 3+6: Not Going list now displays in shareevent'd (child)
     posts too, with per-share override support (share_notgoing_visibility
@@ -8970,6 +8971,7 @@ class TestClickabilityFlag:
         assert "[Bob B](tg://user?id=2)" in text
 
 
+@pytest.mark.usefixtures("lists_expanded")
 class TestClickabilityOnMakesEverySectionClickable:
     """Item 2/3: with clickability=on, EVERY section of a rendered post
     must produce genuine [Name](tg://user?id=...) mentions, not just
@@ -9519,7 +9521,7 @@ class TestVerificationPageNavigation:
         upd.effective_chat = chat
 
         with patch("event_engine.is_real_admin", new_callable=AsyncMock, return_value=True), \
-             patch("event_engine.update_all_shared_views", new_callable=AsyncMock) as mock_render:
+             patch("event_engine.update_all_shared_views", new_callable=AsyncMock):
             await event_engine.button_handler(upd, ctx)
 
         assert event_engine._verification_pages["ev1"] == 1, "page must remain 1 after an unrelated kick action"
@@ -9863,7 +9865,7 @@ class TestDropallGuests:
 
         row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND user_id='10'").fetchone()
         assert row == (0,)
-        row2 = conn.execute("SELECT event_id FROM events WHERE event_id='ev1'").fetchone()
+        assert conn.execute("SELECT event_id FROM events WHERE event_id='ev1'").fetchone() is not None, "the event itself is untouched"
         wl_data = conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0]
         assert json.loads(wl_data) == []
         assert ctx.bot.send_message.call_count >= 1  # dave gets promoted and announced
@@ -10964,6 +10966,7 @@ class TestGuestActionsAlwaysCaptureRealName:
         assert row == ("Dave", "Lee")
 
 
+@pytest.mark.usefixtures("lists_expanded")
 class TestNotGoingEmbedsUserIdDirectly:
     """Real bug found: the master hub's Not Going list stored only bare
     usernames (no id), relying entirely on a fallback lookup-by-username

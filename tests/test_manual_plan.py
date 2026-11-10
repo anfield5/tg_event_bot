@@ -1,8 +1,9 @@
 """docs/manual_testing.md must not rot: its header numbers match its cases, and a new command can't
 be added to the bot without the plan at least mentioning it."""
+from pathlib import Path
 import re
 
-PLAN = open("docs/manual_testing.md", encoding="utf-8").read()
+PLAN = Path("docs/manual_testing.md").read_text(encoding="utf-8")
 CASES = re.findall(r"^- \[[ x]\] \*\*([A-K]\d+)\*\*( 🔥)?", PLAN, flags=re.M)
 
 
@@ -14,7 +15,7 @@ def test_case_ids_are_unique_and_the_header_numbers_are_true():
 
 
 def test_every_registered_command_is_mentioned_in_the_plan():
-    registered = set(re.findall(r'CommandHandler\("([a-z]+)"', open("main.py", encoding="utf-8").read()))
+    registered = set(re.findall(r'CommandHandler\("([a-z]+)"', Path("main.py").read_text(encoding="utf-8")))
     mentioned = set(re.findall(r"/([a-z]+)", PLAN))
     assert registered - mentioned == set()
 

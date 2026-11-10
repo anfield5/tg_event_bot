@@ -5,7 +5,7 @@ not the automated `pytest` suite (that already covers 1000+ tests on
 every commit). Use this when verifying a deploy, hunting a
 reported bug, or sanity-checking a big refactor before it goes out.
 
-> **The prioritised release plan is `docs/manual_testing.md`** (46 cases, 12 of them
+> **The prioritised release plan is `docs/manual_testing.md`** (47 cases, 12 of them
 > smoke, with selection rules per changed area). This file keeps the per-topic
 > checklists below and the Regression Watch List at the end.
 

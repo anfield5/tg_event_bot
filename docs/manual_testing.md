@@ -1,6 +1,6 @@
 # Manual Testing Guide
 
-> Written for **4.7.x**. **46 cases in total - 12 of them are smoke** (marked 🔥).
+> Written for **4.8.x**. **47 cases in total - 12 of them are smoke** (marked 🔥).
 > A full pass is ~3.5-4 hours for one tester; the smoke subset is ~20 minutes.
 
 This is the **prioritised test plan**: which cases to run, in what order, and how. It is risk-based - cases exist where this bot has actually broken before, or where the automated suite structurally cannot look (real Telegram, real Google Sheets, several people at once, a real deploy).
@@ -9,7 +9,7 @@ This is the **prioritised test plan**: which cases to run, in what order, and ho
 
 | Document | What it is |
 |---|---|
-| **this file** | the plan: 46 cases, selection rules, exploratory charters |
+| **this file** | the plan: 47 cases, selection rules, exploratory charters |
 | `docs/specs/*.md` | exact Given/When/Then per command/flag (`wl_waitlist.md` W1-W13, `clc_clickability.md` C1-C9, `newevent_editevent.md`, `shareevent.md` S1-S15, `ngl_notgoinglist.md`). Cases below point at them - run those scenarios, **tick the result there** |
 | `docs/specs/MANUAL_TESTING.md` | per-topic checklists + the **Regression Watch List** (why each check exists) |
 | `pytest tests/` (1000+ tests) | all logic. Do not re-test it by hand - see section 6 |
@@ -61,7 +61,7 @@ Smoke needs only Hub-PRO, Child, O, A, M1, M2. Use a **staging** bot token, shee
 | `hub_resolver.py` (DM) | G4 |
 | `/deleteevent`, `/newevent` | H*, A7 |
 
-## 3. The 46 cases
+## 3. The 47 cases
 
 ### A. Event lifecycle (7)
 
@@ -72,6 +72,7 @@ Smoke needs only Hub-PRO, Child, O, A, M1, M2. Use a **staging** bot token, shee
 - [ ] **A5** **Verification-mode edits.** *Given* an event in Verify mode (repeat the Add Extra Member step once as an admin who has "Remain anonymous" on in the hub - the typed name must still be taken, and the `Actions` row must name the admin who pressed the button, not GroupAnonymousBot). *When* A **Kicks** a person, then clicks **Return**, then changes a guest count with **-/+**, then uses **Add Extra Member** with (a) a username of someone who has used the bot, (a2) the username of a member of a **monitored Child that the event is not shared to**, and (b) one who never has. *Then* kick/return/guest changes update every post; (a) is clickable; (a2) is listed under "Going from <Child>" in the hub post, counts in TOTAL and can be kicked / returned there; (b) shows as plain text after a notice that explains why, and a later `/refreshusers` warns "Added via Extra Member but never resolved to a real user_id".
 - [ ] **A6** **`/editevent` semantics.** *Given* an open event. *When* A runs `/editevent` changing only the name, then only `-d`, then `-gi/-ni`, then `-d` with an invalid date. *Then* only the given fields change; all posts refresh; the invalid date is rejected **before** anything changes (nothing half-applied). (`newevent_editevent.md` N-series.)
 - [ ] **A7** **Active-event warning.** *Given* an open (or stuck-in-verification) event. *When* M1 runs `/newevent` again. *Then* a warning names the old event and says commands now target the new one; after a proper Save & Close the warning does **not** appear.
+- [ ] **A8** **Folding the lists.** *Given* an open event with people in Going and in Not Going and someone on the Waitlist (`-wl visible`), shared to Child in `-visible` mode. *When* the post is first shown; M1 presses **▸ Not Going (n)**; M2 presses **▸ Waitlist (n)** and then **▾ Going (n)**; A presses **▸ Not Going** in the Child post only; then the event goes through Verify, Save & Close and (with the mode on) 🔓 Reopen; finally repeat with `-ngl onlycount` and `-wl hidden` (`/editevent`). *Then* Going is shown while Not Going and Waitlist are folded to their header (`Not Going (n)` with no names), and each foldable list has a button under the post whose chevron matches its state (▾ shown, ▸ folded) and whose number is the list's count; a press flips that list **for everyone** looking at that post and the post redraws; the Child post folds independently of the Hub's; folding Going hides the names in every going block of that post while the headers, the counts and the TOTAL line stay; a hidden or count-only list - and an empty one - has **no** button; in Verify mode, after Save & Close and after Cancel every list is shown in full with no fold buttons; after the reopen the earlier choices are back; deleting the event leaves nothing behind.
 
 ### B. Capacity and waitlist (5)
 

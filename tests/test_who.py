@@ -1,4 +1,5 @@
 """/who: parsing, scope (main / alias / all), the two reports, formatting and the command itself."""
+from pathlib import Path
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -444,7 +445,7 @@ class TestCommand:
 
 class TestIntegration:
     def test_the_command_is_registered(self):
-        assert 'CommandHandler("who", who_command)' in open("main.py", encoding="utf-8").read()
+        assert 'CommandHandler("who", who_command)' in Path("main.py").read_text(encoding="utf-8")
 
     async def test_help_shows_it_only_on_hubs_that_have_the_feature(self, db_path, pro_hub):
         assert "/who" in plain((await _gather(1))["help_users"])

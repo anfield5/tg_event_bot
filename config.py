@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "4.7.5"
+BOT_VERSION = "4.8.1"
 
 # Moment this process started - what /version reports as "Started" / uptime.
 STARTED_AT = time.time()
@@ -83,6 +83,8 @@ ICON_REMOVE         = "-"
 ICON_CANCEL_EVENT   = "🚫"
 ICON_SAVE           = "💾"
 ICON_REOPEN         = "🔓"
+ICON_LIST_EXPANDED  = "▾"    # on the button of a list that is shown: pressing it folds the list
+ICON_LIST_COLLAPSED = "▸"    # on the button of a list that is folded: pressing it unfolds the list
 
 # Message / status icons
 ICON_SHARED         = "↪️"

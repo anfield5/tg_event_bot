@@ -3,6 +3,7 @@
 actually running, when it started, and the Python / python-telegram-bot
 versions. Silence for everyone who isn't an owner.
 """
+from pathlib import Path
 import sys
 import time
 from unittest.mock import patch
@@ -67,7 +68,7 @@ class TestVersionIsDocumentedAndRegistered:
         assert text.index("/version") < text.index("/stats")
 
     def test_command_is_registered(self):
-        source = open("main.py", encoding="utf-8").read()
+        source = Path("main.py").read_text(encoding="utf-8")
         assert 'CommandHandler("version", version_command)' in source
 
 

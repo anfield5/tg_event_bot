@@ -17,7 +17,7 @@ import sys
 import os
 import sqlite3
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Make the project root importable without installing the package
@@ -89,3 +89,35 @@ __all__ = [
     "make_user", "make_chat", "make_message", "make_bot",
     "make_update", "make_context",
 ]
+
+
+@pytest.fixture
+def lists_expanded():
+    """
+    The lists of an event post start FOLDED (Not Going, Waitlist - see db.LIST_DEFAULT_COLLAPSED). A test of what a
+    visible list CONTAINS - who is in it, how a name is linked - is not about folding, so it renders them unfolded.
+    Tests of the folding itself (tests/test_list_folding.py) leave the defaults alone.
+    """
+    import db
+    with patch.dict(db.LIST_DEFAULT_COLLAPSED, {"going": False, "notgoing": False, "waitlist": False}):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_title_cache():
+    """Chat titles are cached across renders (event_engine._TITLE_CACHE); no test may see another's."""
+    import event_engine
+    event_engine._TITLE_CACHE.clear()
+    yield
+    event_engine._TITLE_CACHE.clear()
+
+
+@pytest.fixture
+def pro(db_path):
+    """The hub -100123 has an active PRO subscription (what the PRO-only commands - monitors, aliases - check)."""
+    from datetime import datetime, timedelta
+    end = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, subs_date_start, subs_date_end) VALUES ('-100123', 'Hub', 'PRO', ?, ?)", (end, end))
+    conn.commit()
+    conn.close()

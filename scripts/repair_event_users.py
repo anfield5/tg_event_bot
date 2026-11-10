@@ -34,12 +34,12 @@ import argparse
 import asyncio
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 
 sys.path.insert(0, ".")
 from db import init_db, DB_PATH  # noqa: E402
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet  # noqa: E402
 import scripts.audit_event_users as audit  # noqa: E402
+from scripts._common import cutoff_for, hub_chat_ids, run_per_hub  # noqa: E402
 
 REWRITE, REMOVE, ADD_ROW, FIX_ROW, RESOLVE = "REWRITE_EVENTUSERS", "REMOVE_STALE_ROWS", "ADD_EVENTS_ROW", "FIX_EVENTS_ROW", "RESOLVE_ID"
 ROSTER_PROBLEMS = {"EVENTUSERS_MISSING", "ID_NOT_IN_SHEET", "ID_NOT_IN_DB", "SHEET_DUPLICATE"}
@@ -190,20 +190,12 @@ async def repair_hub(chat_id, db_path, cutoff, apply=False, resolve_ids=False) -
 
 async def _run(target_chat_id=None, days=60, db_path=DB_PATH, apply=False, resolve_ids=False):
     init_db(db_path=db_path)
-    cutoff = None if days is None else datetime.now() - timedelta(days=days)
-    conn = sqlite3.connect(db_path)
-    if target_chat_id:
-        chat_ids = [target_chat_id]
-    else:
-        chat_ids = [r[0] for r in conn.execute("SELECT chat_id FROM all_groups WHERE sheet_id IS NOT NULL AND sheet_id != ''")]
-    conn.close()
-    results = {}
-    for chat_id in chat_ids:
-        try:
-            results[chat_id] = await repair_hub(chat_id, db_path, cutoff, apply=apply, resolve_ids=resolve_ids)
-        except Exception as e:   # one hub's sheet failing (no access, deleted...) must not stop the others
-            results[chat_id] = (None, audit.describe_hub_error(db_path, chat_id, e), None)
-    return results
+    cutoff = cutoff_for(days)
+    return await run_per_hub(
+        hub_chat_ids(db_path, target_chat_id), db_path,
+        lambda chat_id: repair_hub(chat_id, db_path, cutoff, apply=apply, resolve_ids=resolve_ids),
+        lambda message: (None, message, None),
+    )
 
 
 def _print_report(results, apply) -> int:

@@ -644,6 +644,7 @@ async def _perform_event_deletion(context, chat_id, event_id) -> str:
         with get_connection() as conn:
             conn.execute("DELETE FROM event_users WHERE event_id = ?", (event_id,))
             conn.execute("DELETE FROM event_shares WHERE event_id = ?", (event_id,))
+            conn.execute("DELETE FROM list_view_state WHERE event_id = ?", (event_id,))
             conn.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
             conn.commit()
 

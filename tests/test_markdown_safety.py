@@ -26,6 +26,7 @@ as a literal backslash in the rendered message rather than being consumed,
 so a '.'/'!' inside backticks (e.g. a "..." in a usage example) is correct
 as-is and must NOT be flagged.
 """
+from pathlib import Path
 import ast
 import os
 
@@ -89,7 +90,7 @@ def test_no_unescaped_periods_or_exclamations_in_markdownv2_messages():
         if not filename.endswith(".py"):
             continue
         filepath = os.path.join(project_root, filename)
-        source = open(filepath, encoding="utf-8").read()
+        source = Path(filepath).read_text(encoding="utf-8")
         tree = ast.parse(source)
 
         finder = MarkdownV2Finder()

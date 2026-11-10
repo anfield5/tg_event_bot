@@ -193,6 +193,8 @@ No flags. *(owner-only)* Lists every channel the bot is in.
 - **Verify** *(shown when `verification` feature is on)* — admin-or-creator, locks voting, enters review mode.
 - **Save&Close** *(shown when `verification` is off)* — admin-or-creator, closes directly.
 - **Cancel** — admin-or-creator, cancels immediately.
+- **▾ Going (n) / ▸ Not Going (n) / ▸ Waitlist (n)** *(one button per list that is shown by name and is not empty, in a row of its own under the action buttons; `listview.py`)* — folds or unfolds that list **for everyone looking at that post**: ▾ means shown, ▸ folded to its header line (`Not Going (3)`, no names). Defaults: Going shown, Not Going and Waitlist folded (`db.LIST_DEFAULT_COLLAPSED`). A list whose mode is `hidden` or `onlycount`, or that is empty, has no button. The state belongs to the POST (`list_view_state`, keyed by event and chat): the hub's post and every shared post fold independently. In a shared post **Going** folds every going block of that post and exists only in `-visible` mode. Only an **open** event folds: in verification, closed or canceled every list is shown in full and the buttons are gone; the choices are remembered and return if the event is reopened.
+- **Chat titles** in a post (`Going from <chat>`, the waitlist's `from <chat>`) come from a cache kept for 10 minutes (`event_engine.TITLE_CACHE_TTL`) instead of one Telegram call per chat on every re-render: a renamed chat shows its new name within that time. The lookups of one render run together, and a failed lookup is not cached.
 
 ## Event post — verification mode (main hub only)
 - **[Participant name]** — non-clickable display row.
@@ -421,6 +423,12 @@ An unresolvable person (e.g. added via Add Extra Member with no real Telegram us
 ## Part B — Google Sheets tabs
 
 Two categories: the **Control Sheet** (one, shared across the whole bot, tracked via `CONTROL_SHEET_ID`) and **per-hub sheets** (one Google Sheet per premium hub, bound via `/setsheet`). Every per-hub write is silently skipped entirely on FREE tier or if no sheet is bound — by design, not an error.
+
+
+### `list_view_state` — which lists of an event post are folded
+**Columns:** `event_id`, `chat_id`, `list_name` (`going` / `notgoing` / `waitlist`), `collapsed` (0/1) — PK `(event_id, chat_id, list_name)`.
+
+Written only by the ▾ / ▸ fold buttons under an open event's post (`listview.listview_callback_handler` → `db.toggle_list_state`) and read by every render (`db.get_list_states`). Absence of a row means the default, `db.LIST_DEFAULT_COLLAPSED`: Going shown, Not Going and Waitlist folded. `chat_id` is the chat the POST lives in, so the hub's post and each shared post fold independently; the state is shared by everyone looking at that post. Rows are deleted with the event (`/deleteevent`). The table is created by `init_db()` on startup.
 
 ### Control Sheet — `GROUPS` tab
 **Columns:** CHAT_ID, CHAT_NAME, TYPE, SHEET_ID, SHEET_NAME, SUBS_DATE_START, SUBS_DATE_END, VISIBILITY, DATE_BOT_ADD, ROLE

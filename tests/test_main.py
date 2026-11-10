@@ -15,7 +15,7 @@ add/remove lifecycle for both groups and channels, verifying:
   - Removal logs to all_chats_bot_log with BOTH date_bot_add (copied from
     the original row) and date_bot_remove (the moment of removal)
 """
-import sys
+from pathlib import Path
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -290,11 +290,11 @@ class TestStatsCommandRegistration:
     invocation in a test unsafe."""
 
     def test_stats_command_handler_registered_in_main(self):
-        source = open("main.py", encoding="utf-8").read()
+        source = Path("main.py").read_text(encoding="utf-8")
         assert 'CommandHandler("stats", stats_command)' in source
 
     def test_stats_command_imported_from_handlers(self):
-        source = open("main.py", encoding="utf-8").read()
+        source = Path("main.py").read_text(encoding="utf-8")
         import_block = source[source.index("from handlers import"):source.index("from subscription import")]
         assert "stats_command" in import_block
 
@@ -303,7 +303,7 @@ class TestStatsCommandRegistration:
         CallbackQueryHandlers, registered before the catch-all
         button_handler - otherwise statsusers_/statsback_ clicks
         would fall through to event_engine's event-post dispatch instead."""
-        source = open("main.py", encoding="utf-8").read()
+        source = Path("main.py").read_text(encoding="utf-8")
         assert 'CallbackQueryHandler(stats_users_callback_handler, pattern="^statsusers_")' in source
         assert 'CallbackQueryHandler(stats_back_callback_handler, pattern="^statsback_")' in source
         stats_users_pos = source.index('pattern="^statsusers_"')
@@ -553,7 +553,7 @@ class TestLockGateVotingExemption:
 
 class TestDeleteeventRegistration:
     def test_command_and_callbacks_registered_before_the_catch_all(self):
-        source = open("main.py", encoding="utf-8").read()
+        source = Path("main.py").read_text(encoding="utf-8")
         assert 'CommandHandler("deleteevent"' in source
         pattern = 'CallbackQueryHandler(deleteevent_callback_handler, pattern="^delev(pick|yes|no)_")'
         assert pattern in source

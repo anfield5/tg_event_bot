@@ -3,6 +3,7 @@ Commands run from a DM go through hub_resolver: the group is resolved (or picked
 is REPLAYED on a stand-in update/context). Everything that is documented as working from a DM has to work on that
 replay path too.
 """
+from pathlib import Path
 import ast
 import inspect
 import re
@@ -103,7 +104,7 @@ class TestCommandsFinishAfterTheGroupPicker:
 
 class TestNamesAndShapes:
     def test_every_registered_hub_command_is_a_real_command(self):
-        main_text = open("main.py", encoding="utf-8").read()
+        main_text = Path("main.py").read_text(encoding="utf-8")
         real = set(re.findall(r'CommandHandler\("([a-z]+)"', main_text))
         unknown = set(hub_resolver.HUB_COMMAND_REGISTRY) - real
         assert unknown == set(), f"registered under a name that is not a command: {unknown}"

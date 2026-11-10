@@ -7,7 +7,6 @@ import sys
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 sys.path.insert(0, ".")
 import scripts.sync_bot_roles as sync_roles

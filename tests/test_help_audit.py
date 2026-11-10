@@ -4,6 +4,7 @@ documented somewhere, nothing outdated is left in the text, hubs only see featur
 have, and every text is valid MarkdownV2 (an unescaped '.' makes Telegram reject the whole
 message - the user then sees nothing).
 """
+from pathlib import Path
 import re
 import sqlite3
 import sys
@@ -15,7 +16,7 @@ import help_system
 from tests.helpers import make_chat, make_user, make_message, make_update, make_context
 
 OWNER = 555
-KEYS = sorted(set(re.findall(r'"(help_[a-z_]+)"', open("help_system.py", encoding="utf-8").read())))
+KEYS = sorted(set(re.findall(r'"(help_[a-z_]+)"', Path("help_system.py").read_text(encoding="utf-8"))))
 
 
 def _plain(text):
@@ -95,7 +96,7 @@ class TestHelpAudit:
         _make_pro(db_path)
         blob = " ".join(_plain(t) for t in (await _gather(OWNER)).values())
         mentioned = set(re.findall(r"/([a-z]+)", blob))
-        registered = set(re.findall(r'CommandHandler\("([a-z]+)"', open("main.py", encoding="utf-8").read()))
+        registered = set(re.findall(r'CommandHandler\("([a-z]+)"', Path("main.py").read_text(encoding="utf-8")))
         assert registered - mentioned == set()
 
     async def test_nothing_outdated_is_left_in_any_text(self, db_path):

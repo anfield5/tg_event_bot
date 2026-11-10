@@ -102,7 +102,10 @@ def _newevent_flags_detail_text() -> str:
         "*on\\|off* \\(\\-clc only\\):\n"
         "    on \\- every name is a clickable mention\n"
         "    off \\- every name is plain, non\\-linked text\n\n"
-        "*Defaults:* \\-wl hidden, \\-ngl visible, \\-clc on\n"
+        "*Defaults:* \\-wl hidden, \\-ngl visible, \\-clc on\n\n"
+        "*Folding* \\(the lists of an open event's post\\):\n"
+        "    Under the post, every list shown by name has a button \\- ▾ Going \\(5\\), ▸ Not Going \\(3\\) \\- that folds or unfolds it for everyone looking at that post\\.\n"
+        "    Going starts open; Not Going and Waitlist start folded to their header\\. Hidden and count\\-only lists have no button\\.\n"
     )
 
 

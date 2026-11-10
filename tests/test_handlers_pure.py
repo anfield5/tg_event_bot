@@ -9,7 +9,6 @@ Covered:
 No mocking needed here; these functions have zero side-effects.
 """
 
-import pytest
 from handlers import parse_event_args, parse_user_args, create_event_keyboard, parse_shareevent_args
 from telegram import InlineKeyboardMarkup
 

@@ -969,6 +969,19 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
+    # Which lists of an event post are folded. One row per (post, list) that was TOGGLED; a list with no row follows
+    # LIST_DEFAULT_COLLAPSED. Keyed by the chat the post lives in: the hub's post and every shared post are separate
+    # messages and fold independently.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS list_view_state (
+            event_id  TEXT NOT NULL,
+            chat_id   TEXT NOT NULL,
+            list_name TEXT NOT NULL,
+            collapsed INTEGER NOT NULL,
+            PRIMARY KEY (event_id, chat_id, list_name)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -1775,4 +1788,45 @@ def get_reopened_roster(event_id: str):
 def clear_reopened_roster(event_id: str) -> None:
     with get_connection() as conn:
         conn.execute("UPDATE events SET reopened_roster = NULL WHERE event_id = ?", (str(event_id),))
+        conn.commit()
+
+
+
+# ---------------------------------------------------------------------------
+# Folding the lists of an event post (see listview.py)
+# ---------------------------------------------------------------------------
+
+LIST_NAMES = ("going", "notgoing", "waitlist")
+# A list nobody has toggled: the going list is shown, the others are folded to their header.
+LIST_DEFAULT_COLLAPSED = {"going": False, "notgoing": True, "waitlist": True}
+
+
+def get_list_states(event_id: str) -> dict:
+    """{(chat_id, list_name): collapsed} for every list of this event that has been toggled. Anything absent is default."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT chat_id, list_name, collapsed FROM list_view_state WHERE event_id = ?", (str(event_id),)).fetchall()
+    return {(str(chat_id), name): bool(collapsed) for chat_id, name, collapsed in rows}
+
+
+def toggle_list_state(event_id: str, chat_id: str, list_name: str) -> bool:
+    """Flips one list of one post (from its current state, default included) and returns the new `collapsed`."""
+    if list_name not in LIST_DEFAULT_COLLAPSED:
+        raise ValueError(f"unknown list {list_name!r}")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT collapsed FROM list_view_state WHERE event_id = ? AND chat_id = ? AND list_name = ?",
+            (str(event_id), str(chat_id), list_name),
+        ).fetchone()
+        current = bool(row[0]) if row else LIST_DEFAULT_COLLAPSED[list_name]
+        conn.execute(
+            "INSERT OR REPLACE INTO list_view_state (event_id, chat_id, list_name, collapsed) VALUES (?, ?, ?, ?)",
+            (str(event_id), str(chat_id), list_name, int(not current)),
+        )
+        conn.commit()
+    return not current
+
+
+def delete_list_states(event_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM list_view_state WHERE event_id = ?", (str(event_id),))
         conn.commit()

@@ -9,7 +9,6 @@ import sqlite3
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 sys.path.insert(0, ".")
 import scripts.sync_events_to_sheets as sync_script

@@ -51,11 +51,12 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 
 sys.path.insert(0, ".")
 from db import init_db, DB_PATH, headcount_from_rows  # noqa: E402
 from sheets import get_sheet_for_chat, open_spreadsheet  # noqa: E402
+from scripts._common import cutoff_for, hub_chat_ids, run_per_hub  # noqa: E402
 
 DATE_FMT = "%d.%m.%Y %H:%M:%S.%f"
 SHEET_STATUS = {-1: "CANCELED", 0: "OPEN", 1: "OPEN", 2: "CLOSED"}   # what the Events tab holds (verification isn't written)
@@ -465,25 +466,6 @@ async def audit_hub(chat_id, db_path, cutoff, bot=None, to_chat_id=None, post_li
     return findings, stats
 
 
-def describe_hub_error(db_path, chat_id, error) -> str:
-    """One line for a hub that could not be read at all: which hub and sheet, what Google said, and what that usually means."""
-    conn = sqlite3.connect(db_path)
-    try:
-        row = conn.execute("SELECT chat_name, sheet_id FROM all_groups WHERE chat_id = ?", (str(chat_id),)).fetchone()
-    finally:
-        conn.close()
-    name = f"\u00ab{row[0]}\u00bb, " if row and row[0] else ""
-    sheet = f"sheet {row[1]}: " if row and row[1] else ""
-    reason = str(error)
-    text = f"{name}{sheet}{type(error).__name__}: {reason[:220]}"
-    if "PERMISSION_DENIED" in reason or "403" in reason:
-        text += (" - the bot's service account has no access to this spreadsheet: share it with that account as Editor "
-                 "(or fix the binding with /setsheet). Saving events in this hub fails the same way.")
-    elif "NOT_FOUND" in reason or "404" in reason:
-        text += " - the spreadsheet no longer exists or its id is wrong: bind the right one with /setsheet."
-    return text
-
-
 def results_to_dict(results) -> dict:
     """The run as plain data (for --json): per hub its findings and stats, an error, or None when it has no Sheet."""
     out = {}
@@ -504,13 +486,8 @@ def has_problems(results) -> bool:
 
 async def _run(target_chat_id=None, days=60, db_path=DB_PATH, telegram=False, to_chat_id=None, post_limit=15):
     init_db(db_path=db_path)
-    cutoff = None if days is None else datetime.now() - timedelta(days=days)
-    conn = sqlite3.connect(db_path)
-    if target_chat_id:
-        chat_ids = [target_chat_id]
-    else:
-        chat_ids = [r[0] for r in conn.execute("SELECT chat_id FROM all_groups WHERE sheet_id IS NOT NULL AND sheet_id != ''")]
-    conn.close()
+    cutoff = cutoff_for(days)
+    chat_ids = hub_chat_ids(db_path, target_chat_id)
 
     bot_cm = None
     bot = None
@@ -520,14 +497,12 @@ async def _run(target_chat_id=None, days=60, db_path=DB_PATH, telegram=False, to
         bot_cm = Bot(config.TELEGRAM_TOKEN)
         await bot_cm.initialize()
         bot = bot_cm
-    results = {}
     try:
-        for chat_id in chat_ids:
-            try:
-                findings, stats = await audit_hub(chat_id, db_path, cutoff, bot=bot, to_chat_id=to_chat_id, post_limit=post_limit)
-            except Exception as e:   # one hub's sheet failing (no access, deleted...) must not hide all the others
-                findings, stats = None, {"error": describe_hub_error(db_path, chat_id, e)}
-            results[chat_id] = (findings, stats)
+        results = await run_per_hub(
+            chat_ids, db_path,
+            lambda chat_id: audit_hub(chat_id, db_path, cutoff, bot=bot, to_chat_id=to_chat_id, post_limit=post_limit),
+            lambda message: (None, {"error": message}),
+        )
     finally:
         if bot_cm is not None:
             await bot_cm.shutdown()

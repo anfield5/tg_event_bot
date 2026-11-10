@@ -63,6 +63,9 @@ zone are chosen to minimize crossing lines.
 >   time is the first detection, so a retry writes identical dates (no duplicate log rows).
 > - `reopen_mode` says, per hub, whether the owner-controlled 🔓 Reopen button is switched on (who switched it
 >   and when are kept). It is a table of its own because a hub's `all_groups` row comes and goes with the bot.
+> - `list_view_state` records which lists of an event post are folded: one row per (event, chat, list) that was
+>   toggled with the ▾ / ▸ buttons under the post; a list with no row follows the default (Going shown, Not Going and
+>   Waitlist folded). Keyed by chat because the hub's post and every shared post fold on their own; removed with the event.
 > - `events.waitlist_open` (the old boolean open/closed flag) has been
 >   physically dropped - superseded by `waitlist_visibility`
 >   (visible/hidden/onlycount), which no code path had read `waitlist_open`

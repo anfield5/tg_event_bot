@@ -40,6 +40,7 @@ sys.path.insert(0, ".")
 from db import init_db, DB_PATH  # noqa: E402
 from sheets import get_sheet_for_chat, open_spreadsheet  # noqa: E402
 import scripts.audit_event_users as audit  # noqa: E402
+from scripts._common import hub_chat_ids, run_per_hub  # noqa: E402
 
 SHEET_CELL, DB_ROW = "EVENTUSERS_CELL", "EVENT_USERS_ROW"
 FAST_UPDATES = 30     # the first sheet writes go out back to back; after that one a second (Sheets allows ~60 a minute)
@@ -201,19 +202,11 @@ async def fix_hub(chat_id, db_path, apply=False) -> tuple:
 
 async def _run(target_chat_id=None, db_path=DB_PATH, apply=False):
     init_db(db_path=db_path)
-    conn = sqlite3.connect(db_path)
-    if target_chat_id:
-        chat_ids = [target_chat_id]
-    else:
-        chat_ids = [r[0] for r in conn.execute("SELECT chat_id FROM all_groups WHERE sheet_id IS NOT NULL AND sheet_id != ''")]
-    conn.close()
-    results = {}
-    for chat_id in chat_ids:
-        try:
-            results[chat_id] = await fix_hub(chat_id, db_path, apply=apply)
-        except Exception as e:   # one hub's sheet failing (no access, deleted...) must not stop the others
-            results[chat_id] = (None, audit.describe_hub_error(db_path, chat_id, e), None)
-    return results
+    return await run_per_hub(
+        hub_chat_ids(db_path, target_chat_id), db_path,
+        lambda chat_id: fix_hub(chat_id, db_path, apply=apply),
+        lambda message: (None, message, None),
+    )
 
 
 def _print_report(results, apply) -> int:

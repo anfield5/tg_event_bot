@@ -15,6 +15,10 @@ from config import (
     ICON_CANCEL_EVENT, ICON_SAVE,
 )
 
+# The fold/unfold buttons share one row while their labels are short, otherwise one per row - Telegram cuts the text of
+# a button that does not fit its share of the row.
+TOGGLE_ROW_MAX_CHARS = 34
+
 # Each verification-mode participant renders as 2 rows / 5 buttons (name+Kick,
 # guest-count+minus+plus). Telegram's own practical limit is ~100 buttons per
 # keyboard - real incident: an event with 21+ going participants (105+
@@ -43,6 +47,7 @@ def create_event_keyboard(
     display_names: dict = None,
     verification_page: int = 0,
     reopen_available: bool = False,
+    list_toggles: list = None,
 ) -> InlineKeyboardMarkup:
     """
     Generates dynamic inline keyboards.
@@ -51,7 +56,8 @@ def create_event_keyboard(
     event_status == 2   → empty keyboard (event closed)
                           ...except the master post while reopen mode is on (reopen_available=True): one
                           "🔓 Reopen" button, see reopen.py. Child posts never get it.
-    event_status == 0   → Going / Not Going / Add & Sub guest / Close button
+    event_status == 0   → Going / Not Going / Add & Sub guest / Close button, then (when list_toggles is given) the
+                          fold / unfold buttons: list_toggles is [(key, label)] with key g / n / w - see listview.py
     event_status == 1   → Verification mode:
                     Each participant is rendered over TWO rows:
                         Row A: [👤 name]          [❌ Kick]
@@ -113,6 +119,12 @@ def create_event_keyboard(
                 close_button,
                 InlineKeyboardButton(f"{ICON_CANCEL_EVENT} Cancel", callback_data=f"cancel_{event_id}"),
             ])
+        if list_toggles:
+            toggle_buttons = [InlineKeyboardButton(label, callback_data=f"lv_{event_id}:{key}") for key, label in list_toggles]
+            if sum(len(label) for _, label in list_toggles) <= TOGGLE_ROW_MAX_CHARS:
+                buttons.append(toggle_buttons)
+            else:
+                buttons.extend([b] for b in toggle_buttons)
 
     elif event_status == 1 and not is_child:
         # ── Master participants ────────────────────────────────────────────
