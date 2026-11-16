@@ -1,6 +1,6 @@
 # Manual Testing Guide
 
-> Written for **4.8.x**. **47 cases in total - 12 of them are smoke** (marked 🔥).
+> Written for **4.9.x**. **47 cases in total - 12 of them are smoke** (marked 🔥).
 > A full pass is ~3.5-4 hours for one tester; the smoke subset is ~20 minutes.
 
 This is the **prioritised test plan**: which cases to run, in what order, and how. It is risk-based - cases exist where this bot has actually broken before, or where the automated suite structurally cannot look (real Telegram, real Google Sheets, several people at once, a real deploy).

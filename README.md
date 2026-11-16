@@ -160,8 +160,13 @@ zone are chosen to minimize crossing lines.
 >   headcount written at Save & Close or at Cancel: going people plus every guest, from every chat;
 >   0 for an open event) against `event_users`, shows both numbers and how
 >   the database one is made up, and with `--apply` corrects only the wrong cells.
-> - `scripts/update_canceled_amounts.py` is that same check limited to events canceled before 4.8.0, which
+> - `scripts/update_canceled_amounts.py` is that same check limited to events canceled before 4.9.0, which
 >   wrote 0 into AMOUNT: it puts the headcount they had into column H (dry run unless `--apply`).
+> - `scripts/migrate_legacy_hub_rosters.py` moves the hub's participants of old events from the event's JSON
+>   columns into `event_users` when only a child chat's people got rows there (the post still shows everybody, but the
+>   Events tab AMOUNT, the EventUsers tab and the audit saw only the child: a post saying 15 was exported as 7). The
+>   audit reports such events as `HUB_NOT_MIGRATED`; the amount check counts them correctly. Dry run unless `--apply`,
+>   database only - then run `repair_event_users.py --apply` to bring the Sheet in line.
 > - `scripts/try_rich_message.py <chat_id>` is a live check of Telegram Rich Messages - run it once in a test
 >   chat before `/hideability on` (it shows what only a screen can: folding, edits, going back to text).
 

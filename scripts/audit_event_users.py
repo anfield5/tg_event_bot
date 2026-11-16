@@ -15,7 +15,7 @@ For every hub that has a Sheet, and every event created in the last N days, it r
     ROWS_FOR_UNFINISHED_EVENT
                          EventUsers rows exist for an event that is open / canceled again (a reopen whose sheet
                          cleanup didn't happen)
-    EVENTS_ROW_MISSING / EVENTS_STATUS / EVENTS_COUNT
+    EVENTS_ROW_MISSING / EVENTS_STATUS / EVENTS_COUNT / HUB_NOT_MIGRATED
                          the Events tab disagrees with the DB (status, or AMOUNT vs going + guests)
     DB_SAME_PERSON_TWICE one person going in two chats of the same event
     SHEET_ORPHAN_EVENT   (info) EventUsers rows of an event the DB doesn't know
@@ -54,7 +54,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 sys.path.insert(0, ".")
-from db import init_db, DB_PATH, headcount_from_rows  # noqa: E402
+from db import init_db, DB_PATH, headcount_from_rows, migrate_event_to_event_users  # noqa: E402
 from sheets import get_sheet_for_chat, open_spreadsheet  # noqa: E402
 from scripts._common import cutoff_for, hub_chat_ids, run_per_hub  # noqa: E402
 
@@ -135,9 +135,70 @@ def legacy_roster(going_data_raw) -> dict:
     return {"ids": list(dict.fromkeys(ids)), "name_only": name_only}
 
 
-def effective_roster(conn, event_id, status, going_data_raw) -> dict:
-    """db_roster, except that a CLOSED event with no event_users rows at all (closed before that table existed) falls
-    back on its frozen going_data list."""
+def hub_json_unmigrated(conn, event_id, hub_chat_id):
+    """The event's own (hub) participants are still only in its old JSON columns - event_users has no row for the hub
+    chat - and those columns hold somebody. The post still shows them (it falls back on the JSON), but the Sheet, AMOUNT and
+    every count from event_users do not: this is the state of an event that no click has touched since event_users
+    took over the hub's participants while a child chat's people already got rows. An event with NO event_users rows at all
+    (closed before that table existed) is not this case: it is compared by its frozen list as a whole (effective_roster).
+    -> the 4 JSON texts, or None."""
+    if conn.execute("SELECT 1 FROM event_users WHERE event_id = ? AND chat_id = ? LIMIT 1", (event_id, str(hub_chat_id))).fetchone():
+        return None
+    if not conn.execute("SELECT 1 FROM event_users WHERE event_id = ? LIMIT 1", (event_id,)).fetchone():
+        return None
+    row = conn.execute("SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?", (event_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        going, not_going, counters, kicked = (json.loads(x or default) for x, default in zip(row, ("[]", "[]", "{}", "[]")))
+    except (TypeError, ValueError):
+        return None
+    return (going, not_going, counters, kicked) if (going or not_going or counters) else None
+
+
+def migrate_hub_legacy(cursor, event_id, hub_chat_id, legacy) -> None:
+    """
+    Moves the hub's people from the old JSON columns into event_users: db.migrate_event_to_event_users (what a click does),
+    then - because that function leaves out whoever it cannot match to a real user id - also the people it skipped, keyed by
+    their NAME like every other unresolved entry (a Not Going name without a link, a guest-only name such as "Andr, +6"):
+    the post shows them, so the count has to as well.
+    """
+    going, not_going, counters, kicked = legacy
+    hub = str(hub_chat_id)
+    migrate_event_to_event_users(cursor, event_id, hub, going, set(not_going), counters, kicked)
+    have = {r[0] for r in cursor.execute("SELECT username FROM event_users WHERE event_id = ? AND chat_id = ?", (event_id, hub))}
+    for entry in not_going:
+        name = entry.split(" (")[0]
+        if name not in have:
+            cursor.execute("INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notgoing', ?)",
+                           (event_id, hub, name, name, counters.get(name, 0)))
+            have.add(name)
+    for name, count in counters.items():
+        if name not in have and count and count > 0:
+            cursor.execute("INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notselected', ?)",
+                           (event_id, hub, name, name, count))
+            have.add(name)
+
+
+def effective_roster(conn, event_id, status, going_data_raw, hub_chat_id=None) -> dict:
+    """
+    db_roster - but with the hub's participants that are still only in the old JSON columns counted too (what the post
+    shows and what a click would migrate (migrate_hub_legacy), run here inside a savepoint that is rolled back,
+    so nothing is written; roster["hub_unmigrated"] says it happened). Without `hub_chat_id` that part is skipped.
+    A CLOSED event with no event_users rows at all still falls back on its frozen going_data list.
+    """
+    legacy_hub = hub_json_unmigrated(conn, event_id, hub_chat_id) if hub_chat_id is not None else None
+    if legacy_hub:
+        conn.execute("SAVEPOINT legacy_hub")
+        try:
+            cursor = conn.cursor()
+            migrate_hub_legacy(cursor, event_id, hub_chat_id, legacy_hub)
+            roster = db_roster(conn, event_id)
+        finally:
+            conn.execute("ROLLBACK TO legacy_hub")
+            conn.execute("RELEASE legacy_hub")
+        roster["hub_unmigrated"] = True
+        return roster
     roster = db_roster(conn, event_id)
     if not roster["rows"] and status == 2:
         legacy = legacy_roster(going_data_raw)
@@ -171,6 +232,11 @@ def compare_event(event: dict, roster: dict, sheet_ids: list, events_row, resolv
 
     def add(code, severity, detail):
         findings.append(Finding(code, severity, event["event_id"], event["name"], detail))
+
+    if roster.get("hub_unmigrated"):
+        add("HUB_NOT_MIGRATED", PROBLEM,
+            "the hub's own participants are only in the event's old JSON columns, event_users has none of them (the post shows "
+            "them, the Sheet and AMOUNT do not) - run scripts/migrate_legacy_hub_rosters.py --apply, then repair_event_users.py --apply")
 
     def label(uid):
         name = roster["names"].get(uid)
@@ -439,7 +505,7 @@ async def audit_hub(chat_id, db_path, cutoff, bot=None, to_chat_id=None, post_li
                 continue
             stats["events"] += 1
             event = {"event_id": str(event_id), "name": name or str(event_id), "status": status}
-            roster = effective_roster(conn, event_id, status, going_data)
+            roster = effective_roster(conn, event_id, status, going_data, chat_id)
             if status == 2:
                 stats["closed"] += 1
             if eu_values:

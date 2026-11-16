@@ -276,3 +276,14 @@ class TestCommand:
         msg, _ = await command(["on"], user_id=1)
         assert not db_module.is_hideability_active(HUB)
         msg.reply_text.assert_not_called()
+
+
+class TestSpacing:
+    def test_no_line_breaks_next_to_a_block(self):
+        text = "*T*\n\n🕐 d\n\n" + richtext.fold("*Going* \\(1\\)", "a", True) + "\n\n" + richtext.fold("*Not Going* \\(1\\)", "b", False) + "\n\n📊 *TOTAL* 1"
+        html = richtext.to_rich_html(text)
+        assert html == ("<b>T</b><br><br>🕐 d<details open><summary><b>Going</b> (1)</summary>a</details>"
+                        "<details><summary><b>Not Going</b> (1)</summary>b</details>📊 <b>TOTAL</b> 1")
+
+    def test_lines_inside_a_block_keep_their_breaks(self):
+        assert "a<br>b" in richtext.to_rich_html(richtext.fold("*G*", "a\nb", True))

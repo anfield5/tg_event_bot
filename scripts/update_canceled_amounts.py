@@ -1,7 +1,7 @@
 """
 One-off: give every event that was CANCELED earlier its AMOUNT in the Events tab.
 
-Until 4.8.0 cancelling an event wrote AMOUNT = 0 whatever the event had at that moment. Now the bot writes the headcount
+Until 4.9.0 cancelling an event wrote AMOUNT = 0 whatever the event had at that moment. Now the bot writes the headcount
 the event had when it was canceled (every person going plus every guest, db.headcount_from_rows - the "TOTAL Going" of
 the post). The database keeps that data (a canceled event keeps its event_users rows) but no copy of the number, so
 this script recomputes it for the canceled events and writes it into column H of the rows that differ - only that cell.

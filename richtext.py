@@ -104,13 +104,21 @@ def md2_to_html(text: str) -> str:
 
 def to_rich_html(text: str) -> str:
     """The marked text -> the HTML of the rich message (see the module docstring)."""
-    parts, last = [], 0
+    # A <details> block is a block of its own with its own spacing, so the blank lines the plain post uses to separate the
+    # lists are NOT turned into <br> next to it (they doubled the gaps).
+    parts, last, first = [], 0, True
     for m in _FOLD.finditer(text):
-        parts.append(md2_to_html(text[last:m.start()]))
+        before = text[last:m.start()]
+        before = before.rstrip("\n") if first else before.strip("\n")
+        if before:
+            parts.append(md2_to_html(before))
         opened = " open" if m.group(1) == _OPEN else ""
         parts.append(f"<details{opened}><summary>{md2_to_html(m.group(2))}</summary>{md2_to_html(m.group(4))}</details>")
-        last = m.end()
-    parts.append(md2_to_html(_MARKERS.sub("", text[last:])))
+        last, first = m.end(), False
+    rest = _MARKERS.sub("", text[last:])
+    rest = rest if first else rest.lstrip("\n")
+    if rest:
+        parts.append(md2_to_html(rest))
     return "".join(parts)
 
 

@@ -124,7 +124,7 @@ async def apply_step(step: Step, chat_id: str, ss, conn, info: dict) -> str:
         conn.commit()
         return "event_users updated"
 
-    roster = audit.effective_roster(conn, step.event_id, info["status"], info["going_data"])
+    roster = audit.effective_roster(conn, step.event_id, info["status"], info["going_data"], chat_id)
     if step.kind == REWRITE:
         await sync_event_users_sheet(chat_id, step.event_id, roster["ids"])
         return f"{len(roster['ids'])} row(s) written"
@@ -166,7 +166,7 @@ async def repair_hub(chat_id, db_path, cutoff, apply=False, resolve_ids=False) -
             created = audit._parse_created(row[3])
             if cutoff is not None and (created is None or created < cutoff):
                 continue
-            roster = audit.effective_roster(conn, info["event_id"], info["status"], info["going_data"])
+            roster = audit.effective_roster(conn, info["event_id"], info["status"], info["going_data"], chat_id)
             steps = plan_event(info, roster, sheet_ids_by_event.get(info["event_id"], []), events_rows.get(info["event_id"]),
                                resolvable, resolve_ids, tab_ok)
             infos[info["event_id"]] = info

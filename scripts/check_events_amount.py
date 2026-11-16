@@ -121,7 +121,7 @@ async def check_hub(chat_id, db_path, cutoff, apply=False, statuses=None):
             if cutoff is not None and (created is None or created < cutoff):
                 continue
             event = {"event_id": str(event_id), "name": name or str(event_id), "status": status}
-            roster = audit.effective_roster(conn, event_id, status, going_data)
+            roster = audit.effective_roster(conn, event_id, status, going_data, chat_id)
             if "breakdown" not in roster:      # an old event with only its frozen list: no breakdown to show
                 roster["breakdown"] = {"going": roster["headcount"], "guests": 0, "guests_of_not_going": 0, "total": roster["headcount"]}
             row = rows_by_event.get(event["event_id"])
