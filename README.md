@@ -21,7 +21,7 @@ covers setup and architecture, not day-to-day usage.
 ## Running it
 
 ```bash
-cp .env.example .env   # fill in BOT_TOKEN, GOOGLE_CREDENTIALS_JSON, OWNER_USER_IDS, CONTROL_SHEET_ID
+cp .env.example .env   # fill in BOT_TOKEN, GOOGLE_CREDENTIALS_JSON, OWNER_USER_IDS, CONTROL_SHEET_ID (optional: RICH_DEBUG=1 logs the HTML of /hideability posts)
 docker compose up -d --build
 docker compose logs bot | grep "Bot v"
 ```

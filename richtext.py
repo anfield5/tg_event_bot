@@ -18,6 +18,7 @@ With /hideability OFF none of this is used: no markers, a plain MarkdownV2 post,
 """
 import html
 import json
+import os
 import re
 
 from config import logger
@@ -109,12 +110,13 @@ def _paragraphs(chunk: str) -> str:
     return "".join(f"<p>{md2_to_html(part.strip(chr(10)))}</p>" for part in parts)
 
 
-def to_rich_html(text: str, paragraphs: bool = True) -> str:
+def to_rich_html(text: str, paragraphs: bool = True, body_paragraph: bool = True) -> str:
     """
     The marked text -> the HTML of the rich message (see the module docstring). Text is made of <p> paragraphs and every
     marked list is a <details> block of its own; the blank lines that separate them in the plain post are not turned into
     <br> (they doubled the gaps - a <details> block and a <p> have their own spacing). `paragraphs=False` is the earlier
-    <br>-only form, kept for scripts/try_rich_message.py to compare the two on a real screen.
+    <br>-only form, `body_paragraph=False` puts the names of a list straight into the <details> instead of in a <p> - both kept
+    for scripts/try_rich_message.py to compare the layouts on a real screen.
     """
     def plain(chunk, edge):
         if paragraphs:
@@ -126,7 +128,7 @@ def to_rich_html(text: str, paragraphs: bool = True) -> str:
     for m in _FOLD.finditer(text):
         parts.append(plain(text[last:m.start()], "first" if first else "mid"))
         opened = " open" if m.group(1) == _OPEN else ""
-        body = f"<p>{md2_to_html(m.group(4))}</p>" if paragraphs else md2_to_html(m.group(4))
+        body = f"<p>{md2_to_html(m.group(4))}</p>" if paragraphs and body_paragraph else md2_to_html(m.group(4))
         parts.append(f"<details{opened}><summary>{md2_to_html(m.group(2))}</summary>{body}</details>")
         last, first = m.end(), False
     parts.append(plain(_MARKERS.sub("", text[last:]), "first" if first else "last"))
@@ -138,6 +140,12 @@ def fits(text: str) -> bool:
     return len(text) < MAX_SOURCE_CHARS // 2 and text.count("\n") < MAX_NEWLINES
 
 
+def _debug_html(kind, chat_id, rich_html):
+    """RICH_DEBUG=1 in the environment: the exact HTML of every rich message goes to the log (to see what is really sent)."""
+    if os.environ.get("RICH_DEBUG") == "1":
+        logger.info(f"RICH_DEBUG {kind} chat={chat_id}: {rich_html}")
+
+
 def _markup(reply_markup):
     return reply_markup.to_dict() if hasattr(reply_markup, "to_dict") else reply_markup
 
@@ -145,7 +153,9 @@ def _markup(reply_markup):
 async def send_rich(bot, chat_id, text: str, reply_markup=None, **extra):
     """sendRichMessage -> the sent Message (a telegram.Message). Raises what the API raises."""
     from telegram import Message
-    data = {"chat_id": chat_id, "rich_message": json.dumps({"html": to_rich_html(text)}), **extra}
+    rich_html = to_rich_html(text)
+    _debug_html("send", chat_id, rich_html)
+    data = {"chat_id": chat_id, "rich_message": json.dumps({"html": rich_html}), **extra}
     if reply_markup is not None:
         data["reply_markup"] = json.dumps(_markup(reply_markup))
     result = await bot._post("sendRichMessage", data)
@@ -154,7 +164,9 @@ async def send_rich(bot, chat_id, text: str, reply_markup=None, **extra):
 
 async def edit_rich(bot, chat_id, message_id, text: str, reply_markup=None):
     """editMessageText with a rich message instead of text. Raises what the API raises."""
-    data = {"chat_id": chat_id, "message_id": message_id, "rich_message": json.dumps({"html": to_rich_html(text)})}
+    rich_html = to_rich_html(text)
+    _debug_html("edit", chat_id, rich_html)
+    data = {"chat_id": chat_id, "message_id": message_id, "rich_message": json.dumps({"html": rich_html})}
     if reply_markup is not None:
         data["reply_markup"] = json.dumps(_markup(reply_markup))
     return await bot._post("editMessageText", data)

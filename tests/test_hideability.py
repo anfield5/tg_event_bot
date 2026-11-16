@@ -291,3 +291,34 @@ class TestSpacing:
 
     def test_lines_inside_a_block_keep_their_breaks(self):
         assert "<p>a<br>b</p>" in richtext.to_rich_html(richtext.fold("*G*", "a\nb", True))
+
+    def test_the_names_can_go_straight_into_the_block(self):
+        html = richtext.to_rich_html(richtext.fold("*G*", "a\nb", True), body_paragraph=False)
+        assert html == "<details open><summary><b>G</b></summary>a<br>b</details>"
+
+
+class TestRichDebug:
+    """RICH_DEBUG=1 logs the exact HTML of every rich message (to see what is really sent); off by default."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["send", "edit"])
+    async def test_the_html_is_logged_only_when_the_switch_is_on(self, monkeypatch, call):
+        bot = make_bot()
+        bot._post = AsyncMock(return_value={})
+        text = richtext.fold("*Going* \\(1\\)", "a", True)
+
+        async def run():
+            if call == "send":
+                await richtext.send_rich(bot, "-1", text)
+            else:
+                await richtext.edit_rich(bot, "-1", 5, text)
+
+        with patch.object(richtext.logger, "info") as info:
+            monkeypatch.delenv("RICH_DEBUG", raising=False)
+            await run()
+            assert not any("RICH_DEBUG" in str(c) for c in info.call_args_list)
+            monkeypatch.setenv("RICH_DEBUG", "1")
+            await run()
+            logged = [str(c) for c in info.call_args_list if "RICH_DEBUG" in str(c)]
+            assert len(logged) == 1
+            assert f"RICH_DEBUG {call} chat=-1" in logged[0] and "<details open>" in logged[0]
