@@ -37,7 +37,7 @@ from subscription import (
 from utils import now2ddmmyy
 from who import who_command
 from reopen import reopen_command, reopen_callback_handler
-from listview import listview_callback_handler
+from hideability import hideability_command
 
 
 async def lock_gate(update, context):
@@ -337,7 +337,6 @@ def main():
     app.add_handler(CallbackQueryHandler(stats_back_callback_handler, pattern="^statsback_"))
     app.add_handler(CallbackQueryHandler(deleteevent_callback_handler, pattern="^delev(pick|yes|no)_"))
     app.add_handler(CallbackQueryHandler(reopen_callback_handler, pattern="^reopen_"))
-    app.add_handler(CallbackQueryHandler(listview_callback_handler, pattern="^lv_"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # 2. Chat member join/leave tracking
@@ -391,6 +390,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("who", who_command))
     app.add_handler(CommandHandler("reopen", reopen_command))
+    app.add_handler(CommandHandler("hideability", hideability_command))
     app.add_handler(CommandHandler("allgroups", allgroups_command))
     app.add_handler(CommandHandler("allchannels", allchannels_command))
 

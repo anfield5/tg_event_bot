@@ -63,9 +63,9 @@ zone are chosen to minimize crossing lines.
 >   time is the first detection, so a retry writes identical dates (no duplicate log rows).
 > - `reopen_mode` says, per hub, whether the owner-controlled 🔓 Reopen button is switched on (who switched it
 >   and when are kept). It is a table of its own because a hub's `all_groups` row comes and goes with the bot.
-> - `list_view_state` records which lists of an event post are folded: one row per (event, chat, list) that was
->   toggled with the ▾ / ▸ buttons under the post; a list with no row follows the default (Going shown, Not Going and
->   Waitlist folded). Keyed by chat because the hub's post and every shared post fold on their own; removed with the event.
+> - `hideability_mode` says, per hub, whether `/hideability` has made the lists of its event posts collapsible
+>   (native Telegram Rich Message blocks - the folding itself lives on each viewer's screen, nothing about it is
+>   stored). Who switched it and when are kept.
 > - `events.waitlist_open` (the old boolean open/closed flag) has been
 >   physically dropped - superseded by `waitlist_visibility`
 >   (visible/hidden/onlycount), which no code path had read `waitlist_open`
@@ -157,9 +157,13 @@ zone are chosen to minimize crossing lines.
 >   nobody is known by, names that fit several ids and people already listed with their
 >   id are left alone and listed. A dry run unless `--apply`; never guesses.
 > - `scripts/check_events_amount.py` checks the last column of the `Events` tab (the
->   headcount written at Save & Close: going people plus every guest, from every chat;
->   0 for an open or canceled event) against `event_users`, shows both numbers and how
+>   headcount written at Save & Close or at Cancel: going people plus every guest, from every chat;
+>   0 for an open event) against `event_users`, shows both numbers and how
 >   the database one is made up, and with `--apply` corrects only the wrong cells.
+> - `scripts/update_canceled_amounts.py` is that same check limited to events canceled before 4.8.0, which
+>   wrote 0 into AMOUNT: it puts the headcount they had into column H (dry run unless `--apply`).
+> - `scripts/try_rich_message.py <chat_id>` is a live check of Telegram Rich Messages - run it once in a test
+>   chat before `/hideability on` (it shows what only a screen can: folding, edits, going back to text).
 
 - **Gray** = SQLite table (single database, source of truth)
 - **Blue** = Control Sheet - **one** spreadsheet, shared across the whole bot

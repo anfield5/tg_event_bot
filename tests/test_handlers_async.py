@@ -4663,7 +4663,6 @@ class TestNeweventEditeventLimitFlag:
 
 # ── Waitlist rendering: visible/hidden/onlycount (v3.24.0) ────────────────────
 
-@pytest.mark.usefixtures("lists_expanded")
 class TestWaitlistVisibilityRendering:
     """update_all_shared_views' Waitlist section across all 3 visibility
     modes, in both the main hub's own post and a child chat's post."""
@@ -7668,7 +7667,6 @@ class TestNotgoingVisibilityFlags:
         assert "carol" not in text
 
 
-@pytest.mark.usefixtures("lists_expanded")
 class TestChildChatNotgoingDisplay:
     """Item 3+6: Not Going list now displays in shareevent'd (child)
     posts too, with per-share override support (share_notgoing_visibility
@@ -8971,7 +8969,6 @@ class TestClickabilityFlag:
         assert "[Bob B](tg://user?id=2)" in text
 
 
-@pytest.mark.usefixtures("lists_expanded")
 class TestClickabilityOnMakesEverySectionClickable:
     """Item 2/3: with clickability=on, EVERY section of a rendered post
     must produce genuine [Name](tg://user?id=...) mentions, not just
@@ -10966,7 +10963,6 @@ class TestGuestActionsAlwaysCaptureRealName:
         assert row == ("Dave", "Lee")
 
 
-@pytest.mark.usefixtures("lists_expanded")
 class TestNotGoingEmbedsUserIdDirectly:
     """Real bug found: the master hub's Not Going list stored only bare
     usernames (no id), relying entirely on a fallback lookup-by-username

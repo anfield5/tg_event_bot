@@ -127,8 +127,13 @@ class TestDbAgainstTheSheet:
 
     def test_a_canceled_event_is_expected_to_say_canceled(self, db_path):
         seed(db_path, status=-1)
-        assert self._check(db_path, [], events_row={"STATUS": "CANCELED"}, status=-1) == []
-        assert codes(self._check(db_path, [], events_row={"STATUS": "OPEN"}, status=-1)) == ["EVENTS_STATUS"]
+        assert self._check(db_path, [], events_row={"STATUS": "CANCELED", "AMOUNT": 0}, status=-1) == []
+        assert codes(self._check(db_path, [], events_row={"STATUS": "OPEN", "AMOUNT": 0}, status=-1)) == ["EVENTS_STATUS"]
+
+    def test_a_canceled_event_is_expected_to_carry_its_headcount(self, db_path):
+        seed(db_path, status=-1); person(db_path, 1, "alice")
+        assert self._check(db_path, [], events_row={"STATUS": "CANCELED", "AMOUNT": 1}, status=-1) == []
+        assert codes(self._check(db_path, [], events_row={"STATUS": "CANCELED", "AMOUNT": 0}, status=-1)) == ["EVENTS_COUNT"]
 
     def test_one_person_in_two_chats_is_a_problem(self, db_path):
         seed(db_path); person(db_path, 1, "alice"); person(db_path, 1, "alice", chat=CHILD)

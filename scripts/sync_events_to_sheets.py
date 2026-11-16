@@ -140,7 +140,7 @@ async def _sync_one_hub(chat_id: str, db_path: str, cutoff: datetime) -> tuple:
         if event_id not in events_existing_ids:
             status_label = STATUS_LABELS.get(row["event_status"], "OPEN")
             going_count = 0
-            if row["event_status"] == 2:
+            if row["event_status"] in (2, -1):
                 going_count = headcount_from_rows([(r["status"], r["guests"]) for r in eu_rows])["total"]
             try:
                 await ws_events.append_row([

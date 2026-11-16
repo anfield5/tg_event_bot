@@ -293,7 +293,10 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "/reopen \\[on\\|off\\|name or id\\] \\- Switch the 🔓 Reopen buttons on or off under the group's recent closed or "
         "canceled events; pressing one \\(owners only\\) puts that event back to open \\- any of them, but only one event "
         "can be open at a time\\. With a name or an event ID it reopens that event right away\\. No argument shows the "
-        "current state\\."
+        "current state\\.\n"
+        "/hideability \\[on\\|off\\] \\- Make the lists of the group's event posts \\(Going, Not Going, Waitlist\\) collapsible "
+        "with a tap, on your own screen\\. Going starts open, Not Going and Waitlist folded\\. Off brings back plain "
+        "posts\\. No argument shows the current state\\."
     )
 
 

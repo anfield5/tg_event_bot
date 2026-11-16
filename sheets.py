@@ -677,10 +677,10 @@ def _contiguous_runs(rows):
     return runs
 
 
-async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row):
+async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row, amount=0):
     """
-    Marks the event's row in the Events tab CANCELED (CLOSED_AT, STATUS, AMOUNT = 0), or
-    appends `fallback_row` if the event has no row there yet. Shared by the Cancel button and
+    Marks the event's row in the Events tab CANCELED (CLOSED_AT, STATUS, AMOUNT = `amount`: the headcount the event had
+    when it was canceled, db.event_headcount), or appends `fallback_row` if the event has no row there yet. Shared by the Cancel button and
     /newevent's self-healing of an orphaned event, which used to carry identical copies of this.
     Takes the already-opened spreadsheet so each caller keeps its own sheet lookup. Raises on failure.
     """
@@ -688,7 +688,7 @@ async def mark_event_row_canceled(ss, event_id, closed_date, fallback_row):
     records = await ws.get_all_records()
     for idx, r in enumerate(records, start=2):
         if str(r.get("EVENT_ID")) == str(event_id):
-            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CANCELED", 0]])
+            await ws.update(f"F{idx}:H{idx}", [[closed_date, "CANCELED", amount]])
             return
     await ws.append_row(fallback_row)
 

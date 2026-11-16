@@ -2,9 +2,10 @@
 A safety net under event_engine.update_all_shared_views - the 500-line function that draws every event post.
 
 It renders hundreds of scenarios (event status x the three list modes x the share modes x guests x which lists are
-folded x what get_chat answers) and compares a short fingerprint of each post's text AND keyboard with the one recorded in
-render_snapshot.json. The recorded fingerprints were taken from the code BEFORE the render was refactored (title cache,
-_fold_block), so a pass means a refactor did not change a single character of any post.
+/hideability off or on x what get_chat answers) and compares a short fingerprint of each post's text AND keyboard with the one recorded in
+render_snapshot.json. The "off" fingerprints were checked against the code BEFORE the native folding existed (every list
+shown in full, no fold buttons), so a pass means a change did not alter a single character of any plain post. The "on"
+ones record the rich-message HTML (and, for a post that falls back, the text).
 
 If you change what a post looks like ON PURPOSE, regenerate the file and review the diff of the posts, not of the hashes:
     UPDATE_RENDER_SNAPSHOT=1 python3 -m pytest tests/test_render_snapshot.py -q
@@ -26,18 +27,13 @@ from tests.helpers import make_bot, make_context
 HUB, CH1, CH2 = "-100", "-210", "-220"
 SNAPSHOT = Path(__file__).with_name("render_snapshot.json")
 MODES = ["visible", "onlycount", "hidden"]
-FOLD_SETS = {
-    "default": [],
-    "all_toggled": [(HUB, "going"), (HUB, "notgoing"), (HUB, "waitlist"), (CH1, "going"), (CH1, "notgoing"), (CH1, "waitlist"),
-                    (CH2, "going"), (CH2, "notgoing"), (CH2, "waitlist")],
-    "hub_ng_open": [(HUB, "notgoing")],
-}
+HIDE = ["off", "on"]
 TITLES = {"get_chat_ok": lambda cid: MagicMock(title=f"Ünï ({cid})_x"), "empty_title": lambda cid: MagicMock(title=""), "fails": None}
 
 
 def seed(db_path, status, ngl, wl, mode1, mode2, guests):
     c = sqlite3.connect(db_path)
-    for t in ("events", "event_users", "event_shares", "list_view_state", "main_group_users"):
+    for t in ("events", "event_users", "event_shares", "main_group_users"):
         c.execute(f"DELETE FROM {t}")
     wlist = [
         {"chat_id": HUB, "chat_name": None, "username": "wl_hub", "user_id": "81", "timestamp": "t1"},
@@ -72,13 +68,17 @@ async def render(title_mode):
     else:
         maker = TITLES[title_mode]
         bot.get_chat = AsyncMock(side_effect=lambda cid: maker(cid))
+    bot._post = AsyncMock(return_value=True)
     await event_engine.update_all_shared_views(make_context(bot=bot), "ev1")
     out = {}
     for call in bot.edit_message_text.call_args_list:
         kw = call.kwargs
         markup = kw.get("reply_markup")
         buttons = [[(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard] if markup else None
-        out[str(kw["chat_id"])] = {"text": kw["text"], "keyboard": buttons}
+        out[str(kw["chat_id"])] = {"text": kw["text"], "keyboard": buttons or None}
+    for call in bot._post.call_args_list:
+        data = call.args[1]
+        out[str(data["chat_id"])] = {"html": json.loads(data["rich_message"])["html"], "keyboard": json.loads(data["reply_markup"]).get("inline_keyboard") or None}
     return out
 
 
@@ -88,15 +88,14 @@ def fingerprint(post_set) -> str:
 
 async def test_every_post_is_drawn_exactly_as_before(db_path):
     result = {}
-    for status, ngl, wl, (m1, m2), guests, folds, titles in itertools.product(
-            [0, 1, 2, -1], MODES, MODES, [("-visible", "-onlycount"), ("-hidden", "-visible")], [False, True], FOLD_SETS, TITLES):
-        if titles != "get_chat_ok" and not (status == 0 and ngl == "visible" and wl == "visible" and folds == "default"):
+    for status, ngl, wl, (m1, m2), guests, hide, titles in itertools.product(
+            [0, 1, 2, -1], MODES, MODES, [("-visible", "-onlycount"), ("-hidden", "-visible")], [False, True], HIDE, TITLES):
+        if titles != "get_chat_ok" and not (status == 0 and ngl == "visible" and wl == "visible" and hide == "off"):
             continue            # the failing / empty title variants only need a few scenarios
         seed(db_path, status, ngl, wl, m1, m2, guests)
-        for chat, name in FOLD_SETS[folds]:
-            db_module.toggle_list_state("ev1", chat, name)
+        db_module.set_hideability_mode(HUB, hide == "on")
         event_engine._TITLE_CACHE.clear()
-        result[f"{status}|{ngl}|{wl}|{m1}|{m2}|{guests}|{folds}|{titles}"] = fingerprint(await render(titles))
+        result[f"{status}|{ngl}|{wl}|{m1}|{m2}|{guests}|{hide}|{titles}"] = fingerprint(await render(titles))
 
     if os.environ.get("UPDATE_RENDER_SNAPSHOT"):
         SNAPSHOT.write_text(json.dumps(result, sort_keys=True, indent=0))
@@ -104,4 +103,4 @@ async def test_every_post_is_drawn_exactly_as_before(db_path):
     expected = json.loads(SNAPSHOT.read_text())
     assert set(expected) == set(result), "the scenarios changed - regenerate the snapshot on purpose, see the module docstring"
     different = sorted(k for k in expected if expected[k] != result[k])
-    assert not different, f"{len(different)} of {len(expected)} scenarios render differently, e.g. {different[:3]} (status|ngl|wl|share modes|guests|folds|titles)"
+    assert not different, f"{len(different)} of {len(expected)} scenarios render differently, e.g. {different[:3]} (status|ngl|wl|share modes|guests|hideability|titles)"

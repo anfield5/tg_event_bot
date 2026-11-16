@@ -6,7 +6,9 @@ from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.error import BadRequest
+import asyncio
+import re
+from telegram.error import BadRequest, RetryAfter
 
 from keyboard import create_event_keyboard
 from subscription import is_premium, has_feature, require_premium, require_feature
@@ -32,7 +34,8 @@ from config import (
 from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, GROUP_ANONYMOUS_BOT_ID, require_owner
 from utils import parse_stored_date as _parse_stat_date
 from utils import has_extra_player_prompt, pop_extra_player_prompt
-from db import is_reopen_active, track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
+import richtext
+from db import is_hideability_active, headcount_from_rows, is_reopen_active, track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, delete_event_from_sheet, mark_event_row_canceled,
@@ -414,10 +417,13 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 sheet_target = await get_sheet_for_chat(chat_id)
                 ss = await open_spreadsheet(sheet_target)
                 if ss:
+                    with get_connection() as conn_amt:
+                        orphan_amount = headcount_from_rows(conn_amt.execute(
+                            "SELECT status, guests FROM event_users WHERE event_id = ?", (old_event_id,)).fetchall())["total"]
                     await mark_event_row_canceled(ss, old_event_id, closed_date, [
                         old_event_id, old_name, old_created_date or "", old_created_by or "",
-                        "", closed_date, "CANCELED", 0,
-                    ])
+                        "", closed_date, "CANCELED", orphan_amount,
+                    ], amount=orphan_amount)
             except Exception as e:
                 logger.error(f"Sheets auto-cancel of orphaned event {old_event_id} failed: {e}")
             existing_active = None  # don't warn - the conflict is already resolved
@@ -465,8 +471,8 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
     )
 
     try:
-        sent_msg = await context.bot.send_message(
-            chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="MarkdownV2"
+        sent_msg = await richtext.send_post(
+            context.bot, chat_id, text, is_hideability_active(str(chat_id)), reply_markup=keyboard
         )
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -644,7 +650,6 @@ async def _perform_event_deletion(context, chat_id, event_id) -> str:
         with get_connection() as conn:
             conn.execute("DELETE FROM event_users WHERE event_id = ?", (event_id,))
             conn.execute("DELETE FROM event_shares WHERE event_id = ?", (event_id,))
-            conn.execute("DELETE FROM list_view_state WHERE event_id = ?", (event_id,))
             conn.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
             conn.commit()
 
@@ -1872,7 +1877,47 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
         except Exception:
             pass
 
-    await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
+    await _send_report(update, lines)
+
+
+async def _send_report(update, lines, limit: int = 3800, attempts: int = 3):
+    """
+    Sends a multi-line MarkdownV2 report so that it ALWAYS arrives, even though the work that produced it may have
+    taken minutes (one Telegram call per tracked user per chat): split into messages under Telegram's 4096-character
+    cap, a flood wait or a timeout is retried, and a text Telegram cannot parse is sent again as plain text. Without
+    this a single failed reply_text lost the whole report after all the syncing was done.
+    """
+    chunks, current = [], ""
+    for line in lines:
+        if current and len(current) + 1 + len(line) > limit:
+            chunks.append(current)
+            current = ""
+        current = f"{current}\n{line}" if current else line
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        sent = False
+        for attempt in range(attempts):
+            try:
+                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
+                sent = True
+                break
+            except RetryAfter as e:
+                await asyncio.sleep(min(float(getattr(e, "retry_after", 1) or 1), 30))
+            except BadRequest as e:
+                logger.error(f"report: MarkdownV2 refused ({e}), sending as plain text")
+                break
+            except Exception as e:
+                logger.error(f"report: send failed on attempt {attempt + 1}/{attempts}: {e}")
+                await asyncio.sleep(1)
+        if sent:
+            continue
+        plain = re.sub(r"\\(.)", r"\1", chunk).replace("*", "").replace("`", "")
+        try:
+            await update.message.reply_text(plain)
+        except Exception as e:
+            logger.error(f"report: could not be delivered at all: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -2169,10 +2214,10 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
             return
 
     try:
-        sent = await context.bot.send_message(
-            chat_id=target_chat_api,
-            text=f"{ICON_SHARED} *{escape_markdown(name)}*\n_Synchronising\\.\\.\\._",
-            parse_mode="MarkdownV2",
+        sent = await richtext.send_post(
+            context.bot, target_chat_api,
+            f"{ICON_SHARED} *{escape_markdown(name)}*\n_Synchronising\\.\\.\\._",
+            is_hideability_active(str(main_hub_chat_id)),
         )
         with get_connection() as conn:
             cursor = conn.cursor()

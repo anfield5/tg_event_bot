@@ -4,7 +4,7 @@ GOING_COUNT in some - the bot and this script go by its POSITION).
 
 What the bot writes there: at Save & Close, the number of people the event ended with - every person who is going
 PLUS every guest, from every chat of the event (db.headcount_from_rows; it is also the "TOTAL Going" the post shows) -
-and 0 for an event that is open or canceled. It is a SNAPSHOT taken from `event_users` at that moment; the database
+and the same number when an event is canceled (what it had at that moment); 0 for an event that is open. It is a SNAPSHOT taken from `event_users` at that moment; the database
 keeps no copy of it, so this script recomputes it from `event_users` and compares.
 
 For every hub with a Sheet, and every event of it (all of them, or the last N days):
@@ -60,8 +60,9 @@ class Result:
 
 
 def expected_amount(status: int, roster: dict) -> int:
-    """What the tab should hold: the final headcount for a closed event, 0 for one that is open or canceled."""
-    return roster["headcount"] if status == 2 else 0
+    """What the tab should hold: the headcount for a closed event and for a canceled one (what it had when it was
+    canceled - its event_users rows are kept), 0 for one that is open."""
+    return roster["headcount"] if status in (2, -1) else 0
 
 
 def check_event(event: dict, roster: dict, tab_row) -> tuple:
@@ -85,7 +86,7 @@ def check_event(event: dict, roster: dict, tab_row) -> tuple:
     wrong = actual != expected
     if wrong:
         parts = roster["breakdown"]
-        how = f"{parts['going']} going + {parts['guests']} guest(s)" if event["status"] == 2 else f"the event is {audit.SHEET_STATUS[event['status']]}"
+        how = f"{parts['going']} going + {parts['guests']} guest(s)" if event["status"] in (2, -1) else f"the event is {audit.SHEET_STATUS[event['status']]}"
         add("AMOUNT_WRONG", PROBLEM, f"the tab says {actual}, the database gives {expected} ({how})")
     if event["status"] == 2 and roster["breakdown"]["guests_of_not_going"]:
         add("AMOUNT_INCLUDES_GUESTS_OF_NOT_GOING", INFO,
@@ -93,8 +94,8 @@ def check_event(event: dict, roster: dict, tab_row) -> tuple:
     return findings, expected if wrong else None
 
 
-async def check_hub(chat_id, db_path, cutoff, apply=False):
-    """-> Result, or None when the hub has no usable Sheet."""
+async def check_hub(chat_id, db_path, cutoff, apply=False, statuses=None):
+    """-> Result, or None when the hub has no usable Sheet. `statuses`: only events in these states (default: all)."""
     ss = await open_spreadsheet(await get_sheet_for_chat(chat_id))
     if not ss:
         return None
@@ -114,6 +115,8 @@ async def check_hub(chat_id, db_path, cutoff, apply=False):
             "SELECT event_id, name, event_status, created_date, going_data FROM events WHERE chat_id = ? ORDER BY ROWID", (chat_id,)
         ).fetchall()
         for event_id, name, status, created_raw, going_data in db_events:
+            if statuses is not None and status not in statuses:
+                continue
             created = audit._parse_created(created_raw)
             if cutoff is not None and (created is None or created < cutoff):
                 continue
@@ -148,12 +151,12 @@ async def check_hub(chat_id, db_path, cutoff, apply=False):
     return result
 
 
-async def _run(target_chat_id=None, days=None, db_path=DB_PATH, apply=False):
+async def _run(target_chat_id=None, days=None, db_path=DB_PATH, apply=False, statuses=None):
     init_db(db_path=db_path)
     cutoff = cutoff_for(days)
     return await run_per_hub(
         hub_chat_ids(db_path, target_chat_id), db_path,
-        lambda chat_id: check_hub(chat_id, db_path, cutoff, apply=apply),
+        lambda chat_id: check_hub(chat_id, db_path, cutoff, apply=apply, statuses=statuses),
         lambda message: message,
     )
 

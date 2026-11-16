@@ -1,8 +1,8 @@
 # Minimal full-coverage tour
 
-> **102 actions** (58 commands, 31 button clicks, 10 manual operations, 3 sheet checks) - about **60 min** for someone who knows the bot and has all four accounts open, about 100 min the first time.
+> **102 actions** (59 commands, 29 button clicks, 11 manual operations, 3 sheet checks) - about **60 min** for someone who knows the bot and has all four accounts open, about 100 min the first time.
 
-One continuous scenario that touches **every command (all 34), every kind of event button, every role, the FREE / PRO / OWNER difference, Google Sheets, `/lockbot`, a restart and the orphan self-healing** - the smallest run that makes a broken area visible. It is breadth first and follows the happy path: it tells you *something is broken in area X*, not that every edge is right. For edges use the 46-case plan in `docs/manual_testing.md` (section "What it does not cover" says which cases to add).
+One continuous scenario that touches **every command (all 35), every kind of event button, every role, the FREE / PRO / OWNER difference, Google Sheets, `/lockbot`, a restart and the orphan self-healing** - the smallest run that makes a broken area visible. It is breadth first and follows the happy path: it tells you *something is broken in area X*, not that every edge is right. For edges use the 46-case plan in `docs/manual_testing.md` (section "What it does not cover" says which cases to add).
 
 ## Before you start (not counted in the time)
 
@@ -63,7 +63,7 @@ Setup takes about 30-45 minutes the first time. Have the Hub's and Child's ids a
 
 | # | Who | Where | Action | Expected | ✔ |
 |---|---|---|---|---|---|
-| 25 | M1 | Hub | `/newevent Футбол Tour -limit 2 -wl visible -d <tomorrow> 19:00` | Event posted with limit 2 and the date; Events tab gets an `OPEN` row; Going is shown, Not Going and Waitlist start folded, and a list gets its ▾ / ▸ fold button under the post once it has people in it | |
+| 25 | M1 | Hub | `/newevent Футбол Tour -limit 2 -wl visible -d <tomorrow> 19:00` | Event posted with limit 2 and the date; Events tab gets an `OPEN` row; Going, Not Going and Waitlist are plain lists (the collapsible lists are off until step 41) | |
 | 26 | A | Hub | `/shareevent kids -swl visible` | Child gets its own post (the alias works) | |
 | 27 | A | Hub | `/shareevent <channel_id> -mgl onlycount -clc off` | Channel gets a post; the overrides apply to it only | |
 | 28 | A | Hub | `/notify` | Pings tracked people who haven't voted yet | |
@@ -79,9 +79,9 @@ Setup takes about 30-45 minutes the first time. Have the Hub's and Child's ids a
 | 38 | M2 | Child | `/waitlist` | Only the Child's own entries (A) | |
 | 39 | M2 | Child post | **Not Going** | A is promoted automatically, with a notification message | |
 | 40 | A | Hub | `/who 3 -ng` | M2 is listed as changed to Not Going, with the time and the Child's alias `kids`; nobody else is (A moved the other way) | |
-| 41 | M1 | Hub post | **▸ Not Going (n)** | The Not Going names appear and the button turns ▾; the Child's and the Channel's posts are unchanged (each post folds on its own) | |
-| 42 | M2 | Child post | **▾ Going (n)** | The going names fold to their header lines in the Child's post only (the counts and the TOTAL line stay); press it again to unfold | |
-| 43 | A | Hub | `/editevent -limit 4 -wl onlycount` | Every post refreshes; only the given fields changed; the Waitlist is now a count only, so its fold button is gone | |
+| 41 | O | Hub | `/hideability on` | "Hideability is ON"; every post of the Hub, the Child and the Channel redraws with Going, Not Going, Waitlist and the "Going from …" lists as collapsible blocks: **Going open, Not Going and Waitlist folded** (⚠ needs a Telegram client with Rich Messages support; on an old one the lists just show unfolded) | |
+| 42 | M2 | Child post | tap the title of Going, then of Not Going | Going folds and Not Going opens on M2's screen only - M1's screen and the other posts are untouched; folding keeps the counts and the TOTAL line; then O sends `/hideability off` and every post is plain again (no fold, nothing to tap) | |
+| 43 | A | Hub | `/editevent -limit 4 -wl onlycount` | Every post refreshes; only the given fields changed; the Waitlist is now a count only | |
 | 44 | M1 | Hub post | **ADD** | 1 guest | |
 | 45 | M1 | Hub post | **ADD** | 2 guests | |
 | 46 | M1 | Hub post | **DROP** | 1 guest (not 0, not 2) | |
@@ -183,7 +183,7 @@ Run in the container, one hub at a time. None of them is run with `--apply` here
 
 ## What the tour proves
 
-Every command ran once; every event button was used (Going, Not Going, ADD, DROP, ALL, Verify, Kick, Return, Add Extra Member, Save & Close, Cancel, 🔓 Reopen); owner, admin, creator and plain member were each exercised; FREE, PRO and OWNER-level behaviour was seen; the Hub's sheet tabs and the Control Sheet were read back; the lock and a waitlist survived a restart; an event whose post was deleted healed itself; `/deleteevent` removed an event from the DB, the sheet and all three chats. Also: `/chatid` in a DM names the group the DM works with (for a FREE group too); an OLDER event was reopened, edited and closed again - its `EventUsers` rewritten with exactly the new roster, its `Events` row corrected and the net change logged in `Actions` - while the one-active-event rule held; a renamed member's earlier full name was kept in `ARCHIVED_FULL_NAME`; the ▾ / ▸ fold buttons folded and unfolded a list in one post without touching the others; and the four operator scripts agreed with the DB and the sheet.
+Every command ran once; every event button was used (Going, Not Going, ADD, DROP, ALL, Verify, Kick, Return, Add Extra Member, Save & Close, Cancel, 🔓 Reopen); owner, admin, creator and plain member were each exercised; FREE, PRO and OWNER-level behaviour was seen; the Hub's sheet tabs and the Control Sheet were read back; the lock and a waitlist survived a restart; an event whose post was deleted healed itself; `/deleteevent` removed an event from the DB, the sheet and all three chats. Also: `/chatid` in a DM names the group the DM works with (for a FREE group too); an OLDER event was reopened, edited and closed again - its `EventUsers` rewritten with exactly the new roster, its `Events` row corrected and the net change logged in `Actions` - while the one-active-event rule held; a renamed member's earlier full name was kept in `ARCHIVED_FULL_NAME`; `/hideability` made the lists collapsible on one screen only and `/hideability off` took the posts back to plain; and the four operator scripts agreed with the DB and the sheet.
 
 ## What it does not cover - add these cases from `docs/manual_testing.md` when the change touches them
 
@@ -191,7 +191,7 @@ Every command ran once; every event button was used (Going, Not Going, ADD, DROP
 |---|---|
 | B2, B3, B4 | capacity boundaries, FIFO on a limit raise, refusing a lowered limit |
 | A6, A7 | `/editevent` edge cases, the *presence* of the active-event warning |
-| A8 | folding edge cases: `hidden` / `onlycount` lists, verification and closed posts, reopen, cleanup on `/deleteevent` |
+| A8 | hideability edge cases: `hidden` / `onlycount` and empty lists, verification and closed posts, a client without Rich Messages, a non-owner's `/hideability` |
 | C2, C4 | share-check order, clickability consistency |
 | D1 | anonymous admin (needs that account) |
 | E2, E4 | expired PRO, frozen feature snapshot |

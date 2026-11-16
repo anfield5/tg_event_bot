@@ -84,12 +84,17 @@ class TestOneEvent:
         findings, fix = self._check(db_path, None)
         assert [f.code for f in findings] == ["EVENT_NOT_IN_TAB"] and fix is None
 
-    def test_an_open_or_canceled_event_should_say_zero(self, db_path):
+    def test_an_open_event_should_say_zero(self, db_path):
         closed(db_path, status=0); person(db_path, 1, "alice")
         assert self._check(db_path, {"AMOUNT": 0}, status=0) == ([], None)
         findings, fix = self._check(db_path, {"AMOUNT": 1}, status=0)
         assert fix == 0 and "OPEN" in findings[0].detail
-        assert self._check(db_path, {"AMOUNT": 0}, status=-1) == ([], None)
+
+    def test_a_canceled_event_should_say_the_headcount_it_had(self, db_path):
+        closed(db_path, status=-1); person(db_path, 1, "alice", guests=1)
+        assert self._check(db_path, {"AMOUNT": 2}, status=-1) == ([], None)
+        findings, fix = self._check(db_path, {"AMOUNT": 0}, status=-1)
+        assert fix == 2 and [f.code for f in findings] == ["AMOUNT_WRONG"] and "1 going + 1 guest" in findings[0].detail
 
     def test_guests_of_people_who_are_not_going_are_counted_and_pointed_out(self, db_path):
         closed(db_path); person(db_path, 1, "alice"); person(db_path, 2, "bob", status="notgoing", guests=2)
@@ -266,3 +271,59 @@ class TestTheNumberTheBotWrites:
         parsed = audit.parse_post(*await hub_post(db_path))
         # alice 1+2, bob 1, carol 1, dave 1, erin 1+1, frank 1
         assert parsed["total"] == db_module.event_headcount("ev1", db_path)["total"] == 9
+
+
+class TestCancelWritesTheHeadcount:
+    async def test_cancel_stores_the_headcount_the_event_had(self, db_path):
+        w = World(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE event_users SET guests = 2 WHERE user_id = '1'")
+        conn.commit()
+        conn.close()
+        await w.press("cancel_ev1")
+        assert w.book.events_row()[6:] == ["CANCELED", 4]
+
+    async def test_a_canceled_event_with_nobody_says_zero(self, db_path):
+        w = World(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("DELETE FROM event_users")
+        conn.commit()
+        conn.close()
+        await w.press("cancel_ev1")
+        assert w.book.events_row()[6:] == ["CANCELED", 0]
+
+
+class TestUpdateCanceledAmounts:
+    """scripts/update_canceled_amounts.py: the same check, for canceled events only."""
+
+    @staticmethod
+    def script():
+        import scripts.update_canceled_amounts as script
+        return script
+
+    @staticmethod
+    def hub(db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT INTO all_groups (chat_id, chat_name, type, sheet_id) VALUES (?, 'Football', 'PRO', 'SHEET')", (HUB,))
+        conn.commit()
+        conn.close()
+
+    async def test_dry_run_changes_nothing_and_apply_fixes_only_canceled_rows(self, db_path):
+        self.hub(db_path)
+        closed(db_path, "c1", status=-1); person(db_path, 1, "alice", event_id="c1", guests=1)
+        closed(db_path, "k1", status=2); person(db_path, 2, "bob", event_id="k1")
+        book = book_with(row("c1", 0, "CANCELED"), row("k1", 9))                      # both wrong; only the canceled one is this script's
+        with patched(book):
+            dry = await self.script()._run(db_path=db_path)
+            assert book.tabs["Events"].rows[1][7] == 0 and [f.event_id for f in dry[HUB].fixes] == ["c1"]
+            await self.script()._run(db_path=db_path, apply=True)
+        assert book.tabs["Events"].rows[1][7] == 2 and book.tabs["Events"].rows[2][7] == 9
+
+    async def test_running_it_again_finds_nothing_to_do(self, db_path):
+        self.hub(db_path)
+        closed(db_path, "c1", status=-1); person(db_path, 1, "alice", event_id="c1")
+        book = book_with(row("c1", 0, "CANCELED"))
+        with patched(book):
+            await self.script()._run(db_path=db_path, apply=True)
+            again = await self.script()._run(db_path=db_path)
+        assert again[HUB].fixes == [] and book.tabs["Events"].rows[1][7] == 1

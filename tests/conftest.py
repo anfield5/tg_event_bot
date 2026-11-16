@@ -91,18 +91,6 @@ __all__ = [
 ]
 
 
-@pytest.fixture
-def lists_expanded():
-    """
-    The lists of an event post start FOLDED (Not Going, Waitlist - see db.LIST_DEFAULT_COLLAPSED). A test of what a
-    visible list CONTAINS - who is in it, how a name is linked - is not about folding, so it renders them unfolded.
-    Tests of the folding itself (tests/test_list_folding.py) leave the defaults alone.
-    """
-    import db
-    with patch.dict(db.LIST_DEFAULT_COLLAPSED, {"going": False, "notgoing": False, "waitlist": False}):
-        yield
-
-
 @pytest.fixture(autouse=True)
 def _fresh_title_cache():
     """Chat titles are cached across renders (event_engine._TITLE_CACHE); no test may see another's."""

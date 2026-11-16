@@ -522,6 +522,11 @@ class TestMarkEventRowCanceled:
         ws.update.assert_awaited_once_with("F3:H3", [["05.10.2026", "CANCELED", 0]])
         ws.append_row.assert_not_called()
 
+    async def test_the_amount_is_written_when_given(self):
+        ss, ws = self._ss([{"EVENT_ID": "ev1"}])
+        await sheets.mark_event_row_canceled(ss, "ev1", "05.10.2026", ["fallback"], amount=7)
+        ws.update.assert_awaited_once_with("F2:H2", [["05.10.2026", "CANCELED", 7]])
+
     async def test_missing_row_is_appended(self):
         ss, ws = self._ss([{"EVENT_ID": "x"}])
         await sheets.mark_event_row_canceled(ss, "ev1", "05.10.2026", ["fallback"])

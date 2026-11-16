@@ -109,7 +109,7 @@ async def require_dm_only(update, command_name: str) -> bool:
 
 
 def escape_markdown(text):
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
 
 def format_uptime(seconds) -> str:

@@ -123,7 +123,7 @@ class TestWhatItFixes:
         closed_event(db_path, status=-1); person(db_path, 1, "alice")
         book = book_with(events=[good_events_row(status="OPEN")])
         await run(book, db_path, apply=True)
-        assert book.events_row()[5:] == [CLOSED_AT, "CANCELED", 0]
+        assert book.events_row()[5:] == [CLOSED_AT, "CANCELED", 1]
 
     async def test_a_missing_eventusers_tab_still_gets_the_events_row_repaired(self, db_path):
         closed_event(db_path); person(db_path, 1, "alice")

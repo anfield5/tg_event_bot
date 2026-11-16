@@ -906,11 +906,11 @@ class TestFeatureFlags:
     overwritten by a second init_db() call.
     """
 
-    def test_seeds_twenty_flags_on_fresh_db(self, tmp_path):
+    def test_seeds_twenty_one_flags_on_fresh_db(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         rows = get_all_features(db_path=path)
-        assert len(rows) == 20
+        assert len(rows) == 21
 
     def test_free_pro_admin_tiers_all_present(self, tmp_path):
         path = str(tmp_path / "t.db")

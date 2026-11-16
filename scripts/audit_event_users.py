@@ -211,7 +211,7 @@ def compare_event(event: dict, roster: dict, sheet_ids: list, events_row, resolv
         sheet_status = str(events_row.get("STATUS", "")).strip().upper()
         if sheet_status != SHEET_STATUS[status]:
             add("EVENTS_STATUS", PROBLEM, f"Events tab says {sheet_status or 'empty'}, the DB says {SHEET_STATUS[status]}")
-        if status == 2:
+        if status in (2, -1):
             try:
                 count = int(str(events_row.get("AMOUNT", "")).strip())
             except ValueError:

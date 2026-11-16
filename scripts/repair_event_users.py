@@ -60,7 +60,7 @@ def events_row_values(info: dict, headcount: int) -> list:
     if status == 2:
         return [info["closed_date"] or "", "CLOSED", headcount]
     if status == -1:
-        return [info["closed_date"] or "", "CANCELED", 0]
+        return [info["closed_date"] or "", "CANCELED", headcount]
     return ["", "OPEN", 0]
 
 

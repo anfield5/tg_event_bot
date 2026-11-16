@@ -32,12 +32,13 @@ from telegram.error import BadRequest
 from keyboard import create_event_keyboard
 from config import (
     ICON_CANCEL_EVENT, ICON_CLOCK, ICON_GUEST, ICON_SHARED, ICON_STANDBY,
-    ICON_WARNING, ICON_TOTAL, ICON_LIST_EXPANDED, ICON_LIST_COLLAPSED, logger,
+    ICON_WARNING, ICON_TOTAL, logger,
 )
 from utils import escape_markdown, now2ddmmyy, is_real_admin
 from utils import remember_extra_player_prompt
 from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
-from db import get_list_states, LIST_DEFAULT_COLLAPSED
+from db import is_hideability_active
+import richtext
 from db import headcount_from_rows, reopen_button_offered, reopen_button_events, reopen_posts_to_refresh, get_reopened_roster, clear_reopened_roster, is_reopen_active
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet, mark_event_row_canceled
 
@@ -141,20 +142,51 @@ async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_del
     harmless BadRequest whenever the new text happens to exactly match
     what's already there.
     """
-    last_exception = None
-    for attempt in range(max_retries + 1):
-        try:
-            await context.bot.edit_message_text(**kwargs)
-            return
-        except BadRequest as e:
-            if "Message is not modified" in str(e):
+    async def attempt_all(call):
+        """Runs `call` with the retries; True once it worked (or the text was already there), else raises its last error."""
+        last_exception = None
+        for attempt in range(max_retries + 1):
+            try:
+                await call()
+                return True
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return True
+                last_exception = e
+            except Exception as e:
+                last_exception = e
+            if attempt < max_retries:
+                await asyncio.sleep(retry_delay)
+        raise last_exception
+
+    bot, text = context.bot, kwargs.get("text") or ""
+    can_go_rich = "message_id" in kwargs and "chat_id" in kwargs      # not an inline-message edit
+
+    # /hideability ON: the post carries native collapsible blocks (richtext.py) and goes out as a rich message. If
+    # Telegram refuses it, the same post is edited as ordinary text, every list unfolded - never left stale.
+    if richtext.has_folds(text):
+        if can_go_rich and richtext.fits(text):
+            try:
+                await attempt_all(lambda: richtext.edit_rich(bot, kwargs["chat_id"], kwargs["message_id"], text, kwargs.get("reply_markup")))
                 return
-            last_exception = e
-        except Exception as e:
-            last_exception = e
-        if attempt < max_retries:
-            await asyncio.sleep(retry_delay)
-    raise last_exception
+            except Exception as e:
+                logger.warning(f"Rich message edit failed for {kwargs.get('chat_id')}/{kwargs.get('message_id')}, editing as plain text: {e}")
+        kwargs["text"] = richtext.unfold(text)
+
+    try:
+        await attempt_all(lambda: bot.edit_message_text(**kwargs))
+    except BadRequest as plain_error:
+        # A post that was sent as a rich message (hideability was ON) may refuse a plain-text edit after /hideability off:
+        # then it is edited as a rich message with nothing folded. Not tried for errors that no format change can fix.
+        reason = str(plain_error).lower()
+        if not can_go_rich or any(x in reason for x in ("not found", "can't be edited", "chat_write_forbidden", "forbidden")):
+            raise
+        try:
+            await richtext.edit_rich(bot, kwargs["chat_id"], kwargs["message_id"], kwargs["text"], kwargs.get("reply_markup"))
+        except Exception as rich_error:
+            if "Message is not modified" in str(rich_error):
+                return
+            raise plain_error
 
 
 def _mention_link(chat_id: str, username: str, user_id=None, clickable: bool = True, display_name_override: str = None) -> str:
@@ -384,27 +416,16 @@ async def _prefetch_titles(bot, chat_refs) -> None:
         await asyncio.gather(*(_chat_title(bot, c) for c in missing))
 
 
-def _fold_block(header: str, body: str, collapsed: bool, sep: str = ":\n", lead: str = "", tail: str = "") -> str:
+def _fold_block(header: str, body: str, fold, sep: str = ":\n", lead: str = "", tail: str = "") -> str:
     """
-    One list of a post: its bold header (with the count), then - unless the list is folded - the names. A folded list is
-    its header alone. `lead` / `tail` are the blank lines around the block; `sep` is what joins header and names.
+    One list of a post: its bold header (with the count), then the names. `fold` is None for a list that is shown plain
+    (the default, and always while /hideability is off); "open" / "closed" make it a native collapsible block
+    (richtext.fold) that starts unfolded / folded on the viewer's screen. `lead` / `tail` are the blank lines around the
+    block; `sep` is what joins header and names.
     """
-    return f"{lead}{header}" + ("" if collapsed else f"{sep}{body}") + tail
-
-
-def _build_toggles(event_status: int, specs: list) -> list:
-    """
-    [(key, label)] for the fold / unfold buttons of one post: one for each list that CAN be folded. Nothing unless the
-    event is open - a post in verification, closed or canceled shows every list in full and has no such buttons.
-    specs: (key, title, count, collapsed, applicable); `applicable` is False for a list that is hidden, shown only as a
-    count, or empty - there is nothing to fold. The chevron shows the state: pressing a folded list unfolds it.
-    """
-    if event_status != 0:
-        return []
-    return [
-        (key, f"{ICON_LIST_COLLAPSED if collapsed else ICON_LIST_EXPANDED} {title} ({count})")
-        for key, title, count, collapsed, applicable in specs if applicable
-    ]
+    if fold is None:
+        return f"{lead}{header}{sep}{body}{tail}"
+    return f"{lead}{richtext.fold(header, body, fold == 'open', sep)}{tail}"
 
 
 REOPEN_REFRESH_PAUSE = 0.35   # seconds between two keyboard edits - a burst of edits in one group draws Telegram flood limits
@@ -555,21 +576,24 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             )
             per_share_users[str(s_chat_id)] = cursor.fetchall()
 
-    # Which lists of each post are folded (see listview.py). Only an OPEN event folds anything: in verification, closed
-    # or canceled, every list is shown in full - the admin has to see everybody, and a finished post is the record.
-    list_states = get_list_states(event_id)
+    # /hideability (hideability.py): while it is ON for this hub, every list that is shown by name and is not empty is a
+    # native collapsible block (richtext.py). An open event starts with Going unfolded and Not Going / Waitlist folded
+    # (richtext.DEFAULT_OPEN); a post in verification, closed or canceled starts with everything unfolded - the admin has
+    # to see everybody, and a finished post is the record. OFF: no block at all, the post is plain text as it always was.
+    native = is_hideability_active(str(main_chat_id))
     await _prefetch_titles(context.bot, [main_chat_id] + [c[0] for c in render_chats])
 
-    def _collapsed(chat_id, list_name, applicable=True) -> bool:
-        if not applicable or event_status != 0:
-            return False
-        return list_states.get((str(chat_id), list_name), LIST_DEFAULT_COLLAPSED[list_name])
+    def _fold(list_name, applicable=True):
+        """None (plain), "open" or "closed" for one list of a post."""
+        if not native or not applicable:
+            return None
+        return "open" if event_status != 0 or richtext.DEFAULT_OPEN[list_name] else "closed"
 
     any_going_names = bool(master_going) or any(v > 0 for v in master_counters.values()) or any(
         status == "going" or (guests or 0) > 0
         for rows in per_share_users.values() for _u, status, guests, _i in rows
     )
-    master_going_collapsed = _collapsed(main_chat_id, "going", any_going_names)
+    master_going_fold = _fold("going", any_going_names)
 
     child_data              = {}
     total_child_going       = 0
@@ -605,7 +629,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             # FIX: channel/group name without quotes around it
             block = _fold_block(
                 f"*Going from {escape_markdown(chat_title)}* \\({chat_sum}\\)",
-                "\n".join(users_list), master_going_collapsed, lead="\n\n",
+                "\n".join(users_list), master_going_fold, lead="\n\n",
             )
             child_addons_for_master.append(block)
 
@@ -638,9 +662,9 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             guest_lines.append(f"{ICON_GUEST} {count}, from: {_mention_link(main_chat_id, k, None, master_clickable)}")
 
     going_list_text = "\n".join(going_names_list + guest_lines)
-    going_section = _fold_block(f"*Going* \\({total_master_going}\\)", going_list_text, master_going_collapsed)
+    going_section = _fold_block(f"*Going* \\({total_master_going}\\)", going_list_text, master_going_fold)
 
-    ng_collapsed = _collapsed(main_chat_id, "notgoing", notgoing_visibility == "visible" and bool(master_not_going))
+    ng_fold = _fold("notgoing", notgoing_visibility == "visible" and bool(master_not_going))
     if notgoing_visibility == "visible":
         not_going_list_text = (
             "\n".join(
@@ -649,7 +673,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             )
             if master_not_going else ""
         )
-        notgoing_section = _fold_block(f"*Not Going* \\({len(master_not_going)}\\)", not_going_list_text, ng_collapsed, lead="\n\n")
+        notgoing_section = _fold_block(f"*Not Going* \\({len(master_not_going)}\\)", not_going_list_text, ng_fold, lead="\n\n")
     elif notgoing_visibility == "onlycount":
         notgoing_section = f"\n\n*Not Going:* {len(master_not_going)}"
     else:
@@ -660,12 +684,9 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     date_line   = f"{ICON_CLOCK} {escape_markdown(event_date)}\n" if event_date else ""
     title_line  = f"{ICON_CANCEL_EVENT} *CANCELED* ~{escape_markdown(name)}~" if event_status == -1 else f"*{escape_markdown(name)}*"
 
-    master_wl_count, wl_collapsed = 0, False
     if waitlist_visibility == "visible":
         wl_count, wl_text = await _render_waitlist_all(master_waitlist, main_chat_id, context, master_clickable)
-        master_wl_count = wl_count
-        wl_collapsed = _collapsed(main_chat_id, "waitlist", wl_count > 0)
-        waitlist_section = _fold_block(f"*Waitlist* \\({wl_count}\\)", wl_text, wl_collapsed, lead="\n\n")
+        waitlist_section = _fold_block(f"*Waitlist* \\({wl_count}\\)", wl_text, _fold("waitlist", wl_count > 0), lead="\n\n")
     elif waitlist_visibility == "onlycount":
         wl_count = _render_waitlist_count(master_waitlist)
         waitlist_section = f"\n\n*Waitlist:* {wl_count}"
@@ -734,12 +755,6 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
     # one of the hub's newest closed / canceled events, and only while no event of the hub is active.
     reopen_available = event_status in (2, -1) and reopen_button_offered(str(main_chat_id), event_id)
 
-    master_toggles = _build_toggles(event_status, [
-        ("g", "Going", global_total, master_going_collapsed, any_going_names),
-        ("n", "Not Going", len(master_not_going), ng_collapsed, notgoing_visibility == "visible" and bool(master_not_going)),
-        ("w", "Waitlist", master_wl_count, wl_collapsed, waitlist_visibility == "visible" and master_wl_count > 0),
-    ])
-
     master_keyboard = create_event_keyboard(
         event_id, event_status, going_icon, notgoing_icon,
         master_going, master_counters,
@@ -752,7 +767,6 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         display_names=display_names,
         verification_page=verification_page,
         reopen_available=reopen_available,
-        list_toggles=master_toggles,
     )
 
     try:
@@ -797,19 +811,17 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         effective_waitlist_viz = share_waitlist_viz if share_waitlist_viz else waitlist_visibility
         effective_clickable = (share_clickability if share_clickability else clickability) == "on"
 
-        # This post's own folds. The going fold covers every going block of the post, and exists only while the post
-        # shows the going lists by name (-visible); the other two need their list shown by name AND non-empty.
+        # This post's folds (see _fold): the going blocks exist only while the post shows the going lists by name
+        # (-visible); the other two need their list shown by name AND non-empty.
         child_has_going = bool(going_list_text) or any(info["count"] > 0 for info in child_data.values())
-        child_going_collapsed = _collapsed(s_chat_id, "going", mode == "-visible" and child_has_going)
-        child_ng_collapsed = _collapsed(s_chat_id, "notgoing", effective_notgoing_viz == "visible" and c_info["notgoing_count"] > 0)
-        child_wl_count, child_wl_collapsed = 0, False
+        child_going_fold = _fold("going", mode == "-visible" and child_has_going)
 
         if mode == "-visible":
             child_text = (
                 f"{ICON_SHARED} {child_title_name}\n"
                 f"{date_line} \n"
                 + _fold_block(f"*Going from {escaped_main_title}* \\({current_post_total}\\)",
-                              going_list_text, child_going_collapsed, tail="\n\n")
+                              going_list_text, child_going_fold, tail="\n\n")
             )
             for other_id, _, _, _, _, _ in shares:
                 if str(other_id) != str(s_chat_id):
@@ -818,7 +830,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
                     if o_info["count"] > 0:
                         child_text += _fold_block(
                             f"*Going from {escape_markdown(o_title)}* \\({o_info['count']}\\)",
-                            o_info["users_text"], child_going_collapsed, tail="\n\n",
+                            o_info["users_text"], child_going_fold, tail="\n\n",
                         )
 
         elif mode == "-onlycount":
@@ -842,7 +854,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         if effective_notgoing_viz == "visible":
             child_notgoing_section = _fold_block(
-                f"*Not Going* \\({c_info['notgoing_count']}\\)", c_info["notgoing_text"], child_ng_collapsed, tail="\n\n",
+                f"*Not Going* \\({c_info['notgoing_count']}\\)", c_info["notgoing_text"], _fold("notgoing", c_info["notgoing_count"] > 0), tail="\n\n",
             )
         elif effective_notgoing_viz == "onlycount":
             child_notgoing_section = f"*Not Going:* {c_info['notgoing_count']}\n\n"
@@ -851,9 +863,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         if effective_waitlist_viz == "visible":
             wl_count, wl_text = _render_waitlist_local(master_waitlist, s_chat_id, effective_clickable)
-            child_wl_count = wl_count
-            child_wl_collapsed = _collapsed(s_chat_id, "waitlist", wl_count > 0)
-            child_waitlist_section = _fold_block(f"*Waitlist* \\({wl_count}\\)", wl_text, child_wl_collapsed, tail="\n\n")
+            child_waitlist_section = _fold_block(f"*Waitlist* \\({wl_count}\\)", wl_text, _fold("waitlist", wl_count > 0), tail="\n\n")
         elif effective_waitlist_viz == "onlycount":
             wl_count = _render_waitlist_count(master_waitlist)
             child_waitlist_section = f"*Waitlist:* {wl_count}\n\n"
@@ -861,23 +871,17 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             child_waitlist_section = ""
 
         child_text += (
-            _fold_block(f"*Going here:* \\({c_info['count']}\\)", c_info["users_text"], child_going_collapsed, sep="\n", tail="\n\n")
+            _fold_block(f"*Going here:* \\({c_info['count']}\\)", c_info["users_text"], child_going_fold, sep="\n", tail="\n\n")
             + f"{child_notgoing_section}"
             f"{child_waitlist_section}"
             f"{ICON_TOTAL} *Total Going \\(all groups\\):* {global_total}\n"
         )
 
-        child_toggles = _build_toggles(event_status, [
-            ("g", "Going", global_total, child_going_collapsed, mode == "-visible" and child_has_going),
-            ("n", "Not Going", c_info["notgoing_count"], child_ng_collapsed, effective_notgoing_viz == "visible" and c_info["notgoing_count"] > 0),
-            ("w", "Waitlist", child_wl_count, child_wl_collapsed, effective_waitlist_viz == "visible" and child_wl_count > 0),
-        ])
         child_keyboard = create_event_keyboard(
             event_id, event_status, going_icon, notgoing_icon, is_child=True,
             verification_enabled=verification_enabled,
             is_full=is_full,
             add_extra_member_enabled=add_extra_member_enabled,
-            list_toggles=child_toggles,
         )
         try:
             await _edit_message_text_with_retry(
@@ -1689,10 +1693,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not ss:
                     pass  # free tier / no sheet configured / expired - SQLite-only cancel, nothing more to do
                 else:
+                    # AMOUNT = the headcount the event had when it was canceled (its event_users rows are kept).
+                    with get_connection() as conn_amt:
+                        canceled_amount = headcount_from_rows(conn_amt.execute(
+                            "SELECT status, guests FROM event_users WHERE event_id = ?", (event_id,)).fetchall())["total"]
                     await mark_event_row_canceled(ss, event_id, closed_date, [
                         event_id, name, created_date or "", created_by_user_id or "",
-                        event_date or "", closed_date, "CANCELED", 0,
-                    ])
+                        event_date or "", closed_date, "CANCELED", canceled_amount,
+                    ], amount=canceled_amount)
                     # Intentionally NOT calling sync_event_users_sheet here -
                     # a cancelled event must not write anything to EventUsers.
             except Exception as e:
