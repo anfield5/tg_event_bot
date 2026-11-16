@@ -4,11 +4,13 @@ Live check of Telegram Rich Messages, the thing /hideability stands on - run it 
 
     BOT_TOKEN=... python3 scripts/try_rich_message.py <chat_id>
 
-It does three things, pausing for Enter between them, and says what to look at:
+It does four things, pausing for Enter between them, and says what to look at:
   1. sends a sample post as a rich message: Going open, Not Going and Waitlist folded, with a keyboard. LOOK: do the
      titles fold and unfold on a tap? do names show as clickable mentions? do the line breaks look right?
   2. edits that same message (a name is added). LOOK: does a list you unfolded STAY unfolded after the edit?
   3. edits it back to ordinary text (what /hideability off does to an old post). LOOK: did Telegram accept it?
+  0. (first) sends the same sample in the two layouts the bot can use - A: <p> paragraphs (what the bot sends now),
+     B: <br> line breaks - so you can compare the gaps between the lists on your screen.
 Nothing is written to the database. The messages are left in the chat; delete them by hand.
 """
 import asyncio
@@ -36,6 +38,11 @@ async def main(chat_id: str):
         sys.exit("BOT_TOKEN is not set")
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("👍 Going", callback_data="x")]])
     async with Bot(token) as bot:
+        import json
+        await bot._post("sendRichMessage", {"chat_id": chat_id, "rich_message": json.dumps({"html": "<p>Layout B: &lt;br&gt; line breaks</p>" + richtext.to_rich_html(sample(), paragraphs=False)})})
+        await bot._post("sendRichMessage", {"chat_id": chat_id, "rich_message": json.dumps({"html": "<p>Layout A: &lt;p&gt; paragraphs (the bot's)</p>" + richtext.to_rich_html(sample())})})
+        print("0. sent the two layouts (A and B) - compare the gaps between the lists.")
+        input("   Enter to continue... ")
         sent = await richtext.send_rich(bot, chat_id, sample(), keyboard)
         print(f"1. sent a rich message (id {sent.message_id}). Unfold Not Going and Waitlist, check mentions and line breaks.")
         input("   Enter to edit it... ")

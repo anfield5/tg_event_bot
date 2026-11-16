@@ -102,23 +102,34 @@ def md2_to_html(text: str) -> str:
     return "".join(out)
 
 
-def to_rich_html(text: str) -> str:
-    """The marked text -> the HTML of the rich message (see the module docstring)."""
-    # A <details> block is a block of its own with its own spacing, so the blank lines the plain post uses to separate the
-    # lists are NOT turned into <br> next to it (they doubled the gaps).
+def _paragraphs(chunk: str) -> str:
+    """Plain text of the post -> <p> blocks, one per blank-line-separated part (a single line break stays a <br>). The
+    paragraph spacing is Telegram's own, much smaller than a blank line - and, unlike a <br><br>, it is no empty line."""
+    parts = [part for part in re.split(r"\n{2,}", chunk.strip("\n")) if part.strip("\n")]
+    return "".join(f"<p>{md2_to_html(part.strip(chr(10)))}</p>" for part in parts)
+
+
+def to_rich_html(text: str, paragraphs: bool = True) -> str:
+    """
+    The marked text -> the HTML of the rich message (see the module docstring). Text is made of <p> paragraphs and every
+    marked list is a <details> block of its own; the blank lines that separate them in the plain post are not turned into
+    <br> (they doubled the gaps - a <details> block and a <p> have their own spacing). `paragraphs=False` is the earlier
+    <br>-only form, kept for scripts/try_rich_message.py to compare the two on a real screen.
+    """
+    def plain(chunk, edge):
+        if paragraphs:
+            return _paragraphs(chunk)
+        chunk = chunk.rstrip("\n") if edge == "first" else chunk.strip("\n") if edge == "mid" else chunk.lstrip("\n")
+        return md2_to_html(chunk) if chunk else ""
+
     parts, last, first = [], 0, True
     for m in _FOLD.finditer(text):
-        before = text[last:m.start()]
-        before = before.rstrip("\n") if first else before.strip("\n")
-        if before:
-            parts.append(md2_to_html(before))
+        parts.append(plain(text[last:m.start()], "first" if first else "mid"))
         opened = " open" if m.group(1) == _OPEN else ""
-        parts.append(f"<details{opened}><summary>{md2_to_html(m.group(2))}</summary>{md2_to_html(m.group(4))}</details>")
+        body = f"<p>{md2_to_html(m.group(4))}</p>" if paragraphs else md2_to_html(m.group(4))
+        parts.append(f"<details{opened}><summary>{md2_to_html(m.group(2))}</summary>{body}</details>")
         last, first = m.end(), False
-    rest = _MARKERS.sub("", text[last:])
-    rest = rest if first else rest.lstrip("\n")
-    if rest:
-        parts.append(md2_to_html(rest))
+    parts.append(plain(_MARKERS.sub("", text[last:]), "first" if first else "last"))
     return "".join(parts)
 
 
