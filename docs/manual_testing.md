@@ -1,6 +1,6 @@
 # Manual Testing Guide
 
-> Written for **4.9.x**. **47 cases in total - 12 of them are smoke** (marked 🔥).
+> Written for **4.9.x**. **48 cases in total - 12 of them are smoke** (marked 🔥).
 > A full pass is ~3.5-4 hours for one tester; the smoke subset is ~20 minutes.
 
 This is the **prioritised test plan**: which cases to run, in what order, and how. It is risk-based - cases exist where this bot has actually broken before, or where the automated suite structurally cannot look (real Telegram, real Google Sheets, several people at once, a real deploy).
@@ -9,7 +9,7 @@ This is the **prioritised test plan**: which cases to run, in what order, and ho
 
 | Document | What it is |
 |---|---|
-| **this file** | the plan: 47 cases, selection rules, exploratory charters |
+| **this file** | the plan: 48 cases, selection rules, exploratory charters |
 | `docs/specs/*.md` | exact Given/When/Then per command/flag (`wl_waitlist.md` W1-W13, `clc_clickability.md` C1-C9, `newevent_editevent.md`, `shareevent.md` S1-S15, `ngl_notgoinglist.md`). Cases below point at them - run those scenarios, **tick the result there** |
 | `docs/specs/MANUAL_TESTING.md` | per-topic checklists + the **Regression Watch List** (why each check exists) |
 | `pytest tests/` (1000+ tests) | all logic. Do not re-test it by hand - see section 6 |
@@ -61,7 +61,7 @@ Smoke needs only Hub-PRO, Child, O, A, M1, M2. Use a **staging** bot token, shee
 | `hub_resolver.py` (DM) | G4 |
 | `/deleteevent`, `/newevent` | H*, A7 |
 
-## 3. The 47 cases
+## 3. The 48 cases
 
 ### A. Event lifecycle (7)
 
@@ -73,6 +73,7 @@ Smoke needs only Hub-PRO, Child, O, A, M1, M2. Use a **staging** bot token, shee
 - [ ] **A6** **`/editevent` semantics.** *Given* an open event. *When* A runs `/editevent` changing only the name, then only `-d`, then `-gi/-ni`, then `-d` with an invalid date. *Then* only the given fields change; all posts refresh; the invalid date is rejected **before** anything changes (nothing half-applied). (`newevent_editevent.md` N-series.)
 - [ ] **A7** **Active-event warning.** *Given* an open (or stuck-in-verification) event. *When* M1 runs `/newevent` again. *Then* a warning names the old event and says commands now target the new one; after a proper Save & Close the warning does **not** appear.
 - [ ] **A8** **Collapsible lists (`/hideability`).** *Given* an open event with people in Going and in Not Going and someone on the Waitlist (`-wl visible`), shared to Child in `-visible` mode, `/hideability` off. *When* the post is looked at; O runs `/hideability on`; M1 taps the title of Not Going and of Going; M2 looks at the same post; the event goes through Verify, Save & Close and (with `/reopen` on) 🔓 Reopen; repeat with `-ngl onlycount` and `-wl hidden` (`/editevent`); a non-owner sends `/hideability on`; finally O sends `/hideability off`. *Then* with it off every list is shown in full and nothing can be folded (exactly the plain posts of earlier versions); after `on` all posts redraw at once: Going is open, Not Going and Waitlist are folded to their title with the count, the same in the Child post and for each "Going from …" block; a tap folds or unfolds on **that viewer's screen only** (M2 still sees the defaults) and the buttons under the post are unchanged; in Verify mode and in a closed or canceled post every list starts open; a hidden, count-only or empty list is not collapsible; a non-owner gets no reply and nothing changes; `off` redraws everything plain; the mode survives a restart; if Telegram refuses a rich message the post is still edited, as plain text. **Not verifiable by the bot:** whether a fold you made survives the next redraw on your device - note what you see.
+- [ ] **A9** **How the lists start (`/hideability -g ...`).** *Given* `/hideability on` in the Hub with an open event shared to Child. *When* a non-owner sends `/hideability -g hide`; O sends `/hideability -ng show -sw show`; O sends `/hideability -g maybe`; O sends `/hideability` (status); a second Hub with it on is looked at. *Then* the non-owner changes nothing; the posts of both Hubs and of Child redraw with Not Going open in the Hub post and Waitlist open in Child's, everything else as before; the wrong value changes nothing and says how to use it; the status lists all six flags with their values; the second Hub shows the same starts (one setting for all).
 
 ### B. Capacity and waitlist (5)
 

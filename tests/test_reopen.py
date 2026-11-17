@@ -58,9 +58,9 @@ class TestSwitchStorage:
         db_module.set_reopen_mode(HUB, True, OWNER)
         db_module.set_reopen_mode(HUB, False, 7)
         conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT active, set_by, set_at FROM reopen_mode WHERE chat_id = ?", (HUB,)).fetchone()
+        row = conn.execute("SELECT value, set_by, set_at FROM bot_settings WHERE scope = ? AND key = 'reopen'", (HUB,)).fetchone()
         conn.close()
-        assert row[0] == 0 and row[1] == "7" and row[2]
+        assert row[0] == "off" and row[1] == "7" and row[2]
 
     def test_the_feature_is_seeded_owner_level(self, db_path):
         conn = sqlite3.connect(db_path)

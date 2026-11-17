@@ -61,11 +61,16 @@ zone are chosen to minimize crossing lines.
 >   Sheet yet. `/refreshusers` deletes them from `main_group_users` immediately, so for someone with no
 >   `Users` row it is the only evidence left. Entries are dropped once the sheet has them; the stored
 >   time is the first detection, so a retry writes identical dates (no duplicate log rows).
-> - `reopen_mode` says, per hub, whether the owner-controlled 🔓 Reopen button is switched on (who switched it
->   and when are kept). It is a table of its own because a hub's `all_groups` row comes and goes with the bot.
-> - `hideability_mode` says, per hub, whether `/hideability` has made the lists of its event posts collapsible
->   (native Telegram Rich Message blocks - the folding itself lives on each viewer's screen, nothing about it is
->   stored). Who switched it and when are kept.
+> - `bot_settings` holds every setting the owners switch, in ONE table (`scope`, `key`, `value`, who and when) - a new
+>   setting is a new key, not a new table. `scope` is a hub's chat id, or `*` for a setting that is the same for every
+>   group. It is separate from `all_groups` because a hub's row there is deleted when the bot leaves the group, and the
+>   settings must outlive that. Keys: `reopen` (`on`/`off`: the owner-controlled 🔓 Reopen button), `hideability`
+>   (`on`/`off`: whether `/hideability` has made the lists of the hub's event posts collapsible - the folding itself
+>   lives on each viewer's screen, nothing about it is stored) and `hideability.<list>` (`show`/`hide`, scope `*`: how
+>   each of the six foldable lists STARTS - `going`, `notgoing`, `waitlist`, `sharedgoing`, `sharednotgoing`,
+>   `sharedwaitlist`; set with `/hideability -g show` etc.; a list without a row has the built-in default, Going shown
+>   and everything else hidden). Databases from before it had the tables `reopen_mode`, `hideability_mode` and
+>   `hideability_flags`: at start-up their rows are copied here and the tables dropped.
 > - `events.waitlist_open` (the old boolean open/closed flag) has been
 >   physically dropped - superseded by `waitlist_visibility`
 >   (visible/hidden/onlycount), which no code path had read `waitlist_open`

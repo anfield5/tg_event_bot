@@ -32,8 +32,28 @@ _FOLD = re.compile(f"([{_OPEN}{_CLOSED}])(.*?){_SEP}(.*?){_BODY}(.*?){_END}", re
 MAX_SOURCE_CHARS = 32768
 MAX_NEWLINES = 450       # a line break is at most one block; stay clear of the 500 limit
 
-# Which lists start unfolded for the viewer: Going shown, Not Going and Waitlist folded.
-DEFAULT_OPEN = {"going": True, "notgoing": False, "waitlist": False}
+# The six lists /hideability can fold, and how each starts on the viewer's screen: "show" = unfolded, "hide" = folded.
+# going / notgoing / waitlist are the lists of the hub's own post (the "Going from <chat>" blocks follow `going`); the
+# shared* ones are the same three lists in the posts shared to other chats. An owner changes them with
+# /hideability -g show ... (one setting for every group, db.get_hideability_flags); these are the values until then.
+FLAG_DEFAULTS = {
+    "going": "show", "notgoing": "hide", "waitlist": "hide",
+    "sharedgoing": "show", "sharednotgoing": "hide", "sharedwaitlist": "hide",
+}
+# /hideability flag -> list key: -g / -going, -ng / -notgoing, -w / -waitlist, -sg / -sharedgoing, ...
+FLAG_ALIASES = {
+    "g": "going", "going": "going",
+    "ng": "notgoing", "notgoing": "notgoing",
+    "w": "waitlist", "waitlist": "waitlist",
+    "sg": "sharedgoing", "sharedgoing": "sharedgoing",
+    "sng": "sharednotgoing", "sharednotgoing": "sharednotgoing",
+    "sw": "sharedwaitlist", "sharedwaitlist": "sharedwaitlist",
+}
+FLAG_LABELS = {
+    "going": ("-g", "Going"), "notgoing": ("-ng", "Not Going"), "waitlist": ("-w", "Waitlist"),
+    "sharedgoing": ("-sg", "Shared Going"), "sharednotgoing": ("-sng", "Shared Not Going"),
+    "sharedwaitlist": ("-sw", "Shared Waitlist"),
+}
 
 
 def fold(header: str, body: str, is_open: bool, sep: str = ":\n") -> str:

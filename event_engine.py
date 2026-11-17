@@ -37,7 +37,7 @@ from config import (
 from utils import escape_markdown, now2ddmmyy, is_real_admin
 from utils import remember_extra_player_prompt
 from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
-from db import is_hideability_active
+from db import is_hideability_active, get_hideability_flags
 import richtext
 from db import headcount_from_rows, reopen_button_offered, reopen_button_events, reopen_posts_to_refresh, get_reopened_roster, clear_reopened_roster, is_reopen_active
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet, mark_event_row_canceled
@@ -578,16 +578,18 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
     # /hideability (hideability.py): while it is ON for this hub, every list that is shown by name and is not empty is a
     # native collapsible block (richtext.py). An open event starts with Going unfolded and Not Going / Waitlist folded
-    # (richtext.DEFAULT_OPEN); a post in verification, closed or canceled starts with everything unfolded - the admin has
+    # (richtext.FLAG_DEFAULTS, changed by an owner with /hideability -g ... for every group); a post in verification, closed or canceled starts with everything unfolded - the admin has
     # to see everybody, and a finished post is the record. OFF: no block at all, the post is plain text as it always was.
     native = is_hideability_active(str(main_chat_id))
+    hide_flags = get_hideability_flags() if native else {}
     await _prefetch_titles(context.bot, [main_chat_id] + [c[0] for c in render_chats])
 
-    def _fold(list_name, applicable=True):
-        """None (plain), "open" or "closed" for one list of a post."""
+    def _fold(list_name, applicable=True, shared=False):
+        """None (plain), "open" or "closed" for one list of a post; `shared` = a post shared to another chat."""
         if not native or not applicable:
             return None
-        return "open" if event_status != 0 or richtext.DEFAULT_OPEN[list_name] else "closed"
+        flag = hide_flags[("shared" if shared else "") + list_name]
+        return "open" if event_status != 0 or flag == "show" else "closed"
 
     any_going_names = bool(master_going) or any(v > 0 for v in master_counters.values()) or any(
         status == "going" or (guests or 0) > 0
@@ -814,7 +816,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         # This post's folds (see _fold): the going blocks exist only while the post shows the going lists by name
         # (-visible); the other two need their list shown by name AND non-empty.
         child_has_going = bool(going_list_text) or any(info["count"] > 0 for info in child_data.values())
-        child_going_fold = _fold("going", mode == "-visible" and child_has_going)
+        child_going_fold = _fold("going", mode == "-visible" and child_has_going, shared=True)
 
         if mode == "-visible":
             child_text = (
@@ -854,7 +856,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         if effective_notgoing_viz == "visible":
             child_notgoing_section = _fold_block(
-                f"*Not Going* \\({c_info['notgoing_count']}\\)", c_info["notgoing_text"], _fold("notgoing", c_info["notgoing_count"] > 0), tail="\n\n",
+                f"*Not Going* \\({c_info['notgoing_count']}\\)", c_info["notgoing_text"], _fold("notgoing", c_info["notgoing_count"] > 0, shared=True), tail="\n\n",
             )
         elif effective_notgoing_viz == "onlycount":
             child_notgoing_section = f"*Not Going:* {c_info['notgoing_count']}\n\n"
@@ -863,7 +865,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
 
         if effective_waitlist_viz == "visible":
             wl_count, wl_text = _render_waitlist_local(master_waitlist, s_chat_id, effective_clickable)
-            child_waitlist_section = _fold_block(f"*Waitlist* \\({wl_count}\\)", wl_text, _fold("waitlist", wl_count > 0), tail="\n\n")
+            child_waitlist_section = _fold_block(f"*Waitlist* \\({wl_count}\\)", wl_text, _fold("waitlist", wl_count > 0, shared=True), tail="\n\n")
         elif effective_waitlist_viz == "onlycount":
             wl_count = _render_waitlist_count(master_waitlist)
             child_waitlist_section = f"*Waitlist:* {wl_count}\n\n"

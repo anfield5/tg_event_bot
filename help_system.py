@@ -295,8 +295,11 @@ def _build_owner_help_text(expanded: bool = False) -> str:
         "can be open at a time\\. With a name or an event ID it reopens that event right away\\. No argument shows the "
         "current state\\.\n"
         "/hideability \\[on\\|off\\] \\- Make the lists of the group's event posts \\(Going, Not Going, Waitlist\\) collapsible "
-        "with a tap, on your own screen\\. Going starts open, Not Going and Waitlist folded\\. Off brings back plain "
-        "posts\\. No argument shows the current state\\."
+        "with a tap, on your own screen\\. Off brings back plain posts\\. No argument shows the current state and how "
+        "each list starts\\. Bot owners can set how each list starts, the same for every group: "
+        "/hideability \\-g\\|\\-ng\\|\\-w\\|\\-sg\\|\\-sng\\|\\-sw show\\|hide "
+        "\\(Going, Not Going, Waitlist; the s\\.\\.\\. ones are the lists of shared posts\\)\\. By default Going "
+        "starts open, the rest folded\\."
     )
 
 

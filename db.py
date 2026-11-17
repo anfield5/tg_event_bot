@@ -962,28 +962,37 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
-    # 0a13. reopen_mode - whether the owner-controlled "🔓 Reopen" button is switched on for a hub (see
-    # reopen.py). Its own table, not a column on all_groups: a hub's row there is created and dropped as the bot
-    # joins and leaves, and who/when switched it is worth keeping.
+    # 0a13. bot_settings - every setting the owners switch, in ONE table (key / value), not a table per setting. A
+    # hub's row in all_groups is deleted when the bot leaves the group, so settings live here and survive that.
+    #   scope = a hub's chat_id (a per-group setting) or '*' (one setting for every group)
+    #   key / value:  reopen = on|off (reopen.py)  ·  hideability = on|off (hideability.py)
+    #                 hideability.<list> = show|hide, <list> in going, notgoing, waitlist, sharedgoing, sharednotgoing,
+    #                 sharedwaitlist (how each foldable list starts; scope '*')
+    # A new setting is a new key, not a new table. set_by / set_at: who changed it last, and when.
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS reopen_mode (
-            chat_id TEXT PRIMARY KEY,
-            active  INTEGER NOT NULL DEFAULT 0,
-            set_by  TEXT,
-            set_at  TEXT
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            scope  TEXT NOT NULL,
+            key    TEXT NOT NULL,
+            value  TEXT NOT NULL,
+            set_by TEXT,
+            set_at TEXT,
+            PRIMARY KEY (scope, key)
         )
     """)
-
-    # 0a14. hideability_mode - whether the native collapsible lists (richtext.py) are switched on for a hub (see
-    # hideability.py). Same shape as reopen_mode: its own table, who/when kept.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS hideability_mode (
-            chat_id TEXT PRIMARY KEY,
-            active  INTEGER NOT NULL DEFAULT 0,
-            set_by  TEXT,
-            set_at  TEXT
-        )
-    """)
+    # The separate tables earlier versions had (reopen_mode, hideability_mode, hideability_flags): copy what they hold
+    # into bot_settings, then drop them. Harmless on a database that never had them.
+    _existing = {r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+    for _table, _key in (("reopen_mode", "reopen"), ("hideability_mode", "hideability")):
+        if _table in _existing:
+            cursor.execute(
+                f"INSERT OR IGNORE INTO bot_settings (scope, key, value, set_by, set_at) "
+                f"SELECT chat_id, ?, CASE WHEN active = 1 THEN 'on' ELSE 'off' END, set_by, set_at FROM {_table}", (_key,))
+            cursor.execute(f"DROP TABLE {_table}")
+    if "hideability_flags" in _existing:
+        cursor.execute(
+            "INSERT OR IGNORE INTO bot_settings (scope, key, value, set_by, set_at) "
+            "SELECT '*', 'hideability.' || list_key, mode, set_by, set_at FROM hideability_flags")
+        cursor.execute("DROP TABLE hideability_flags")
 
     conn.commit()
     conn.close()
@@ -1698,25 +1707,54 @@ def clear_pending_left(chat_id: str, user_ids: list) -> None:
         conn.commit()
 
 
-# ---------------------------------------------------------------------------
-# reopen_mode: the owner-controlled "Reopen" button (see reopen.py)
+# bot_settings: the owner-controlled settings, one table (see the table's comment in init_db)
 # ---------------------------------------------------------------------------
 
-def is_reopen_active(chat_id: str) -> bool:
+GLOBAL_SCOPE = "*"
+
+
+def _now() -> str:
+    return datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+
+
+def get_setting(scope: str, key: str, default=None):
+    """The value of one setting of a scope (a hub's chat_id, or GLOBAL_SCOPE), or `default` if it was never set."""
     with get_connection() as conn:
-        row = conn.execute("SELECT active FROM reopen_mode WHERE chat_id = ?", (str(chat_id),)).fetchone()
-    return bool(row and row[0])
+        row = conn.execute("SELECT value FROM bot_settings WHERE scope = ? AND key = ?", (str(scope), key)).fetchone()
+    return row[0] if row else default
+
+
+def set_setting(scope: str, key: str, value: str, by_user_id=None) -> None:
+    """Stores one setting, remembering who changed it and when."""
+    set_settings(scope, {key: value}, by_user_id)
+
+
+def set_settings(scope: str, values: dict, by_user_id=None) -> None:
+    """Stores several settings of one scope at once."""
+    now = _now()
+    with get_connection() as conn:
+        for key, value in values.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO bot_settings (scope, key, value, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
+                (str(scope), key, value, None if by_user_id is None else str(by_user_id), now),
+            )
+        conn.commit()
+
+
+def scopes_with_setting(key: str, value: str) -> list:
+    """Every hub where `key` is currently `value`."""
+    with get_connection() as conn:
+        return [str(r[0]) for r in conn.execute(
+            "SELECT scope FROM bot_settings WHERE key = ? AND value = ? AND scope != ?", (key, value, GLOBAL_SCOPE)).fetchall()]
+
+
+def is_reopen_active(chat_id: str) -> bool:
+    return get_setting(chat_id, "reopen") == "on"
 
 
 def set_reopen_mode(chat_id: str, active: bool, by_user_id=None) -> None:
     """Switches the mode for one hub, remembering who did it and when."""
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO reopen_mode (chat_id, active, set_by, set_at) VALUES (?, ?, ?, ?)",
-            (str(chat_id), 1 if active else 0, None if by_user_id is None else str(by_user_id),
-             datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]),
-        )
-        conn.commit()
+    set_setting(chat_id, "reopen", "on" if active else "off", by_user_id)
 
 
 def latest_event_of_hub(chat_id: str):
@@ -1794,22 +1832,36 @@ def clear_reopened_roster(event_id: str) -> None:
         conn.commit()
 
 
-# ---------------------------------------------------------------------------
-# hideability_mode: native collapsible lists in a hub's event posts (see hideability.py, richtext.py)
+# hideability: native collapsible lists in a hub's event posts (see hideability.py, richtext.py)
 # ---------------------------------------------------------------------------
 
 def is_hideability_active(chat_id: str) -> bool:
+    return get_setting(chat_id, "hideability") == "on"
+
+
+def get_hideability_flags() -> dict:
+    """{list key: "show" | "hide"} for all six lists - the owners' choices over richtext.FLAG_DEFAULTS."""
+    import richtext
+    flags = dict(richtext.FLAG_DEFAULTS)
     with get_connection() as conn:
-        row = conn.execute("SELECT active FROM hideability_mode WHERE chat_id = ?", (str(chat_id),)).fetchone()
-    return bool(row and row[0])
+        for key, value in conn.execute(
+                "SELECT key, value FROM bot_settings WHERE scope = ? AND key LIKE 'hideability.%'", (GLOBAL_SCOPE,)).fetchall():
+            list_key = key.split(".", 1)[1]
+            if list_key in flags and value in ("show", "hide"):
+                flags[list_key] = value
+    return flags
+
+
+def set_hideability_flags(changes: dict, by_user_id=None) -> None:
+    """Stores the owners' choices ({list key: "show" | "hide"}) - one setting for every group."""
+    set_settings(GLOBAL_SCOPE, {f"hideability.{k}": v for k, v in changes.items()}, by_user_id)
+
+
+def active_hideability_hubs() -> list:
+    """The hubs that have /hideability on."""
+    return scopes_with_setting("hideability", "on")
 
 
 def set_hideability_mode(chat_id: str, active: bool, by_user_id=None) -> None:
     """Switches the mode for one hub, remembering who did it and when."""
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO hideability_mode (chat_id, active, set_by, set_at) VALUES (?, ?, ?, ?)",
-            (str(chat_id), 1 if active else 0, None if by_user_id is None else str(by_user_id),
-             datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]),
-        )
-        conn.commit()
+    set_setting(chat_id, "hideability", "on" if active else "off", by_user_id)

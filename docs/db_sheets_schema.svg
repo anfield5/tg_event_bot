@@ -310,25 +310,16 @@
 <text x="64.0" y="968.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">last_name</text>
 <rect x="55.0" y="977.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
 <text x="64.0" y="986.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">left_at</text>
-<rect x="340.0" y="1000.0" width="220" height="118" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="340.0" y="1000.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
 <rect x="340.0" y="1000.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
 <rect x="340.0" y="1024.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="350.0" y="1016.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">reopen_mode</text>
-<text x="350.0" y="1046.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
-<rect x="341.0" y="1055.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="350.0" y="1064.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">active</text>
-<text x="350.0" y="1082.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">set_by</text>
-<rect x="341.0" y="1091.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="350.0" y="1100.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">set_at</text>
-<rect x="626.0" y="1000.0" width="220" height="118" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="626.0" y="1000.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="626.0" y="1024.0" width="220" height="8" fill="#5F5E5A"/>
-<text x="636.0" y="1016.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">hideability_mode</text>
-<text x="636.0" y="1046.0" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">chat_id PK</text>
-<rect x="627.0" y="1055.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="1064.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">active</text>
-<text x="636.0" y="1082.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">set_by</text>
-<rect x="627.0" y="1091.0" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="1100.0" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">set_at</text>
+<text x="350.0" y="1016.0" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">bot_settings</text>
+<text x="350.0" y="1046" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">scope PK</text>
+<rect x="341.0" y="1055" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="350.0" y="1064" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">key PK</text>
+<text x="350.0" y="1082" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">value</text>
+<rect x="341.0" y="1091" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
+<text x="350.0" y="1100" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">set_by</text>
+<text x="350.0" y="1118" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">set_at</text>
 <text x="54" y="1258" font-size="13" fill="#5F5E5A">Gray = SQLite table &#183; Blue = Control Sheet (one, shared) &#183; Green = Per-hub Sheet (one per hub) &#183; Bold field = primary/unique key</text>
 </svg>
