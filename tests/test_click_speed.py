@@ -30,7 +30,17 @@ def outbox(db_path):
     return rows
 
 
-async def flush(ss, sheet="sheet1"):
+@pytest.fixture(autouse=True)
+def _fresh_backoff():
+    actions_log._blocked_until.clear(); actions_log._backoff.clear()
+    yield
+    actions_log._blocked_until.clear(); actions_log._backoff.clear()
+
+
+async def flush(ss, sheet="sheet1", wait_over=True):
+    """One flush_once; `wait_over`: the pause after an earlier failure has passed (the tests do not sleep for it)."""
+    if wait_over:
+        actions_log._blocked_until.clear()
     with patch("actions_log.get_sheet_for_chat", new_callable=AsyncMock, return_value=sheet), \
          patch("actions_log.open_spreadsheet", new_callable=AsyncMock, return_value=ss):
         return await actions_log.flush_once()
@@ -129,6 +139,29 @@ class TestOutbox:
         actions_log.queue_action(MAIN_CHAT, ["fine"])
         ws.append_rows = AsyncMock()
         assert await flush(ss) == 1
+
+    async def test_a_failed_hub_is_left_alone_for_a_while_not_retried_on_every_click(self, db_path):
+        actions_log.queue_action(MAIN_CHAT, ["a"])
+        ss = FakeSpreadsheet()
+        ws = await ss.worksheet("Actions")
+        ws.append_rows = AsyncMock(side_effect=RuntimeError("quota"))
+        await flush(ss)
+        actions_log.queue_action(MAIN_CHAT, ["b"])
+        await flush(ss, wait_over=False)
+        await flush(ss, wait_over=False)
+        assert ws.append_rows.await_count == 1, "inside the pause Google is not called again"
+
+    async def test_no_access_to_the_sheet_never_drops_rows_and_says_what_to_do(self, db_path, caplog):
+        actions_log.queue_action(MAIN_CHAT, ["keep me"])
+        ss = FakeSpreadsheet()
+        ws = await ss.worksheet("Actions")
+        ws.append_rows = AsyncMock(side_effect=RuntimeError("{'code': 403, 'message': 'The caller does not have permission', 'status': 'PERMISSION_DENIED'}"))
+        for _ in range(actions_log.MAX_ATTEMPTS + 5):
+            await flush(ss)
+        assert [json.loads(r[1]) for r in outbox(db_path)] == [["keep me"]] and outbox(db_path)[0][2] == 0
+        assert "service account" in caplog.text and "Editor" in caplog.text
+        ws.append_rows = AsyncMock()
+        assert await flush(ss) == 1                      # access given: the waiting row is written
 
     async def test_a_hub_without_a_premium_sheet_has_its_rows_dropped(self, db_path):
         actions_log.queue_action(MAIN_CHAT, ["x"])

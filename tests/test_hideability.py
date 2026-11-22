@@ -519,3 +519,43 @@ class TestBotSettingsTable:
                         ("-1", "hideability", "on", "7", "t3"), ("*", "hideability.waitlist", "show", "7", "t4")}
         assert not tables & {"reopen_mode", "hideability_mode", "hideability_flags"}
         assert db_module.is_reopen_active("-1") and db_module.get_hideability_flags()["waitlist"] == "show"
+
+
+class TestRefusedRichEditIsNotRetried:
+    """A rich edit Telegram REFUSES (BadRequest: unsupported here, over a limit) used to be tried three times with a pause
+    between - seconds on every redraw of such a chat - before falling back to the plain edit. Now the fallback comes at once;
+    a network hiccup is still retried."""
+
+    def folded(self):
+        return richtext.fold("*Going* \\(1\\)", "a", True)
+
+    async def run(self, error):
+        from telegram.error import BadRequest, NetworkError  # noqa: F401
+        bot = make_bot()
+        bot.edit_message_text = AsyncMock()
+        ctx = make_context(bot=bot)
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        with patch("richtext.edit_rich", new=AsyncMock(side_effect=error)) as rich, patch("event_engine.asyncio.sleep", new=fake_sleep):
+            await event_engine._edit_message_text_with_retry(ctx, chat_id="-1", message_id=5, text=self.folded(), parse_mode="MarkdownV2")
+        return rich, bot.edit_message_text, slept
+
+    async def test_a_refused_rich_edit_goes_straight_to_the_plain_edit(self):
+        from telegram.error import BadRequest
+        rich, plain, slept = await self.run(BadRequest("rich messages are not supported here"))
+        assert rich.call_count == 1 and plain.call_count == 1 and slept == []
+
+    async def test_a_network_hiccup_is_still_retried(self):
+        from telegram.error import NetworkError
+        rich, plain, slept = await self.run(NetworkError("reset"))
+        assert rich.call_count == 3 and slept == [0.5, 0.5] and plain.call_count == 1
+
+    async def test_the_redraw_time_is_logged(self, db_path):
+        event(db_path)
+        ctx = make_context(bot=make_bot())
+        with patch("event_engine.update_all_shared_views", new=AsyncMock()), patch.object(event_engine.logger, "info") as info:
+            await event_engine.schedule_view_refresh(ctx, "ev1")
+        assert any("post redrawn: event ev1 in" in str(c) for c in info.call_args_list)

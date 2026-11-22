@@ -112,10 +112,21 @@ async def schedule_view_refresh(context: ContextTypes.DEFAULT_TYPE, event_id: st
         return
     async with state["lock"]:
         state["pending"] = False
-        await update_all_shared_views(context, event_id)
+        await _timed_refresh(context, event_id)
         while state["pending"]:
             state["pending"] = False
-            await update_all_shared_views(context, event_id)
+            await _timed_refresh(context, event_id)
+
+
+async def _timed_refresh(context, event_id: str):
+    """update_all_shared_views, with its duration in the log: `grep "post redrawn"` tells a slow Telegram (the edits) from a
+    slow click (the `button ... handled` lines)."""
+    started = time.perf_counter()
+    try:
+        await update_all_shared_views(context, event_id)
+    finally:
+        took = (time.perf_counter() - started) * 1000
+        (logger.warning if took > 3000 else logger.info)(f"post redrawn: event {event_id} in {took:.0f} ms")
 
 
 async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_delay: float = 0.5, **kwargs):
@@ -143,8 +154,10 @@ async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_del
     harmless BadRequest whenever the new text happens to exactly match
     what's already there.
     """
-    async def attempt_all(call):
-        """Runs `call` with the retries; True once it worked (or the text was already there), else raises its last error."""
+    async def attempt_all(call, retry_refused=True):
+        """Runs `call` with the retries; True once it worked (or the text was already there), else raises its last error.
+        `retry_refused=False`: a BadRequest (Telegram understood and REFUSED the edit) is raised at once - trying the same
+        thing again cannot change the answer, it only cost two more round trips and two pauses."""
         last_exception = None
         for attempt in range(max_retries + 1):
             try:
@@ -154,6 +167,8 @@ async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_del
                 if "Message is not modified" in str(e):
                     return True
                 last_exception = e
+                if not retry_refused:
+                    raise
             except Exception as e:
                 last_exception = e
             if attempt < max_retries:
@@ -168,7 +183,9 @@ async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_del
     if richtext.has_folds(text):
         if can_go_rich and richtext.fits(text):
             try:
-                await attempt_all(lambda: richtext.edit_rich(bot, kwargs["chat_id"], kwargs["message_id"], text, kwargs.get("reply_markup")))
+                # A refused rich edit is not retried (the plain edit below is the answer to it); a network hiccup still is.
+                await attempt_all(lambda: richtext.edit_rich(bot, kwargs["chat_id"], kwargs["message_id"], text, kwargs.get("reply_markup")),
+                                  retry_refused=False)
                 return
             except Exception as e:
                 logger.warning(f"Rich message edit failed for {kwargs.get('chat_id')}/{kwargs.get('message_id')}, editing as plain text: {e}")

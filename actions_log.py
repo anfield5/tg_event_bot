@@ -14,6 +14,7 @@ behind it; a hub that is no longer on a premium sheet has its rows dropped, as b
 """
 import asyncio
 import json
+import time
 
 from config import logger
 from db import get_connection
@@ -24,6 +25,10 @@ FLUSH_DELAY = 2.0        # seconds the clicks of a burst are collected before th
 RETRY_EVERY = 30.0       # seconds between tries while rows are left over (a failed write)
 BATCH = 200              # rows taken from the outbox at a time
 MAX_ATTEMPTS = 20
+BACKOFF_FIRST = 30.0     # a hub whose sheet could not be written is left alone this long, then 2x longer each time ...
+BACKOFF_MAX = 600.0      # ... up to this
+_blocked_until = {}      # hub -> time.monotonic() before which it is not tried again
+_backoff = {}            # hub -> the pause the next failure will use
 
 _wake = None
 
@@ -67,6 +72,8 @@ async def flush_once() -> int:
 
     written = 0
     for hub, items in by_hub.items():
+        if _blocked_until.get(hub, 0) > time.monotonic():
+            continue                              # failed a moment ago: do not hammer Google (and its shared call lock)
         ids = [i for i, _r, _a in items]
         try:
             sheet_target = await get_sheet_for_chat(hub)
@@ -78,10 +85,24 @@ async def flush_once() -> int:
             await ws.append_rows([r for _i, r, _a in items])
             _remove(ids)
             written += len(ids)
+            _backoff.pop(hub, None)
+            _blocked_until.pop(hub, None)
         except Exception as e:
-            logger.error(f"Sheets Actions write failed for {hub} ({len(ids)} row(s)), will retry: {e}")
-            _failed(items)
+            pause = min(_backoff.get(hub, BACKOFF_FIRST / 2) * 2, BACKOFF_MAX)
+            _backoff[hub] = pause
+            _blocked_until[hub] = time.monotonic() + pause
+            denied = _is_permission_error(e)
+            hint = (" - the bot's Google service account has no edit access to this chat's spreadsheet: share the sheet "
+                    "with it as Editor; the rows wait in the outbox meanwhile") if denied else ""
+            logger.error(f"Sheets Actions write failed for {hub} ({len(ids)} row(s)), next try in {pause:.0f} s: {e}{hint}")
+            if not denied:
+                _failed(items)                    # no access is not the row's fault: it keeps waiting, it is not given up on
     return written
+
+
+def _is_permission_error(e: Exception) -> bool:
+    text = str(e)
+    return "PERMISSION_DENIED" in text or "does not have permission" in text
 
 
 def _remove(ids) -> None:
