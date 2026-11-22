@@ -20,6 +20,7 @@ from tests.helpers import (
     make_update, make_context, make_callback_update,
 )
 import handlers
+import actions_log
 import event_engine
 import monitors
 import subscription
@@ -2565,9 +2566,11 @@ class TestButtonHandlerActionsLogNaming:
         upd  = make_callback_update("incgst_ev1:alice", chat_id=int(MAIN_CHAT), user=user)
 
         fake_ss = FakeSpreadsheet()
-        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
-            await handlers.button_handler(upd, ctx)
+        await handlers.button_handler(upd, ctx)
+        assert actions_log.pending_count() == 1, "the click only queues its Actions row"
+        with patch("actions_log.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet1"), \
+             patch("actions_log.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await actions_log.flush_once()
 
         ws = fake_ss.worksheets["Actions"]
         assert len(ws.appended_rows) == 1
@@ -2584,9 +2587,11 @@ class TestButtonHandlerActionsLogNaming:
         upd  = make_callback_update("decgst_ev1:alice", chat_id=int(MAIN_CHAT), user=user)
 
         fake_ss = FakeSpreadsheet()
-        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
-            await handlers.button_handler(upd, ctx)
+        await handlers.button_handler(upd, ctx)
+        assert actions_log.pending_count() == 1, "the click only queues its Actions row"
+        with patch("actions_log.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet1"), \
+             patch("actions_log.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await actions_log.flush_once()
 
         ws = fake_ss.worksheets["Actions"]
         assert len(ws.appended_rows) == 1
@@ -2600,9 +2605,11 @@ class TestButtonHandlerActionsLogNaming:
         upd  = make_callback_update("going_ev1", chat_id=int(MAIN_CHAT), user=user)
 
         fake_ss = FakeSpreadsheet()
-        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock), \
-             patch("event_engine.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
-            await handlers.button_handler(upd, ctx)
+        await handlers.button_handler(upd, ctx)
+        assert actions_log.pending_count() == 1, "the click only queues its Actions row"
+        with patch("actions_log.get_sheet_for_chat", new_callable=AsyncMock, return_value="sheet1"), \
+             patch("actions_log.open_spreadsheet", new_callable=AsyncMock, return_value=fake_ss):
+            await actions_log.flush_once()
 
         ws = fake_ss.worksheets["Actions"]
         assert ws.appended_rows[0][1] == "GOING"
@@ -5129,6 +5136,7 @@ class TestCrossChatAlreadyAddedWarning:
 
         query = await self._click("-200", 15, "newperson")
 
+        await asyncio.sleep(0)       # the plain answer is sent in the background
         assert query.answer.call_args.kwargs.get("show_alert") is not True
         row = conn.execute(
             "SELECT status FROM event_users WHERE event_id='ev1' AND chat_id='-200' AND user_id='15'"
@@ -6562,6 +6570,7 @@ class TestSilentPermissionDenialNowGivesFeedback:
 
         query = await self._click("close", "-100", 42, "creator")
 
+        await asyncio.sleep(0)       # the plain answer is sent in the background
         assert query.answer.call_args.kwargs.get("show_alert") is not True
 
 
@@ -7138,6 +7147,7 @@ class TestCrossChatWaitlistDuplicateBlocked:
 
         query = await self._click("add", "-300", 7, "frank")
 
+        await asyncio.sleep(0)       # the plain answer is sent in the background
         assert query.answer.call_args.kwargs.get("show_alert") is not True
         row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND chat_id='-300' AND user_id='7'").fetchone()
         assert row == (1,)
@@ -9623,7 +9633,8 @@ class TestHelpAuditFindings:
         await help_system.help_callback_handler(upd, ctx)
 
         text = query.edit_message_text.call_args.args[0]
-        assert "/refreshusersall \\- Sync user list" in text
+        assert "/refreshusersall \\[\\-d\\] \\- Sync user list" in text
+        assert "Chatname: joined N, left M" in text, "the -d option is explained"
 
     async def test_owner_help_documents_all_four_owner_commands(self, db_path):
         with patch("help_system.OWNER_USER_IDS", [1]):

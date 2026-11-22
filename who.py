@@ -10,9 +10,11 @@
 Both read the hub's own Google Sheet - votes from the Actions tab, departures from UserPresenceLog (names
 from Users) - so the command needs a bound sheet and the PRO-level "who" feature, and only admins may use it.
 
-Names are printed WITHOUT "@" or links on purpose: the people listed are usually still in the chat, and a
-mention would notify every one of them.
+A person is printed as "First Last (@username)": the username is a LINK to the profile (https://t.me/username), which opens
+it without notifying anyone - a plain "@username" would be a mention and ping everybody listed, and those people are usually
+still in the chat. The link is added only where the username is a real one (see _is_username); no bullet points.
 """
+import re
 from datetime import datetime, timedelta
 
 from gspread.exceptions import WorksheetNotFound
@@ -27,6 +29,7 @@ from subscription import require_feature
 from utils import escape_markdown, is_real_admin, parse_stored_date, WHO_DEFAULT_HOURS
 
 WHO_MAX_HOURS = 24 * 365
+_USERNAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")     # Telegram: 5-32 characters, letters / digits / underscore
 MAX_ROWS = 100          # per list - the rest is summarised as "...and N more"
 CHUNK = 3900            # Telegram's limit is 4096 characters per message
 MAIN, ALL = "main", "all"
@@ -152,11 +155,55 @@ def notgoing_changes(records, event_id, since, scope_chats=None):
             chat = str(r.get("CHAT_ID", "")).strip()
             if (status.get(uid) == "going" and when is not None and when >= since
                     and (scope_chats is None or chat in scope_chats)):
-                found[uid] = {"name": str(r.get("USER_NAME", "")).strip() or uid, "when": when, "chat": chat}
+                found[uid] = {"name": str(r.get("USER_NAME", "")).strip() or uid, "uid": uid, "when": when, "chat": chat}
             status[uid] = "notgoing"
     for uid, item in found.items():
         item["back_to_going"] = status.get(uid) == "going"
     return sorted(found.values(), key=lambda item: item["when"], reverse=True)
+
+
+def _person(rec: dict) -> dict:
+    """A Users row -> {"name": the plain text shown when there is no link, "full": "First Last", "username": the real
+    @handle or ""}. The bot stores a person's FIRST NAME in USER_NAME when they have no @username, so a USER_NAME that
+    equals the first name is not taken for a handle."""
+    first, last = str(rec.get("FIRST_NAME", "")).strip(), str(rec.get("LAST_NAME", "")).strip()
+    full = " ".join(p for p in (first, last) if p)
+    username = str(rec.get("USER_NAME", "")).strip().lstrip("@")
+    handle = username if _is_username(username) and username.lower() != first.lower() else ""
+    name = f"{full} ({username})" if full and username and full != username else (full or username)
+    return {"name": name, "full": full, "username": handle}
+
+
+def _is_username(value: str) -> bool:
+    return bool(_USERNAME.match(value or ""))
+
+
+def names_by_user(users_records) -> dict:
+    """{user_id: person} from the Users tab (the first row of a person wins) - names for the Actions-based report."""
+    out = {}
+    for r in users_records:
+        uid = str(r.get("USER_ID", "")).strip()
+        person = _person(r)
+        if uid and person["name"]:
+            out.setdefault(uid, person)
+    return out
+
+
+def with_names(items, directory: dict):
+    """Fills the people of the Not Going report (they carry the Actions tab's USER_NAME only) with their name and handle from
+    the Users tab, where it is known."""
+    return [{**item, **directory[item["uid"]]} if item.get("uid") in directory else item for item in items]
+
+
+def render_person(item: dict) -> str:
+    """MarkdownV2: "First Last (@username)" with the @username a link to the profile; just the name where there is no handle."""
+    E = escape_markdown
+    handle = item.get("username") or ""
+    if not handle:
+        return E(item["name"])
+    link = f"[{E('@' + handle)}](https://t.me/{handle})"
+    full = item.get("full") or ""
+    return f"{E(full)} \\({link}\\)" if full else link
 
 
 def left_in_window(log_records, users_records, since, scope_chats):
@@ -168,12 +215,10 @@ def left_in_window(log_records, users_records, since, scope_chats):
     names, names_by_uid = {}, {}
     for r in users_records:
         uid, chat = str(r.get("USER_ID", "")).strip(), str(r.get("CHAT_ID", "")).strip()
-        full = " ".join(p for p in (str(r.get("FIRST_NAME", "")).strip(), str(r.get("LAST_NAME", "")).strip()) if p)
-        username = str(r.get("USER_NAME", "")).strip()
-        name = f"{full} ({username})" if full and username and full != username else (full or username)
-        if uid and name:
-            names[(uid, chat)] = name
-            names_by_uid.setdefault(uid, name)
+        person = _person(r)
+        if uid and person["name"]:
+            names[(uid, chat)] = person
+            names_by_uid.setdefault(uid, person)
 
     stays = {}
 
@@ -190,8 +235,8 @@ def left_in_window(log_records, users_records, since, scope_chats):
 
     by_chat = {}
     for (uid, chat, _raw), end in stays.items():
-        by_chat.setdefault(chat, []).append(
-            {"name": names.get((uid, chat)) or names_by_uid.get(uid) or f"user {uid}", "when": end})
+        person = names.get((uid, chat)) or names_by_uid.get(uid) or {"name": f"user {uid}"}
+        by_chat.setdefault(chat, []).append({**person, "when": end})
     for items in by_chat.values():
         items.sort(key=lambda item: item["when"], reverse=True)
     return by_chat
@@ -222,7 +267,8 @@ def format_notgoing(event_name, hours, items, labels):
     for item in items:
         label = labels.get(item["chat"], item["chat"])
         again = " (now Going again)" if item["back_to_going"] else ""
-        rows.append(E(f"• {item['name']} - {_when(item['when'])} · {label}{again}"))
+        when = _when(item["when"])
+        rows.append(f"{render_person(item)}{E(f' - {when} · {label}{again}')}")
     return "\n".join(lines + _capped(rows))
 
 
@@ -239,7 +285,7 @@ def format_left(hours, by_chat, scope_chats):
         items = by_chat.get(cid, [])
         if items:
             out.append(f"*{E(scope_chats[cid])}*")
-            out += _capped([E(f"• {i['name']} - {_when(i['when'])}") for i in items])
+            out += _capped([f"{render_person(i)}{E(' - ' + _when(i['when']))}" for i in items])
     out.append(note)
     return "\n".join(out)
 
@@ -318,6 +364,8 @@ async def who_command(update: Update, context: ContextTypes.DEFAULT_TYPE, overri
             else:
                 records = await _records(ss, "Actions")
                 items = notgoing_changes(records, event[0], since, None if scope["is_all"] else set(scope["chats"]))
+                if items:
+                    items = with_names(items, names_by_user(await _records(ss, "Users", required=False)))
                 sections.append(format_notgoing(event[1], parsed["hours"], items, scope["labels"]))
         if parsed["left"]:
             log_records = await _records(ss, "UserPresenceLog", required=False)

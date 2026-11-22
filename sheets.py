@@ -180,7 +180,7 @@ def _column_letter(position: int):
     return chr(64 + position) if 1 <= position <= 26 else None
 
 
-async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=None, left_members=None):
+async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=None, left_members=None, stats=None):
     """
     Syncs the "Users" worksheet for a given chat/place with its current
     (best-known) membership.
@@ -248,6 +248,11 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
     time is unknown, so DATE_start is set one hour before `left_at`. People who already have a row, and
     people who are actually present, are ignored here - the normal MEMBER -> LEFT path handles them.
 
+    `stats` - optional dict; when given it is filled with {"joined": n, "left": m}: how many people this call put into
+    the Users tab as new members (a new row, or LEFT -> MEMBER for someone who came back) and how many it marked as LEFT
+    (including leavers the sheet had never heard of). Only what was really written is counted: when the presence log
+    could not be written nobody is flipped, so "left" stays 0 until the retry. /refreshusersall -d prints it.
+
     Returns None when this hub has no sheet at all (nothing to do), True when
     everything was written, and False when something couldn't be (details in
     the log) - the Users/log changes that failed are retried by the next call.
@@ -277,6 +282,8 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                 continue
             members.append((user_id, username, first_name, last_name))
         current_keys = {(str(m[0]), str(chat_id)) for m in members}
+        if stats is not None:
+            stats.update(joined=0, left=0)
 
         now = now2ddmmyy()
 
@@ -339,6 +346,8 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                     await ws.update(f"F{idx}", [["MEMBER"]])
                     await ws.update(f"G{idx}", [[now2ddmmyy()]])
                     await ws.update(f"H{idx}", [[""]])
+                    if stats is not None:
+                        stats["joined"] += 1
                 # If status is already MEMBER, do nothing
 
                 # Only write what actually differs: this used to rewrite both cells for EVERY
@@ -367,6 +376,8 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                 # New user: add with MEMBER status
                 await ws.append_row([str(user_id), first_name or "", last_name or "", username, str(chat_id),
                                       "MEMBER", now2ddmmyy(), "", ""])
+                if stats is not None:
+                    stats["joined"] += 1
 
         # 3. Members who left: only now that their stay is safely in the log.
         if presence_ok:
@@ -375,6 +386,8 @@ async def sync_users_sheet(chat_id, current_members: list, sheet_owner_chat_id=N
                 await ws.update(f"H{idx}", [[now]])
             if new_left_rows:
                 await ws.append_rows(new_left_rows)
+            if stats is not None:
+                stats["left"] = len(leaving) + len(new_left_rows)
         return presence_ok
     except Exception as e:
         logger.error(f"Google Sheets Users synchronization failed: {repr(e)}")

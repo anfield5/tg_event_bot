@@ -1,5 +1,6 @@
 """/who: parsing, scope (main / alias / all), the two reports, formatting and the command itself."""
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -231,7 +232,7 @@ class TestLeftInWindow:
 class TestFormatting:
     LABELS = {HUB: "main", "-200": "kids"}
 
-    def test_names_are_plain_so_nobody_is_pinged(self):
+    def test_a_name_without_a_handle_is_plain_text_so_nobody_is_pinged(self):
         text = who.format_notgoing("Football", 48, [{"name": "ivan_p", "when": NOW, "chat": HUB, "back_to_going": False}], self.LABELS)
         assert "@" not in text and "tg://" not in text
 
@@ -564,3 +565,54 @@ class TestDefaultHours:
         assert "optional" in usage and "6 h" in usage
         assert "default 6" in plain((await _gather(1))["help_users"])
         assert "6 by default" in plain((await _gather(1))["help_flags_users_expand"])
+
+
+class TestPeopleAsLinks:
+    """A person is "First Last (@username)" with the @username a link to the profile (a t.me link pings nobody, a plain
+    @username would); no bullet points; a link only where the username is a real one."""
+    LABELS = {HUB: "main", "-200": "kids"}
+
+    def person(self, first="Ivan", last="Petrenko", username="ivan_p"):
+        return who.names_by_user([_user("1", HUB, first, last, username)])["1"]
+
+    def test_full_name_then_the_username_as_a_link(self):
+        assert who.render_person(self.person()) == "Ivan Petrenko \\([@ivan\\_p](https://t.me/ivan_p)\\)"
+
+    def test_only_a_username_is_just_the_link(self):
+        assert who.render_person(self.person("", "", "ivan_p")) == "[@ivan\\_p](https://t.me/ivan_p)"
+
+    def test_no_link_when_there_is_no_real_username(self):
+        assert who.render_person(self.person("Olena", "K", "")) == "Olena K"
+        assert "t.me" not in who.render_person(self.person("Olena", "K", "ok"))          # too short to be a username
+        assert "t.me" not in who.render_person(self.person("Olena", "K", "Олена_К"))      # not a Telegram username
+
+    def test_a_first_name_stored_in_place_of_a_missing_username_is_not_linked(self):
+        assert self.person("Alexander", "S", "Alexander")["username"] == ""
+        assert "t.me" not in who.render_person(self.person("Alexander", "S", "Alexander"))
+
+    def test_the_at_sign_of_the_stored_username_is_not_doubled(self):
+        assert who.render_person(self.person(username="@ivan_p")).count("@") == 1
+
+    def test_the_report_lines_have_no_bullets(self):
+        item = {**self.person(), "when": NOW, "chat": HUB, "back_to_going": False}
+        text = who.format_notgoing("Football", 48, [item], self.LABELS)
+        left = who.format_left(48, {HUB: [{**self.person(), "when": NOW}]}, {HUB: "main"})
+        for report in (text, left):
+            assert "•" not in report and "[@ivan\\_p](https://t.me/ivan_p)" in report
+            unlinked = re.sub(r"\[([^\]]*)\]\(https://t\.me/[A-Za-z0-9_]+\)", r"\1", report)    # the validator knows no links
+            assert markdown_v2_problems(unlinked) == []
+
+    def test_the_left_report_keeps_the_handle_from_the_users_tab(self):
+        out = who.left_in_window([_log("1", HUB, 3)], [_user("1", HUB, "Ivan", "P", "ivan_p")], SINCE48, {HUB})
+        assert out[HUB][0]["username"] == "ivan_p" and out[HUB][0]["full"] == "Ivan P"
+        assert out[HUB][0]["name"] == "Ivan P (ivan_p)"
+
+    def test_the_not_going_report_takes_names_from_the_users_tab_by_user_id(self):
+        rows = [act("GOING", "1", "ivan_p", 20), act("NOTGOING", "1", "ivan_p", 10)]
+        found = who.with_names(who.notgoing_changes(rows, "e1", SINCE48), who.names_by_user([_user("1", HUB, "Ivan", "P", "ivan_p")]))
+        assert found[0]["full"] == "Ivan P" and found[0]["username"] == "ivan_p"
+
+    def test_someone_missing_from_the_users_tab_keeps_the_actions_name(self):
+        rows = [act("GOING", "7", "stranger", 20), act("NOTGOING", "7", "stranger", 10)]
+        found = who.with_names(who.notgoing_changes(rows, "e1", SINCE48), {})
+        assert who.render_person(found[0]) == "stranger"

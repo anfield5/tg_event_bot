@@ -477,8 +477,9 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "/addmonitor \\[chat\\_id\\] \\- Add group/channel to monitor list\n"
             "/removemonitor \\[chat\\_id\\] \\- Remove from monitor list\n"
             "/listmonitors \\- Show all monitored groups/channels\n"
-            "/refreshusersall \\- Sync user list for THIS group PLUS every monitored child under it in one go "
-            "\\(heavier/slower than plain /refreshusers, since it touches every monitored chat\\)\n\n"
+            "/refreshusersall \\[\\-d\\] \\- Sync user list for THIS group PLUS every monitored child under it in one go "
+            "\\(heavier/slower than plain /refreshusers, since it touches every monitored chat\\)\\. "
+            "\\-d \\(\\-detailed\\) reports every chat as Chatname: joined N, left M\n\n"
             "Monitored chats are tracked for user presence \\(everyone who leaves is logged in the Sheet's UserPresenceLog\\) "
             "and can be synced with /refreshusersall\\. If a chat can't be fully synced the reply says so and the next refresh retries it\\."
             + (

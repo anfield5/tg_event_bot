@@ -994,6 +994,18 @@ def init_db(db_path: str = DB_PATH):
             "SELECT '*', 'hideability.' || list_key, mode, set_by, set_at FROM hideability_flags")
         cursor.execute("DROP TABLE hideability_flags")
 
+    # 0a14. actions_outbox - Actions-tab rows waiting to be written to the Google Sheet (see actions_log.py): a click only
+    # queues its row here and a background task writes the rows of a burst in one go. A row is deleted once the sheet has it.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS actions_outbox (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            hub_chat_id TEXT NOT NULL,
+            row_json    TEXT NOT NULL,
+            attempts    INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 

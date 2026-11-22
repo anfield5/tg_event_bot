@@ -1708,6 +1708,18 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
     if not await require_premium(update, "Monitoring sync (/refreshusersall, tied to /addmonitor)", chat_id=chat_id):
         return
 
+    # /refreshusersall [-d | -detailed]: with it every chat is reported as "Chatname: joined N, left M".
+    options = [a.lower() for a in (context.args or [])]
+    unknown = [a for a in options if a not in ("-d", "-detailed")]
+    if unknown:
+        await update.message.reply_text(
+            f"{ICON_WARNING} Unknown option: {escape_markdown(unknown[0])}\nUse /refreshusersall or "
+            f"/refreshusersall \\-d \\(\\-detailed\\) for a joined / left count per chat\\.",
+            parse_mode="MarkdownV2",
+        )
+        return
+    detailed = bool(options)
+
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -1740,6 +1752,7 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
         logger.error(f"refreshusersall: could not send progress message: {e}")
 
     lines = [f"{ICON_GLOBE} *Processing monitored groups/channels:*"]
+    total_joined = total_left = 0
     for processed_count, (monitor_chat_id, chat_type, chat_name) in enumerate(monitors, start=1):
         try:
             with get_connection() as conn_mon:
@@ -1839,19 +1852,35 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
 
             # Sync to sheets with chat_id (each monitor gets its own chat_id)
             pending_left = get_pending_left(monitor_chat_id)
+            sync_stats = {}
             synced = await sync_users_sheet(monitor_chat_id, monitor_present, sheet_owner_chat_id=chat_id,
-                                            left_members=pending_left)
+                                            left_members=pending_left, **({"stats": sync_stats} if detailed else {}))
             if synced is not False:
                 clear_pending_left(monitor_chat_id, [p[0] for p in pending_left])
 
-            if synced is False:
-                status_line = f"  ⚠️ Partly synced \\(Users tab incomplete, will retry\\): `{escape_markdown(chat_name)}`"
+            if detailed:
+                # What the Users tab really got this time; a hub with no sheet has no such count, so what this refresh
+                # itself found (the departed, the admins it added) is shown instead.
+                if sync_stats:
+                    joined, left = sync_stats["joined"], sync_stats["left"]
+                else:
+                    joined, left = len(monitor_added), len(monitor_removed)
+                total_joined += joined
+                total_left += left
+                counts = f"joined {joined}, left {left}"
+                if synced is False:
+                    status_line = f"  ⚠️ {escape_markdown(chat_name)}: {counts} \\(Users tab incomplete, will retry\\)"
+                else:
+                    status_line = f"  ✅ {escape_markdown(chat_name)}: {counts}"
             else:
-                status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"
-            if monitor_removed:
-                status_line += f" \\(-{len(monitor_removed)}\\)"
-            if monitor_added:
-                status_line += f" \\(+{len(monitor_added)}\\)"
+                if synced is False:
+                    status_line = f"  ⚠️ Partly synced \\(Users tab incomplete, will retry\\): `{escape_markdown(chat_name)}`"
+                else:
+                    status_line = f"  ✅ Synced: `{escape_markdown(chat_name)}`"
+                if monitor_removed:
+                    status_line += f" \\(-{len(monitor_removed)}\\)"
+                if monitor_added:
+                    status_line += f" \\(+{len(monitor_added)}\\)"
             lines.append(status_line)
         except Exception as e:
             logger.error(f"refreshusersall failed for {chat_name}: {e}")
@@ -1877,6 +1906,8 @@ async def refreshusersall(update: Update, context: ContextTypes.DEFAULT_TYPE, ov
         except Exception:
             pass
 
+    if detailed:
+        lines.append(f"*Total:* joined {total_joined}, left {total_left}")
     await _send_report(update, lines)
 
 

@@ -41,6 +41,7 @@ from db import is_hideability_active, get_hideability_flags
 import richtext
 from db import headcount_from_rows, reopen_button_offered, reopen_button_events, reopen_posts_to_refresh, get_reopened_roster, clear_reopened_roster, is_reopen_active
 from sheets import get_sheet_for_chat, open_spreadsheet, sync_event_users_sheet, mark_event_row_canceled
+from actions_log import queue_action
 
 
 # One lock per event_id so that two near-simultaneous button clicks on the
@@ -945,7 +946,25 @@ async def _log_reopen_roster_diff(ss, hub_chat_id, event_id, all_rows) -> int:
 # Button handler (main state machine)
 # ---------------------------------------------------------------------------
 
+async def _answer_callback(query):
+    try:
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Failed to answer callback: {e}")
+
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Every inline-button click (see _handle_button). Logs how long the bot itself took over it, so a slow button can be
+    told from a slow Telegram: `grep "button .* handled" ` in the log."""
+    started = time.perf_counter()
+    try:
+        await _handle_button(update, context)
+    finally:
+        data = (update.callback_query.data or "").split(":", 1)[0].split("_", 1)[0] if update.callback_query else "?"
+        logger.info(f"button {data} handled in {(time.perf_counter() - started) * 1000:.0f} ms")
+
+
+async def _handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     The main state machine: every inline keyboard click across every chat
     (master hub or child) comes through here. Broad shape of what happens
@@ -990,10 +1009,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # FIX: no '(id1234)' suffix when user has no @username
     username_raw = user.username if user.username else (user.first_name or f"user{user_id}")
 
-    try:
-        await query.answer()
-    except Exception as e:
-        logger.error(f"Failed to answer callback: {e}")
+    # The spinner on the button is stopped in the background - the click is not held up by that Telegram round trip.
+    asyncio.ensure_future(_answer_callback(query))
 
     if callback_data == "noop":
         return
@@ -1023,8 +1040,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not action or not event_id:
         return
-
-    is_admin = await is_real_admin(context.bot, query.message.chat.id, user)
 
     data_changed = False
     event_status = 0
@@ -1396,18 +1411,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                    first_name=t_first_name, last_name=t_last_name)
 
                     if data_changed:
-                        try:
-                            sheet_target = await get_sheet_for_chat(main_chat_id)
-                            if sheet_target:
-                                ss = await open_spreadsheet(sheet_target)
-                                ws = await ss.worksheet("Actions")
-                                await ws.append_row([
-                                    event_id, action.upper(), username_raw,
-                                    str(user_id), now2ddmmyy(), str(click_chat_id),
-                                ])
-                        except Exception as e:
-                            logger.error(f"Sheets child action log failed: {e}")
+                        # The post is redrawn first; the Actions row only goes into the outbox (actions_log.py writes it to
+                        # the sheet in the background - two Google calls, 2-3 seconds, are not worth a click's wait).
                         context.application.create_task(schedule_view_refresh(context, event_id))
+                        queue_action(main_chat_id, [
+                            event_id, action.upper(), username_raw,
+                            str(user_id), now2ddmmyy(), str(click_chat_id),
+                        ])
 
                     await _send_promotion_announcements(context, waitlist_promotion, extra_promotions)
 
@@ -1437,7 +1447,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # all beyond posting it.
                 is_creator = created_by_user_id is not None and str(created_by_user_id) == str(user_id)
                 if action in ["close", "directclose", "save", "back", "addext", "kick", "incgst", "decgst", "cancel"]:
-                    if not (is_admin or is_creator):
+                    # Only these actions need to know whether the clicker is an admin - one Telegram call, so it is
+                    # asked here and not before every Going / Not Going / ADD / DROP click.
+                    if not (is_creator or await is_real_admin(context.bot, query.message.chat.id, user)):
                         try:
                             await query.answer(
                                 text="⛔️ Only group admins or the event's creator can do this.",
@@ -1593,27 +1605,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await _send_promotion_announcements(context, waitlist_promotion, extra_promotions)
 
-        # Log action to Sheets
+        # Redraw the posts first, then log the action: the row only goes into the outbox (actions_log.py writes it to the
+        # Actions tab in the background, one append for a burst of clicks - it used to be two Google calls, 2-3 seconds,
+        # inside the click, and the bot handles clicks one after another, so every other click waited behind them).
         if data_changed:
-            try:
-                sheet_target = await get_sheet_for_chat(main_chat_id)
-                if sheet_target:
-                    ss           = await open_spreadsheet(sheet_target)
-                    ws           = await ss.worksheet("Actions")
-                    if action == "incgst":
-                        logged_action = "ADD_editmode"
-                    elif action == "decgst":
-                        logged_action = "SUB_editmode"
-                    else:
-                        logged_action = action.upper()
-                    await ws.append_row([
-                        event_id, logged_action, username_raw,
-                        str(user_id), now2ddmmyy(), str(click_chat_id),
-                    ])
-            except Exception as e:
-                logger.error(f"Sheets master action log failed: {e}")
-
             context.application.create_task(schedule_view_refresh(context, event_id))
+            if action == "incgst":
+                logged_action = "ADD_editmode"
+            elif action == "decgst":
+                logged_action = "SUB_editmode"
+            else:
+                logged_action = action.upper()
+            queue_action(main_chat_id, [
+                event_id, logged_action, username_raw,
+                str(user_id), now2ddmmyy(), str(click_chat_id),
+            ])
 
         # ── Save & Close Event: write ALL going users to EventUsers sheet ─
         if action in ("save", "directclose"):

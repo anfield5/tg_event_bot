@@ -61,6 +61,7 @@ zone are chosen to minimize crossing lines.
 >   Sheet yet. `/refreshusers` deletes them from `main_group_users` immediately, so for someone with no
 >   `Users` row it is the only evidence left. Entries are dropped once the sheet has them; the stored
 >   time is the first detection, so a retry writes identical dates (no duplicate log rows).
+> - `actions_outbox` holds the `Actions`-tab rows waiting to be written to the Google Sheet (`actions_log.py`): a click queues its row here and a background task appends the rows of a burst in one go, then deletes them. A failed write is retried; a restart picks up what was waiting.
 > - `bot_settings` holds every setting the owners switch, in ONE table (`scope`, `key`, `value`, who and when) - a new
 >   setting is a new key, not a new table. `scope` is a hub's chat id, or `*` for a setting that is the same for every
 >   group. It is separate from `all_groups` because a hub's row there is deleted when the bot leaves the group, and the
@@ -220,7 +221,7 @@ nothing to Sheets at all):
 |---|---|---|
 | `Users` | USER_ID, FIRST_NAME, LAST_NAME, USER_NAME, CHAT_ID, STATUS, DATE_start, DATE_end, ARCHIVED_USER_NAME, ARCHIVED_FULL_NAME | `/refreshusers`, `/refreshusersall` - one row per (user, chat); STATUS flips MEMBER/LEFT rather than deleting rows; an earlier @username goes to ARCHIVED_USER_NAME (comma-separated), an earlier "First Last" to ARCHIVED_FULL_NAME (column J, " \| "-separated, newest 20; the header is added automatically if J is free) |
 | `Events` | EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT (some templates call it GOING_COUNT - the bot and the scripts go by column position) | row appended on `/newevent`, columns F:H updated on Save & Close - CREATED_DATE/CLOSED_AT reuse `events.created_date`/`closed_date` (real DB columns, see the schema note above), not a timestamp computed fresh at Sheets-write time |
-| `Actions` | EVENT_ID, ACTION, USER_NAME, USER_ID, DATE, CHAT_ID | every button click (going/notgoing/kick/save/...) - CHAT_ID is which chat the click happened in (the hub or a specific child chat) |
+| `Actions` | EVENT_ID, ACTION, USER_NAME, USER_ID, DATE, CHAT_ID | every button click (going/notgoing/kick/save/...) - CHAT_ID is which chat the click happened in (the hub or a specific child chat). A click only queues its row (SQLite `actions_outbox`); a background task writes the rows to the sheet a few seconds later, in one append, so the click itself never waits for Google |
 | `EventUsers` | EVENT_ID, USER_ID | final attendee list, written once at Save & Close (main chat + every child chat combined) |
 | `UserPresenceLog` | USER_ID, CHAT_ID, DATE_start, DATE_end | one row per ended stay, written BEFORE the person is flipped to LEFT, into the hub's sheet (monitored chats included); stays missing from it are backfilled on the next refresh |
 

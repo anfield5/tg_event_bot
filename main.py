@@ -9,6 +9,7 @@ from telegram.ext import (
     filters,
 )
 from telegram.request import HTTPXRequest
+from actions_log import run_flusher as run_actions_flusher
 from config import TELEGRAM_TOKEN, TELEGRAM_PROXY, BOT_VERSION, CONTROL_SHEET_ID, OWNER_USER_IDS, logger
 from db import init_db, track_user, register_chat_added, register_chat_removed, update_chat_role, log_command_usage, is_bot_locked
 from utils import get_admin_contact
@@ -188,6 +189,12 @@ async def on_chat_member_update(update, context):
         # UserPresenceLog will be updated by sync_users_sheet when status changes to LEFT
 
 
+async def _on_startup(application):
+    """Runs once after the bot initializes: starts the writer of the Actions tab (actions_log.py), then syncs the Control Sheet."""
+    application.create_task(run_actions_flusher())
+    await _sync_control_sheet_on_startup(application)
+
+
 async def _sync_control_sheet_on_startup(application):
     """
     Runs once after the bot finishes initializing. If CONTROL_SHEET_ID is
@@ -309,7 +316,7 @@ def main():
         .token(TELEGRAM_TOKEN)
         .request(request)
         .get_updates_request(get_updates_request)
-        .post_init(_sync_control_sheet_on_startup)
+        .post_init(_on_startup)
         .build()
     )
 
