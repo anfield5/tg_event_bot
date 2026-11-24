@@ -123,6 +123,11 @@ def _seed_all_features(cursor):
          "Admins: who changed to Not Going in the latest event, or who left the main group and the monitored "
          "chats, within the last N hours. Reads the Actions and UserPresenceLog tabs of the hub's Google Sheet, "
          "so it needs a bound sheet."),
+        ("join_form", "Join form (/joinform, /joinlink)", "PRO", None,
+         "A short form a person fills in with the bot BEFORE being let into a group or channel: the admin writes the "
+         "questions (/joinform) and makes a one-time link (/joinlink <chat>); when the person has answered, the bot "
+         "sends a one-time invitation to that chat. Answers are kept in the database and, with a bound sheet, in a "
+         "JoinForm tab."),
         ("reopen", "/reopen (take a closed or canceled event back to open)", "OWNER", None,
          "Owner-level: /reopen on shows a Reopen button under the group's newest closed or canceled events - "
          "pressing one puts that event back to open (voting works again); /reopen off hides the buttons; "
@@ -977,6 +982,39 @@ def init_db(db_path: str = DB_PATH):
             set_by TEXT,
             set_at TEXT,
             PRIMARY KEY (scope, key)
+        )
+    """)
+    # /joinform: the hub's questions, the one-time links that lead to the form, and what people answered.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS join_form_questions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            hub_chat_id TEXT NOT NULL,
+            position    INTEGER NOT NULL,
+            question    TEXT NOT NULL,
+            choices     TEXT            -- JSON list of the buttons, NULL = a free-text answer
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS join_form_links (
+            token          TEXT PRIMARY KEY,
+            hub_chat_id    TEXT NOT NULL,
+            target_chat_id TEXT NOT NULL,   -- where the person is invited after the form
+            created_by     TEXT,
+            created_at     TEXT,
+            status         TEXT NOT NULL DEFAULT 'new',   -- new | filling | answered | done | revoked
+            user_id        TEXT,            -- the one person this link belongs to (set by the first one who opens it)
+            answered_at    TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS join_form_responses (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            token         TEXT NOT NULL,
+            question_id   INTEGER NOT NULL,
+            question_text TEXT NOT NULL,
+            answer        TEXT NOT NULL,
+            submitted_at  TEXT,
+            UNIQUE (token, question_id)
         )
     """)
     # The separate tables earlier versions had (reopen_mode, hideability_mode, hideability_flags): copy what they hold

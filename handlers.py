@@ -35,6 +35,7 @@ from utils import escape_markdown, now2ddmmyy, parse_event_date, is_real_admin, 
 from utils import parse_stored_date as _parse_stat_date
 from utils import has_extra_player_prompt, pop_extra_player_prompt
 import richtext
+import joinform
 from db import is_hideability_active, headcount_from_rows, is_reopen_active, track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
@@ -3407,5 +3408,8 @@ async def global_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Routes all text messages: extra-player input first, then @everyone tracking."""
     if has_extra_player_prompt(update, context):
         await handle_extra_player_input(update, context)
+        return
+    if joinform.has_active_form(update):             # a person in a DM answering the join form (joinform.py)
+        await joinform.handle_text_answer(update, context)
         return
     await track_everyone_message(update, context)

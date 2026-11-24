@@ -116,6 +116,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_dm_only(update, "start"):
         return
 
+    # A one-time link to a join form (joinform.py): t.me/<bot>?start=jf_<token> - a person, not an admin, so no group list.
+    if context.args and context.args[0].startswith("jf_"):
+        import joinform
+        await joinform.begin_form(update, context, context.args[0][3:])
+        return
+
     admin_of = await _get_known_candidate_chats(context, update.effective_user.id)
 
     if not admin_of:

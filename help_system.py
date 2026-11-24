@@ -434,6 +434,13 @@ async def help_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 + (_who_flags_detail_text() if users_expanded else "")
                 if feature_available(hub_chat_id_for_limits, update.effective_user.id, "who") else ""
             )
+            + (
+                "/joinform \\[list\\|add\\|edit\\|remove\\|reorder\\|preview\\] \\- The join form: up to 4 questions a person answers with the bot "
+                "BEFORE joining\\. /joinform add \"Question\" \\[choice1;choice2\\] adds one \\(with choices it is answered with buttons\\)\\.\n"
+                "/joinlink main\\|alias\\|chat id \\- A one\\-time link to the form: whoever opens it first answers the questions and then gets a "
+                "one\\-time invitation to that chat\\. /joinlink list shows the latest links, /joinlink revoke token cancels an unused one\\.\n"
+                if feature_available(hub_chat_id_for_limits, update.effective_user.id, "join_form") else ""
+            )
             + "/refreshusers \\- Sync user list, Google Sheets, and remove unverifiable users for THIS group"
         ),
         "help_utility": (
