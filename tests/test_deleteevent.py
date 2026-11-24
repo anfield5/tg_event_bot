@@ -63,9 +63,9 @@ def _add_event(db_path, event_id, name, chat_id=HUB, status=0, created_by="1",
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
-        "event_status, going_data, notgoing_data, counters_data, kicked_data, "
+        "event_status, "
         "created_by_user_id, created_date) "
-        "VALUES (?, ?, ?, ?, '👍', '❌', ?, '[]', '[]', '{}', '[]', ?, ?)",
+        "VALUES (?, ?, ?, ?, '👍', '❌', ?, ?, ?)",
         (event_id, chat_id, message_id, name, status, created_by, created_date),
     )
     conn.commit()

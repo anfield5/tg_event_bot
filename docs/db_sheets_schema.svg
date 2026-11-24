@@ -1,7 +1,7 @@
 <svg width="1472" height="1460" viewBox="0 0 1472 1460" xmlns="http://www.w3.org/2000/svg" role="img">
 <title>SQLite database and Google Sheets schema, hand-arranged grid with orthogonal routed connectors</title>
 <desc>Every SQLite table and every Google Sheets tab in a single hand-placed grid, grouped into three highlighted zones. Relationship lines are routed around cards (never through them) as rounded orthogonal paths, spread apart from each other.</desc>
-<rect x="0" y="0" width="1472" height="1274" fill="#ffffff"/>
+<rect x="0" y="0" width="1472" height="1460" fill="#ffffff"/>
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
     <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -49,7 +49,7 @@
 <text x="350.0" y="477" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">date_bot_add</text>
 <rect x="341.0" y="486" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
 <text x="350.0" y="495" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">role</text>
-<rect x="626.0" y="242" width="220" height="460" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<rect x="626.0" y="242" width="220" height="388" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
 <rect x="626.0" y="242" width="220" height="32" rx="8" fill="#5F5E5A"/>
 <rect x="626.0" y="266" width="220" height="8" fill="#5F5E5A"/>
 <text x="636.0" y="258" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">events</text>
@@ -61,32 +61,26 @@
 <text x="636.0" y="342" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">name</text>
 <text x="636.0" y="360" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_status</text>
 <rect x="627.0" y="369" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="378" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">going_data</text>
-<text x="636.0" y="396" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_data</text>
+<text x="636.0" y="378" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_snapshot</text>
+<text x="636.0" y="396" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">total_limit</text>
 <rect x="627.0" y="405" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="414" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">counters_data</text>
-<text x="636.0" y="432" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">kicked_data</text>
+<text x="636.0" y="414" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">waitlist_data</text>
+<text x="636.0" y="432" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">waitlist_visibility</text>
 <rect x="627.0" y="441" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="450" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">feature_snapshot</text>
-<text x="636.0" y="468" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">total_limit</text>
+<text x="636.0" y="450" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">going_icon</text>
+<text x="636.0" y="468" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_icon</text>
 <rect x="627.0" y="477" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="486" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">waitlist_data</text>
-<text x="636.0" y="504" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">waitlist_visibility</text>
+<text x="636.0" y="486" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_date</text>
+<text x="636.0" y="504" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_visibility</text>
 <rect x="627.0" y="513" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="522" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">going_icon</text>
-<text x="636.0" y="540" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_icon</text>
+<text x="636.0" y="522" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">clickability</text>
+<text x="636.0" y="540" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">created_by_user_id</text>
 <rect x="627.0" y="549" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="558" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">event_date</text>
-<text x="636.0" y="576" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">notgoing_visibility</text>
+<text x="636.0" y="558" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">created_date</text>
+<text x="636.0" y="576" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">closed_date</text>
 <rect x="627.0" y="585" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="594" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">clickability</text>
-<text x="636.0" y="612" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">created_by_user_id</text>
-<rect x="627.0" y="621" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="630" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">created_date</text>
-<text x="636.0" y="648" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">closed_date</text>
-<rect x="627.0" y="657" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="636.0" y="666" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">waitlist_joined</text>
-<text x="636.0" y="684" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">reopened_roster</text>
+<text x="636.0" y="594" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">waitlist_joined</text>
+<text x="636.0" y="612" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">reopened_roster</text>
 <rect x="54.0" y="565" width="220" height="136" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
 <rect x="54.0" y="565" width="220" height="32" rx="8" fill="#5F5E5A"/>
 <rect x="54.0" y="589" width="220" height="8" fill="#5F5E5A"/>
@@ -98,13 +92,6 @@
 <rect x="55.0" y="656" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
 <text x="64.0" y="665" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">share_mode</text>
 <text x="64.0" y="683" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">chat_type</text>
-<rect x="54.0" y="741" width="220" height="82" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
-<rect x="54.0" y="741" width="220" height="32" rx="8" fill="#5F5E5A"/>
-<rect x="54.0" y="765" width="220" height="8" fill="#5F5E5A"/>
-<text x="64.0" y="757" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">bot_lock</text>
-<text x="64.0" y="787" font-size="9.5" font-weight="600" fill="#2C2C2A" dominant-baseline="central">id PK</text>
-<rect x="55.0" y="796" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
-<text x="64.0" y="805" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">locked</text>
 <rect x="626.0" y="54" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
 <rect x="626.0" y="54" width="220" height="32" rx="8" fill="#5F5E5A"/>
 <rect x="626.0" y="78" width="220" height="8" fill="#5F5E5A"/>
@@ -334,6 +321,7 @@
 <text x="636.0" y="1118" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">created_at</text>
 <text x="64.0" y="712" font-size="9" font-weight="400" fill="#5F5E5A" dominant-baseline="central">+ share_notgoing_visibility</text>
 <text x="64.0" y="723" font-size="9" font-weight="400" fill="#5F5E5A" dominant-baseline="central">+ share_waitlist_visibility</text>
+<text x="350.0" y="1166" font-size="9" font-weight="400" fill="#5F5E5A" dominant-baseline="central">key bot.locked = the /lockbot switch (was the bot_lock table)</text>
 <text x="64.0" y="734" font-size="9" font-weight="400" fill="#5F5E5A" dominant-baseline="central">+ share_clickability</text>
 <rect x="54.0" y="1060.0" width="220" height="154" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
 <rect x="54.0" y="1060.0" width="220" height="32" rx="8" fill="#5F5E5A"/>
@@ -375,5 +363,26 @@
 <text x="636.0" y="1308" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">answer</text>
 <rect x="627.0" y="1317" width="218" height="18" fill="#D3D1C7" opacity="0.35"/>
 <text x="636.0" y="1326" font-size="9.5" font-weight="400" fill="#2C2C2A" dominant-baseline="central">submitted_at</text>
+<rect x="1198.0" y="60" width="220" height="172" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+<rect x="1198.0" y="60" width="220" height="32" rx="8" fill="#0F6E56"/>
+<rect x="1198.0" y="84" width="220" height="8" fill="#0F6E56"/>
+<text x="1208.0" y="76" font-size="12" font-weight="600" fill="#ffffff" dominant-baseline="central">JoinForm</text>
+<text x="1208.0" y="106" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">TIMESTAMP</text>
+<rect x="1199.0" y="115" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1208.0" y="124" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USER_ID</text>
+<text x="1208.0" y="142" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">USERNAME</text>
+<rect x="1199.0" y="151" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1208.0" y="160" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">NAME</text>
+<text x="1208.0" y="178" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">JOINED_TO</text>
+<rect x="1199.0" y="187" width="218" height="18" fill="#9FE1CB" opacity="0.35"/>
+<text x="1208.0" y="196" font-size="9.5" font-weight="400" fill="#04342C" dominant-baseline="central">one column per question</text>
+<path d="M560,1270 L620,1270" fill="none" stroke="#888780" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M164,1214 L164,1415 L736,1415 L736,1366" fill="none" stroke="#888780" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M846,1040 L880,1040 L880,700 L906,700" fill="none" stroke="#378ADD" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<path d="M846,1262 L879,1262 L879,24 L1308,24 L1308,54" fill="none" stroke="#1D9E75" stroke-width="1.6" opacity="0.8" marker-end="url(#arrow)"/>
+<text x="590" y="1262" font-size="9" fill="#5F5E5A" text-anchor="middle">token</text>
+<text x="450" y="1409" font-size="9" fill="#5F5E5A" text-anchor="middle">question_id = id</text>
+<text x="636" y="1165" font-size="8.5" fill="#5F5E5A">row_json = the Actions row: EVENT_ID,</text>
+<text x="636" y="1176" font-size="8.5" fill="#5F5E5A">ACTION, USER_NAME, USER_ID, DATE, CHAT_ID</text>
 <text x="54" y="1440" font-size="13" fill="#5F5E5A">Gray = SQLite table &#183; Blue = Control Sheet (one, shared) &#183; Green = Per-hub Sheet (one per hub) &#183; Bold field = primary/unique key</text>
 </svg>

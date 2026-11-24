@@ -16,7 +16,7 @@ from db import (
     get_event_total_going_headcount, add_to_waitlist, promote_next_from_waitlist,
     register_chat_added, register_chat_removed, get_feature_limit_for_chat, get_display_name,
     dedupe_waitlist, get_shareevent_remaining_for_chat, migrate_event_to_event_users,
-    is_bot_locked, set_bot_locked, ensure_event_migrated,
+    is_bot_locked, set_bot_locked,
 )
 
 
@@ -63,6 +63,17 @@ def run_sql(db_path: str, query: str, params=()):
 # ---------------------------------------------------------------------------
 # init_db — fresh schema
 # ---------------------------------------------------------------------------
+
+
+def init_db_with_legacy_cols(path):
+    """init_db, then re-add the four legacy roster JSON columns to `events` (test only), so a test can INSERT them
+    for brevity - the bot itself no longer has or reads them."""
+    init_db(db_path=path)
+    conn = sqlite3.connect(path)
+    for col, default in (("going_data", "'[]'"), ("notgoing_data", "'[]'"), ("counters_data", "'{}'"), ("kicked_data", "'[]'")):
+        conn.execute(f"ALTER TABLE events ADD COLUMN {col} TEXT DEFAULT {default}")
+    conn.commit()
+    conn.close()
 
 class TestInitDb:
     """init_db() must create all required tables and add migration columns."""
@@ -112,10 +123,13 @@ class TestInitDb:
         assert "is_open" not in cols
         assert "is_cancelled" not in cols
 
-    def test_events_has_kicked_data_column(self, tmp_path):
+    def test_events_has_no_legacy_roster_json_columns(self, tmp_path):
+        # the hub's participants live in event_users; the four JSON roster columns are gone
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
-        assert "kicked_data" in get_columns(path, "events")
+        cols = get_columns(path, "events")
+        for legacy in ("going_data", "notgoing_data", "counters_data", "kicked_data"):
+            assert legacy not in cols
 
     def test_main_group_users_has_user_id_column(self, tmp_path):
         path = str(tmp_path / "t.db")
@@ -451,7 +465,7 @@ class TestMigrationEventStatusRebuild:
         run_sql(path, self.LEGACY_SCHEMA)
         self._insert_legacy_event(path, "ev1", is_open, is_cancelled)
 
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
 
         rows = fetch_all(path, "SELECT event_status FROM events WHERE event_id='ev1'")
         assert rows == [(expected_status,)]
@@ -463,23 +477,23 @@ class TestMigrationEventStatusRebuild:
             path,
             "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             ("ev1", "100", "1", "Party", "✅", "❌", 1,
-             '["alice (1)"]', "[]", '{"alice": 2}', "25.12.2026", 0, '["bob"]'),
+             '["alice (1)"]', "[]", '{"alice": 2}', "25.12.2026", 0, '["bob (5)"]'),
         )
 
         init_db(db_path=path)
 
-        row = fetch_all(
-            path,
-            "SELECT name, going_data, counters_data, event_date, kicked_data FROM events WHERE event_id='ev1'",
-        )[0]
-        assert row == ("Party", '["alice (1)"]', '{"alice": 2}', "25.12.2026", '["bob"]')
+        row = fetch_all(path, "SELECT name, event_date FROM events WHERE event_id='ev1'")[0]
+        assert row == ("Party", "25.12.2026")
+        # the roster JSON was moved into event_users (the columns themselves are dropped)
+        users = fetch_all(path, "SELECT username, status, guests FROM event_users WHERE event_id='ev1' ORDER BY username")
+        assert ("alice", "going", 2) in users
 
     def test_idempotent_after_rebuild(self, tmp_path):
         path = str(tmp_path / "t.db")
         run_sql(path, self.LEGACY_SCHEMA)
         self._insert_legacy_event(path, "ev1", 1, 0)
-        init_db(db_path=path)
-        init_db(db_path=path)  # must not raise or re-translate
+        init_db_with_legacy_cols(path)
+        init_db_with_legacy_cols(path)  # must not raise or re-translate
         rows = fetch_all(path, "SELECT event_status FROM events WHERE event_id='ev1'")
         assert rows == [(0,)]
 
@@ -1080,14 +1094,14 @@ class TestGetEventTotalGoingHeadcount:
 
     def test_counts_main_group_going_plus_guests(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path, going=["alice (1)", "bob (2)"], counters={"alice": 2})
         # alice + her 2 guests + bob = 4
         assert get_event_total_going_headcount("ev1", db_path=path) == 4
 
     def test_includes_child_chat_going_and_guests(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path, going=["alice (1)"])
         conn = sqlite3.connect(path)
         conn.execute(
@@ -1100,7 +1114,7 @@ class TestGetEventTotalGoingHeadcount:
 
     def test_notgoing_child_rows_are_not_counted(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path, going=[])
         conn = sqlite3.connect(path)
         conn.execute(
@@ -1112,14 +1126,14 @@ class TestGetEventTotalGoingHeadcount:
 
     def test_unknown_event_returns_zero(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         assert get_event_total_going_headcount("no-such-event", db_path=path) == 0
 
 
 class TestAddToWaitlist:
     def test_appends_an_entry(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path)
         add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
         conn = sqlite3.connect(path)
@@ -1130,7 +1144,7 @@ class TestAddToWaitlist:
 
     def test_duplicate_add_same_user_same_chat_is_a_no_op(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path)
         add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
         add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
@@ -1140,7 +1154,7 @@ class TestAddToWaitlist:
 
     def test_same_user_different_chats_are_independent_entries(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path)
         add_to_waitlist("ev1", "-100", "Main Hub", "dave", "4", db_path=path)
         add_to_waitlist("ev1", "-200", "Child Group", "dave", "4", db_path=path)
@@ -1152,7 +1166,7 @@ class TestAddToWaitlist:
 class TestPromoteNextFromWaitlist:
     def test_promotes_the_oldest_entry_for_that_chat(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path, waitlist=[
             {"chat_id": "-100", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "2026-01-01 00:00:00"},
             {"chat_id": "-100", "chat_name": None, "username": "erin", "user_id": "5", "timestamp": "2026-01-01 00:00:01"},
@@ -1165,7 +1179,7 @@ class TestPromoteNextFromWaitlist:
 
     def test_only_considers_entries_for_the_given_chat(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path, waitlist=[
             {"chat_id": "-200", "chat_name": None, "username": "dave", "user_id": "4", "timestamp": "2026-01-01 00:00:00"},
         ])
@@ -1174,7 +1188,7 @@ class TestPromoteNextFromWaitlist:
 
     def test_empty_waitlist_returns_none(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         _insert_event_for_waitlist(path)
         assert promote_next_from_waitlist("ev1", "-100", db_path=path) is None
 
@@ -1385,13 +1399,13 @@ class TestDedupeWaitlist:
 class TestGetShareeventRemainingForChat:
     def test_no_events_ever_returns_full_limit(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
         assert (limit, remaining) == (3, 3)
 
     def test_active_event_never_shared_returns_full_limit(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = sqlite3.connect(path)
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
@@ -1407,7 +1421,7 @@ class TestGetShareeventRemainingForChat:
         to the same target - childA hits the exact limit, childB has
         more room. Remaining should reflect the tightest one."""
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = sqlite3.connect(path)
         for i in range(1, 4):
             conn.execute(
@@ -1428,7 +1442,7 @@ class TestGetShareeventRemainingForChat:
 
     def test_pro_tier_returns_none_none_unlimited(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         end = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
         conn = sqlite3.connect(path)
         conn.execute("INSERT INTO all_groups (chat_id, type, subs_date_end) VALUES ('-999','PRO',?)", (end,))
@@ -1438,7 +1452,7 @@ class TestGetShareeventRemainingForChat:
 
     def test_cleared_limit_zero_returns_none_none_unlimited(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         update_feature_flag("shareevent", "FREE", limit_count=0, db_path=path)
         limit, remaining = get_shareevent_remaining_for_chat("-100", db_path=path)
         assert (limit, remaining) == (None, None)
@@ -1447,7 +1461,7 @@ class TestGetShareeventRemainingForChat:
         """If usage somehow exceeds the limit (e.g. limit was lowered
         after shares already happened), remaining floors at 0."""
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = sqlite3.connect(path)
         for i in range(1, 4):
             conn.execute(
@@ -1486,7 +1500,7 @@ class TestMigrateEventToEventUsers:
 
     def test_migrates_going_notgoing_and_guests(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = self._setup_event(
             path,
             going='["alice (1)", "bob (2)"]',
@@ -1507,7 +1521,7 @@ class TestMigrateEventToEventUsers:
 
     def test_kicked_status_takes_priority_over_going(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = self._setup_event(path, going='["dave (4)"]')
         cursor = conn.cursor()
         migrate_event_to_event_users(cursor, "ev1", "-100", ["dave (4)"], [], {}, ["dave"])
@@ -1521,7 +1535,7 @@ class TestMigrateEventToEventUsers:
         """Someone with a counters entry but no going/notgoing status of
         their own - only migratable if resolvable via main_group_users."""
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = self._setup_event(path, counters='{"erin": 3}')
         conn.execute(
             "INSERT INTO main_group_users (chat_id, username, user_id, status) VALUES ('-100', 'erin', '5', 'active')"
@@ -1543,7 +1557,7 @@ class TestMigrateEventToEventUsers:
         a going/notgoing entry which at least has a username to fall
         back on)."""
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = self._setup_event(path, counters='{"frank": 1}')
         cursor = conn.cursor()
         migrate_event_to_event_users(cursor, "ev1", "-100", [], [], {"frank": 1}, [])
@@ -1559,7 +1573,7 @@ class TestMigrateEventToEventUsers:
         fallback identifying key - stays visible/surfaceable rather than
         silently vanishing."""
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = self._setup_event(path, going='["ghost (no_id_in_main_group)"]')
         cursor = conn.cursor()
         migrate_event_to_event_users(cursor, "ev1", "-100", ["ghost (no_id_in_main_group)"], [], {}, [])
@@ -1575,7 +1589,7 @@ class TestMigrateEventToEventUsers:
         """Calling migration twice (e.g. two clicks in a row) must not
         duplicate or corrupt already-migrated data."""
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = self._setup_event(path, going='["alice (1)"]')
         cursor = conn.cursor()
         migrate_event_to_event_users(cursor, "ev1", "-100", ["alice (1)"], [], {}, [])
@@ -1595,7 +1609,7 @@ class TestMigrateEventToEventUsers:
 
     def test_empty_event_migrates_to_nothing(self, tmp_path):
         path = str(tmp_path / "t.db")
-        init_db(db_path=path)
+        init_db_with_legacy_cols(path)
         conn = self._setup_event(path)
         cursor = conn.cursor()
         migrate_event_to_event_users(cursor, "ev1", "-100", [], [], {}, [])
@@ -1641,64 +1655,76 @@ class TestBotLockState:
         assert is_bot_locked() is True
 
 
-class TestEnsureEventMigrated:
-    """Direct unit tests for the new ensure_event_migrated wrapper -
-    extracted from a "SELECT the 4 frozen columns, json.loads each,
-    call migrate_event_to_event_users" sequence that was repeated
-    identically across 5 call sites in handlers.py."""
+class TestLegacyRosterColumnsDropped:
+    """Migration 0a16: old databases still have going_data/notgoing_data/counters_data/kicked_data on events.
+    init_db moves everybody into event_users first, then drops the columns."""
 
-    def _setup_event(self, path, going="[]", not_going="[]", counters="{}", kicked="[]"):
+    def _old_db(self, path, going="[]", not_going="[]", counters="{}", kicked="[]"):
         conn = sqlite3.connect(path)
+        conn.execute("""CREATE TABLE events (
+            event_id TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, name TEXT, going_icon TEXT, notgoing_icon TEXT,
+            event_status INTEGER DEFAULT 0, going_data TEXT DEFAULT '[]', notgoing_data TEXT DEFAULT '[]',
+            counters_data TEXT DEFAULT '{}', kicked_data TEXT DEFAULT '[]', event_date TEXT DEFAULT NULL)""")
         conn.execute(
-            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-               event_status, going_data, notgoing_data, counters_data, kicked_data)
-               VALUES ('ev1','-100','1','Party','👍','❌',0,?,?,?,?)""",
-            (going, not_going, counters, kicked),
-        )
+            "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, going_data, notgoing_data, counters_data, kicked_data) "
+            "VALUES ('ev1','-100','1','Party','👍','❌',0,?,?,?,?)", (going, not_going, counters, kicked))
         conn.commit()
-        return conn
-
-    def test_migrates_correctly_from_frozen_columns(self, tmp_path):
-        path = str(tmp_path / "t.db")
-        init_db(db_path=path)
-        conn = self._setup_event(path, going='["alice (1)"]', counters='{"alice": 2}')
-        cursor = conn.cursor()
-
-        ensure_event_migrated(cursor, "ev1", "-100")
-        conn.commit()
-
-        row = conn.execute(
-            "SELECT status, guests FROM event_users WHERE event_id='ev1' AND username='alice'"
-        ).fetchone()
-        assert row == ("going", 2)
         conn.close()
 
-    def test_nonexistent_event_is_a_safe_noop(self, tmp_path):
+    def test_roster_is_moved_to_event_users_then_columns_dropped(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        self._old_db(path, going='["alice (1)"]', not_going='["bob (2)"]', counters='{"alice": 2}')
+        init_db(db_path=path)
+        cols = get_columns(path, "events")
+        for legacy in ("going_data", "notgoing_data", "counters_data", "kicked_data"):
+            assert legacy not in cols
+        conn = sqlite3.connect(path)
+        rows = dict((u, (st, g)) for u, st, g in conn.execute(
+            "SELECT username, status, guests FROM event_users WHERE event_id='ev1' AND chat_id='-100'"))
+        conn.close()
+        assert rows["alice"] == ("going", 2)
+        assert rows["bob"][0] == "notgoing"
+
+    def test_event_already_in_event_users_is_not_overwritten(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        self._old_db(path, going='["alice (1)"]')
+        init_db(db_path=path)  # first run migrates
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE event_users SET guests = 99 WHERE event_id='ev1' AND username='alice'")
+        conn.commit(); conn.close()
+        init_db(db_path=path)  # restart
+        conn = sqlite3.connect(path)
+        assert conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND username='alice'").fetchone() == (99,)
+        conn.close()
+
+    def test_garbage_json_does_not_break_startup(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        self._old_db(path, going="not json", counters="{{")
+        init_db(db_path=path)
+        assert "going_data" not in get_columns(path, "events")
+
+
+class TestBotLockMigration:
+    """Migration 0a15: the one-row bot_lock table became the bot_settings key bot.locked."""
+
+    def test_locked_flag_is_carried_over_and_table_dropped(self, tmp_path):
+        path = str(tmp_path / "t.db")
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE bot_lock (id INTEGER PRIMARY KEY, locked INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("INSERT INTO bot_lock (id, locked) VALUES (1, 1)")
+        conn.commit(); conn.close()
+        init_db(db_path=path)
+        import db
+        db.DB_PATH = path
+        assert is_bot_locked() is True
+        conn = sqlite3.connect(path)
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='bot_lock'").fetchone() is None
+        conn.close()
+
+    def test_fresh_db_has_no_bot_lock_table(self, tmp_path):
         path = str(tmp_path / "t.db")
         init_db(db_path=path)
         conn = sqlite3.connect(path)
-        cursor = conn.cursor()
-
-        # Must not raise for an event_id that doesn't exist at all
-        ensure_event_migrated(cursor, "nonexistent_ev", "-100")
-
-        rows = conn.execute("SELECT * FROM event_users WHERE event_id='nonexistent_ev'").fetchall()
-        assert rows == []
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='bot_lock'").fetchone() is None
         conn.close()
 
-    def test_already_migrated_event_is_a_noop(self, tmp_path):
-        path = str(tmp_path / "t.db")
-        init_db(db_path=path)
-        conn = self._setup_event(path, going='["alice (1)"]')
-        cursor = conn.cursor()
-        ensure_event_migrated(cursor, "ev1", "-100")
-        conn.commit()
-
-        conn.execute("UPDATE event_users SET guests = 99 WHERE event_id='ev1' AND username='alice'")
-        conn.commit()
-        ensure_event_migrated(cursor, "ev1", "-100")
-        conn.commit()
-
-        row = conn.execute("SELECT guests FROM event_users WHERE event_id='ev1' AND username='alice'").fetchone()
-        assert row == (99,), "second call must not overwrite already-migrated state"
-        conn.close()

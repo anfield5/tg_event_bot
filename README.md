@@ -107,9 +107,13 @@ zone are chosen to minimize crossing lines.
 >   is a one-time, safe-to-rerun script that copies them back from each
 >   PRO hub's Events tab into the DB, only ever filling a `NULL`, never
 >   overwriting an existing value.
-> - `bot_lock` - a single-row table backing the `/lockbot` global
->   emergency switch (see [Global lock](#global-lock-and-command-destination-classification)
->   below).
+> - The `/lockbot` global emergency switch lives in `bot_settings` as the key `bot.locked`
+>   (`1`/`0`); the old single-row `bot_lock` table was folded into it and is dropped at startup (see
+>   [Global lock](#global-lock-and-command-destination-classification) below).
+> - `events` no longer has the four legacy roster JSON columns (`going_data`, `notgoing_data`,
+>   `counters_data`, `kicked_data`): everybody, the hub's own participants included, lives in `event_users`.
+>   An older database is migrated at startup - each event's JSON roster is moved into `event_users`, then the
+>   columns are dropped.
 > - `all_groups`/`all_channels` gained a `role` column - the bot's OWN
 >   status in that chat (`MEMBER`/`ADMIN`), tracked live via
 >   `on_my_chat_member_update`'s `member ↔ administrator` transition
@@ -170,11 +174,6 @@ zone are chosen to minimize crossing lines.
 >   the database one is made up, and with `--apply` corrects only the wrong cells.
 > - `scripts/update_canceled_amounts.py` is that same check limited to events canceled before 4.9.0, which
 >   wrote 0 into AMOUNT: it puts the headcount they had into column H (dry run unless `--apply`).
-> - `scripts/migrate_legacy_hub_rosters.py` moves the hub's participants of old events from the event's JSON
->   columns into `event_users` when only a child chat's people got rows there (the post still shows everybody, but the
->   Events tab AMOUNT, the EventUsers tab and the audit saw only the child: a post saying 15 was exported as 7). The
->   audit reports such events as `HUB_NOT_MIGRATED`; the amount check counts them correctly. Dry run unless `--apply`,
->   database only - then run `repair_event_users.py --apply` to bring the Sheet in line.
 > - `scripts/try_rich_message.py <chat_id>` is a live check of Telegram Rich Messages - run it once in a test
 >   chat before `/hideability on` (it shows what only a screen can: folding, edits, going back to text).
 
@@ -249,7 +248,7 @@ SQLite is the source of truth and the only thing the bot ever *reads* back
 
 ## Global lock and command destination classification
 
-`/lockbot on` (owner-only) is a single-row switch (`bot_lock` table) checked
+`/lockbot on` (owner-only) is a switch (`bot_settings` key `bot.locked`) checked
 by a dedicated handler (`main.py`'s `lock_gate`) registered *before every
 other handler in the application* - when active, every command and button
 click from anyone outside `OWNER_USER_IDS` is stopped immediately, with one

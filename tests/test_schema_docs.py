@@ -48,3 +48,12 @@ def test_the_diagram_draws_no_table_that_does_not_exist(conn):
 def test_the_promised_indexes_exist(conn):
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%'")}
     assert {"idx_events_chat", "idx_event_shares_chat", "idx_join_links_user"} <= names
+
+
+def test_the_diagram_draws_the_links_between_the_new_tables_and_the_sheet_tabs():
+    """actions_outbox -> Actions, join_form_responses -> JoinForm, links.token = responses.token, questions.id = responses.question_id:
+    the diagram once showed these tables as islands."""
+    assert ">JoinForm</text>" in SVG and ">Actions</text>" in SVG
+    assert "row_json = the Actions row" in SVG and "ACTION, USER_NAME, USER_ID, DATE, CHAT_ID" in SVG
+    assert ">token</text>" in SVG and "question_id = id" in SVG
+    assert SVG.count("marker-end=\"url(#arrow)\"") >= 20      # 17 arrows before + the 4 added for these tables, minus none

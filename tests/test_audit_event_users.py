@@ -18,12 +18,12 @@ def codes(findings):
     return sorted(f.code for f in findings)
 
 
-def seed(db_path, status=2, event_id="ev1", chat=HUB, message_id="1", clickability="on", created="01.10.2026 12:00:00.000", going="[]"):
+def seed(db_path, status=2, event_id="ev1", chat=HUB, message_id="1", clickability="on", created="01.10.2026 12:00:00.000"):
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, going_data, "
-        "notgoing_data, counters_data, kicked_data, created_date, clickability) VALUES (?, ?, ?, 'Match', '👍', '❌', ?, ?, '[]', '{}', '[]', ?, ?)",
-        (event_id, chat, message_id, status, going, created, clickability))
+        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, "
+        "created_date, clickability) VALUES (?, ?, ?, 'Match', '👍', '❌', ?, ?, ?)",
+        (event_id, chat, message_id, status, created, clickability))
     conn.commit()
     conn.close()
 
@@ -71,11 +71,6 @@ class TestTheRoster:
         seed(db_path)
         person(db_path, 1, "alice"); person(db_path, "typedname", "typedname")
         assert roster_of(db_path)["placeholders"] == ["typedname"]
-
-    def test_the_frozen_legacy_list_gives_ids_and_names_without_ids(self):
-        got = audit.legacy_roster(json.dumps(["alice (1)", "bob (2)", "typed_in"]))
-        assert got == {"ids": ["1", "2"], "name_only": ["typed_in"]}
-        assert audit.legacy_roster("garbage") == {"ids": [], "name_only": []}
 
 
 class TestDbAgainstTheSheet:
@@ -199,14 +194,6 @@ class TestAcrossAHub:
         book.tabs["EventUsers"].rows += [["ev1", "1"], ["ghost", "5"], ["ghost", "6"]]
         findings, _ = await run_audit(book, db_path)
         assert [(f.code, f.severity) for f in findings] == [("SHEET_ORPHAN_EVENT", audit.INFO)]
-
-    async def test_an_event_closed_before_event_users_existed_is_compared_by_its_frozen_list(self, db_path):
-        seed(db_path, going=json.dumps(["alice (1)", "bob (2)"]))
-        book = Book()
-        book.tabs["Events"].rows[1] = ["ev1", "Match", "c", "42", "", "d", "CLOSED", 2]
-        book.tabs["EventUsers"].rows += [["ev1", "1"], ["ev1", "2"]]
-        findings, _ = await run_audit(book, db_path)
-        assert findings == []
 
 
 class TestAgainstTheRealFlows:

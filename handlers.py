@@ -35,7 +35,7 @@ from utils import parse_stored_date as _parse_stat_date
 from utils import has_extra_player_prompt, pop_extra_player_prompt
 import richtext
 import joinform
-from db import is_hideability_active, headcount_from_rows, is_reopen_active, track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, ensure_event_migrated, queue_left_members, get_pending_left, clear_pending_left
+from db import is_hideability_active, headcount_from_rows, is_reopen_active, track_user, get_connection, get_feature_limit_for_chat, dedupe_waitlist, queue_left_members, get_pending_left, clear_pending_left
 from hub_resolver import resolve_hub_chat_id, register_hub_command
 from sheets import (
     get_sheet_for_chat, open_spreadsheet, sync_users_sheet, delete_event_from_sheet, mark_event_row_canceled,
@@ -427,8 +427,8 @@ async def newevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override_
                 """
                 INSERT INTO events
                     (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-                     event_status, going_data, notgoing_data, counters_data, event_date, feature_snapshot, total_limit, waitlist_visibility, notgoing_visibility, clickability, created_by_user_id, created_date)
-                VALUES (?, ?, ?, ?, ?, ?, 0, '[]', '[]', '{}', ?, ?, ?, ?, ?, ?, ?, ?)
+                     event_status, event_date, feature_snapshot, total_limit, waitlist_visibility, notgoing_visibility, clickability, created_by_user_id, created_date)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (event_id, chat_id, str(message.message_id),
                  event_name_raw, going_icon, notgoing_icon, event_date, feature_snapshot, total_limit_value, waitlist_visibility_value, notgoing_visibility_value, clickability_value,
@@ -876,19 +876,13 @@ async def editevent(update: Update, context: ContextTypes.DEFAULT_TYPE, override
             if validated is None:
                 return
 
-            # Ensure this event's state is migrated to event_users before
-            # computing headcount below - an event nobody has clicked on
-            # since Variant B was deployed wouldn't have any event_users
-            # rows yet otherwise, undercounting its real headcount.
-            ensure_event_migrated(cursor, event_id, chat_id)
-
             # Reject lowering the limit below the event's current combined
             # headcount (main group + every share) - the old limit is kept
             # unchanged rather than silently accepting an inconsistent state.
             # Single unified query across the whole event_id - Variant B
             # means the master hub's own participants live in event_users
             # too (chat_id=main_chat_id), so this one query already covers
-            # everyone with no separate going_data/counters_data reads.
+            # everyone.
             cursor.execute(
                 "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
                 (event_id,),
@@ -1036,7 +1030,6 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE, override_ch
             return
 
         event_id, event_name = event_row
-        ensure_event_migrated(cursor, event_id, chat_id)
         conn.commit()
 
         cursor.execute(
@@ -1643,7 +1636,6 @@ async def refreshusers(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
             unresolved = []
             if active_event_row:
                 ev_id = active_event_row[0]
-                ensure_event_migrated(fresh_cursor, ev_id, chat_id)
                 fresh_conn.commit()
                 fresh_cursor.execute(
                     "SELECT username FROM event_users WHERE event_id = ? AND chat_id = ? AND status = 'going' AND user_id = username",
@@ -2076,7 +2068,6 @@ async def shareevent(update: Update, context: ContextTypes.DEFAULT_TYPE, overrid
         event_id, name, event_status, going_icon, notgoing_icon, total_limit = event_row
 
         if total_limit is not None:
-            ensure_event_migrated(cursor, event_id, str(main_hub_chat_id))
             conn.commit()
             cursor.execute(
                 "SELECT COALESCE(SUM(1 + guests), 0) FROM event_users WHERE event_id = ? AND status = 'going'",
@@ -2360,7 +2351,6 @@ async def handle_extra_player_input(update: Update, context: ContextTypes.DEFAUL
                     return
                 hub_chat_id = event_row[0]
 
-                ensure_event_migrated(cursor, event_id, hub_chat_id)
 
                 # Every chat this event can see: the hub itself, every chat it has been shared to, AND every chat
                 # the hub MONITORS. The person is very often a member of a monitored child chat only - and that
@@ -2652,8 +2642,7 @@ def _fmt_stat_number(x) -> str:
 def _event_attendance(cursor, event_ids) -> dict:
     """
     {event_id: (going, guests, notgoing)}. Same counting rules as _compute_stats:
-    one unified event_users query per event; a historical event that never got
-    event_users rows falls back to its frozen going/counters/notgoing data.
+    one unified event_users query per event; an event without event_users rows counts as zeros.
     """
     result = {}
     for event_id in event_ids:
@@ -2664,13 +2653,7 @@ def _event_attendance(cursor, event_ids) -> dict:
             guests = sum((g or 0) for _s, g in rows)
             notgoing = sum(1 for status, _g in rows if status == "notgoing")
         else:
-            cursor.execute(
-                "SELECT going_data, counters_data, notgoing_data FROM events WHERE event_id = ?", (event_id,)
-            )
-            going_raw, counters_raw, notgoing_raw = cursor.fetchone()
-            going = len(json.loads(going_raw or "[]"))
-            guests = sum(json.loads(counters_raw or "{}").values())
-            notgoing = len(json.loads(notgoing_raw or "[]"))
+            going = guests = notgoing = 0
         result[event_id] = (going, guests, notgoing)
     return result
 
@@ -2949,16 +2932,6 @@ def _compute_stats(chat_id: str, period: str = "all"):
                 going_count = sum(1 for status, guests in rows if status == "going")
                 guests_total = sum(guests for status, guests in rows)
                 total_members += going_count + guests_total
-            else:
-                # Historical event closed before Save & Close wrote into
-                # event_users at all - fall back to its own frozen
-                # going_data/counters_data for just this one event.
-                cursor.execute(
-                    "SELECT going_data, counters_data FROM events WHERE event_id = ?",
-                    (event_id,),
-                )
-                going_raw, counters_raw = cursor.fetchone()
-                total_members += len(json.loads(going_raw or "[]")) + sum(json.loads(counters_raw or "{}").values())
 
     average_members = round(total_members / events_closed, 1) if events_closed > 0 else 0
     return events_amount, events_closed, total_members, average_members

@@ -76,8 +76,7 @@ class TestCount:
         conn = sqlite3.connect(db_path)
         for i in range(1200):
             conn.execute(
-                "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, going_data, "
-                "notgoing_data, counters_data, kicked_data, created_date) VALUES (?, ?, '1', 'x', 'g', 'n', 2, '[]', '[]', '{}', '[]', ?)",
+                "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, created_date) VALUES (?, ?, '1', 'x', 'g', 'n', 2, ?)",
                 (f"e{i}", HUB, "01.10.2026 12:00:00.000"))
             conn.execute("INSERT INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, 'u', 'going', 0)",
                          (f"e{i}", HUB, f"p{i % 1000}"))                 # 1000 distinct people over 1200 events

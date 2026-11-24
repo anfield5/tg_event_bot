@@ -7657,7 +7657,7 @@ class TestNotgoingVisibilityFlags:
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
                event_status, going_data, notgoing_data, counters_data, kicked_data, notgoing_visibility)
                VALUES ('ev1','-100','1','Party','👍','❌',0,'[]',?,'{}','[]','onlycount')""",
-            (json.dumps(["bob", "carol"]),),
+            (json.dumps(["bob (1)", "carol (2)"]),),
         )
         conn.commit()
 
@@ -9401,7 +9401,7 @@ class TestVerificationBackButton:
         conn.execute(
             """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
                event_status, going_data, notgoing_data, counters_data, kicked_data)
-               VALUES ('ev1','-100','1','Party','👍','❌',1,'["alice (1)"]','[]','{}','["bob"]')"""
+               VALUES ('ev1','-100','1','Party','👍','❌',1,'["alice (1)", "bob (2)"]','[]','{}','["bob"]')"""
         )
         conn.commit()
         conn.close()
@@ -9429,8 +9429,8 @@ class TestVerificationBackButton:
             await event_engine.button_handler(upd, ctx)
 
         conn2 = sqlite3.connect(db_path)
-        kicked_raw = conn2.execute("SELECT kicked_data FROM events WHERE event_id='ev1'").fetchone()[0]
-        assert "bob" in kicked_raw, "a kick made while in verification must survive going Back to open"
+        kicked_raw = conn2.execute("SELECT status FROM event_users WHERE event_id='ev1' AND username='bob'").fetchone()
+        assert kicked_raw == ("kicked",), "a kick made while in verification must survive going Back to open"
 
 
 class TestVerificationPageNavigation:
@@ -10187,48 +10187,6 @@ class TestGoingClickHealsStaleUnresolvableEntry:
             "SELECT status, user_id FROM event_users WHERE event_id='ev1' AND chat_id='-100' AND username='An'"
         ).fetchone()
         assert row == ("going", "999")
-
-    async def test_already_valid_entry_not_needlessly_rewritten(self, db_path):
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            """INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon,
-               event_status, going_data, notgoing_data, counters_data, kicked_data)
-               VALUES ('ev1','-100','1','Party','👍','❌',0,?,'[]','{}','[]')""",
-            (json.dumps(["alice (555)"]),),
-        )
-        conn.commit()
-
-        query = MagicMock()
-        query.data = "going_ev1"
-        query.message = MagicMock()
-        query.message.chat_id = "-100"
-        query.from_user = MagicMock()
-        query.from_user.id = 555
-        query.from_user.username = "alice"
-        query.from_user.first_name = "Alice"
-        query.from_user.last_name = None
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
-        upd = MagicMock()
-        upd.callback_query = query
-        ctx = MagicMock()
-        ctx.bot = MagicMock()
-        ctx.bot.send_message = AsyncMock()
-        ctx.bot.edit_message_text = AsyncMock()
-        ctx.bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
-
-        def _discard(coro):
-            coro.close()
-            return MagicMock()
-
-        ctx.application = MagicMock()
-        ctx.application.create_task = MagicMock(side_effect=_discard)
-
-        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
-            await event_engine.button_handler(upd, ctx)
-
-        row = conn.execute("SELECT going_data FROM events WHERE event_id='ev1'").fetchone()
-        assert json.loads(row[0]) == ["alice (555)"]
 
 
 class TestHelpOwnerFlagReducedToTwoForms:
@@ -11021,29 +10979,6 @@ class TestNotGoingEmbedsUserIdDirectly:
         text = bot.edit_message_text.call_args.kwargs["text"]
         assert "tg://user?id=777" in text
 
-    async def test_old_format_bare_username_still_works(self, db_path):
-        """Backward compatibility: events created before this fix have
-        bare-username entries with no embedded id - must still resolve
-        via the pre-existing fallback lookup, not break."""
-        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT, going="[]", notgoing=json.dumps(["oldstyle"]))
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "INSERT INTO main_group_users (chat_id, username, user_id, status, first_name, last_name) VALUES (?, 'oldstyle', '888', 'active', 'Old', 'Style')",
-            (MAIN_CHAT,),
-        )
-        conn.commit()
-
-        bot = make_bot()
-        ctx = make_context(bot=bot)
-        ctx.application = MagicMock()
-        ctx.application.create_task = MagicMock()
-
-        with patch("event_engine.get_sheet_for_chat", new_callable=AsyncMock, return_value=None):
-            await event_engine.update_all_shared_views(ctx, "ev1")
-
-        text = bot.edit_message_text.call_args.kwargs["text"]
-        assert "tg://user?id=888" in text
-
     async def test_going_click_removes_from_notgoing_regardless_of_format(self, db_path):
         """The going-click's own removal-from-not_going must still work
         correctly against the new "username (id)" format."""
@@ -11177,8 +11112,9 @@ class TestVariantBUnification:
              patch("event_engine.open_spreadsheet", new_callable=AsyncMock):
             await handlers.button_handler(upd, ctx)
 
-        row = get_event(db_path, "ev1")
-        waitlist = json.loads(row[14])  # waitlist_data column
+        conn = sqlite3.connect(db_path)
+        waitlist = json.loads(conn.execute("SELECT waitlist_data FROM events WHERE event_id='ev1'").fetchone()[0])
+        conn.close()
         assert len(waitlist) == 1
         assert waitlist[0]["user_id"] == "70"
         assert waitlist[0]["first_name"] == "Ivan"

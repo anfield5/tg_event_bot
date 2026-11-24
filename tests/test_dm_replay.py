@@ -29,8 +29,7 @@ _REGISTER_THEMSELVES_ON_IMPORT = (reopen, who)
 def seed_event(db_path, status=0, name="Old name"):
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, going_data, "
-        "notgoing_data, counters_data, kicked_data) VALUES ('ev1', ?, '1', ?, '👍', '❌', ?, '[]', '[]', '{}', '[]')",
+        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status) VALUES ('ev1', ?, '1', ?, '👍', '❌', ?)",
         (HUB, name, status),
     )
     conn.commit()

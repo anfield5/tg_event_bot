@@ -16,8 +16,7 @@ HUB, CHILD = "-100", "-200"
 def seed(db_path, *, shared=False, monitored=True, tracked=((CHILD, "Andr", "555"),), voted=None, owner=HUB):
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, "
-        "going_data, notgoing_data, counters_data, kicked_data) VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"
+        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status) VALUES ('ev1','-100','1','Party','👍','❌',1)"
     )
     if shared:
         conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) "

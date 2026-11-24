@@ -36,7 +36,7 @@ normalization, and that every documented date format actually parses.
 ### `TestInitDb` (13 tests)
 Checks a fresh `init_db()` call creates every required table, that legacy
 table names are gone, that `events` has the right columns (`event_date`,
-`event_status`, `kicked_data`) and does NOT have the old `is_open`/
+`event_status`) and does NOT have the old `is_open`/
 `is_cancelled` columns, that `main_group_users`/`main_chat_settings`/
 `sub_groups` have their expected columns, that calling `init_db()` twice or
 three times doesn't fail or duplicate data, and that a legacy `'frozen'`

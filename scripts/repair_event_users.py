@@ -99,7 +99,7 @@ def plan_event(info: dict, roster: dict, sheet_ids: list, events_row, resolvable
 
 
 def _event_info(row) -> dict:
-    keys = ("event_id", "name", "status", "created_date", "created_by", "event_date", "closed_date", "going_data")
+    keys = ("event_id", "name", "status", "created_date", "created_by", "event_date", "closed_date")
     info = dict(zip(keys, row))
     info["event_id"] = str(info["event_id"])
     info["name"] = info["name"] or info["event_id"]
@@ -124,7 +124,7 @@ async def apply_step(step: Step, chat_id: str, ss, conn, info: dict) -> str:
         conn.commit()
         return "event_users updated"
 
-    roster = audit.effective_roster(conn, step.event_id, info["status"], info["going_data"], chat_id)
+    roster = audit.effective_roster(conn, step.event_id, info["status"], chat_id)
     if step.kind == REWRITE:
         await sync_event_users_sheet(chat_id, step.event_id, roster["ids"])
         return f"{len(roster['ids'])} row(s) written"
@@ -159,14 +159,14 @@ async def repair_hub(chat_id, db_path, cutoff, apply=False, resolve_ids=False) -
     try:
         resolvable = audit.known_ids_by_username(conn)
         rows = conn.execute(
-            "SELECT event_id, name, event_status, created_date, created_by_user_id, event_date, closed_date, going_data "
+            "SELECT event_id, name, event_status, created_date, created_by_user_id, event_date, closed_date "
             "FROM events WHERE chat_id = ? ORDER BY ROWID", (chat_id,)).fetchall()
         for row in rows:
             info = _event_info(row)
             created = audit._parse_created(row[3])
             if cutoff is not None and (created is None or created < cutoff):
                 continue
-            roster = audit.effective_roster(conn, info["event_id"], info["status"], info["going_data"], chat_id)
+            roster = audit.effective_roster(conn, info["event_id"], info["status"], chat_id)
             steps = plan_event(info, roster, sheet_ids_by_event.get(info["event_id"], []), events_rows.get(info["event_id"]),
                                resolvable, resolve_ids, tab_ok)
             infos[info["event_id"]] = info

@@ -112,16 +112,16 @@ async def check_hub(chat_id, db_path, cutoff, apply=False, statuses=None):
     conn = sqlite3.connect(db_path)
     try:
         db_events = conn.execute(
-            "SELECT event_id, name, event_status, created_date, going_data FROM events WHERE chat_id = ? ORDER BY ROWID", (chat_id,)
+            "SELECT event_id, name, event_status, created_date FROM events WHERE chat_id = ? ORDER BY ROWID", (chat_id,)
         ).fetchall()
-        for event_id, name, status, created_raw, going_data in db_events:
+        for event_id, name, status, created_raw in db_events:
             if statuses is not None and status not in statuses:
                 continue
             created = audit._parse_created(created_raw)
             if cutoff is not None and (created is None or created < cutoff):
                 continue
             event = {"event_id": str(event_id), "name": name or str(event_id), "status": status}
-            roster = audit.effective_roster(conn, event_id, status, going_data, chat_id)
+            roster = audit.effective_roster(conn, event_id, status, chat_id)
             if "breakdown" not in roster:      # an old event with only its frozen list: no breakdown to show
                 roster["breakdown"] = {"going": roster["headcount"], "guests": 0, "guests_of_not_going": 0, "total": roster["headcount"]}
             row = rows_by_event.get(event["event_id"])

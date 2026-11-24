@@ -32,6 +32,37 @@ from tests.helpers import (          # re-export so conftest consumers can use t
 )
 
 
+class _SeedBridgeSqlite:
+    """Stands in for `sqlite3` inside db.py during tests: connect() first moves rosters seeded into the legacy JSON
+    columns into event_users (see db_path below), everything else passes straight through."""
+
+    def __getattr__(self, name):
+        return getattr(sqlite3, name)
+
+    def connect(self, *args, **kwargs):
+        raw = sqlite3.connect(*args, **kwargs)
+        try:
+            self._bridge(raw)
+        except sqlite3.OperationalError:
+            pass  # the legacy columns are not there (a test that builds its own schema)
+        return raw
+
+    @staticmethod
+    def _bridge(conn):
+        import json
+        rows = conn.execute(
+            "SELECT event_id, chat_id, going_data, notgoing_data, counters_data, kicked_data FROM events "
+            "WHERE going_data != '[]' OR notgoing_data != '[]' OR counters_data != '{}' OR kicked_data != '[]'").fetchall()
+        for event_id, chat_id, going, notgoing, counters, kicked in rows:
+            cur = conn.cursor()
+            db_module.migrate_event_to_event_users(
+                cur, event_id, str(chat_id), json.loads(going or "[]"), set(json.loads(notgoing or "[]")),
+                json.loads(counters or "{}"), json.loads(kicked or "[]"))
+            cur.execute("UPDATE events SET going_data='[]', notgoing_data='[]', counters_data='{}', kicked_data='[]' WHERE event_id = ?", (event_id,))
+        if rows:
+            conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Database fixtures
 # ---------------------------------------------------------------------------
@@ -48,6 +79,16 @@ def db_path(tmp_path, monkeypatch):
     monkeypatch.setattr(db_module, "DB_PATH", path)
     # Initialise schema (migrations included)
     init_db(db_path=path)
+    # Production no longer has the four legacy roster JSON columns on `events` (migration 0a16 moves them into
+    # event_users and drops them). Many tests still seed a roster the old way - INSERT going_data/... - so, for the
+    # TEST database only, re-add the columns and let every connection first move such a seeded roster into
+    # event_users (the same thing migration 0a16 does at startup). Production code never sees the columns.
+    conn = sqlite3.connect(path)
+    for col, default in (("going_data", "'[]'"), ("notgoing_data", "'[]'"), ("counters_data", "'{}'"), ("kicked_data", "'[]'")):
+        conn.execute(f"ALTER TABLE events ADD COLUMN {col} TEXT DEFAULT {default}")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db_module, "sqlite3", _SeedBridgeSqlite())
     return path
 
 

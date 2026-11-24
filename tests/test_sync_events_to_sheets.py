@@ -34,9 +34,9 @@ def _insert_event(db_path, event_id, chat_id="-100", status=0, name="Party",
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
-        "event_status, going_data, notgoing_data, counters_data, kicked_data, "
+        "event_status, "
         "created_date, closed_date, created_by_user_id) "
-        "VALUES (?, ?, '1', ?, '👍', '❌', ?, '[]', '[]', '{}', '[]', ?, ?, ?)",
+        "VALUES (?, ?, '1', ?, '👍', '❌', ?, ?, ?, ?)",
         (event_id, chat_id, name, status, created_date or _recent(), closed_date, created_by),
     )
     conn.commit()
@@ -201,8 +201,8 @@ class TestDaysWindowFilter:
         conn = sqlite3.connect(db_path)
         conn.execute(
             "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
-            "event_status, going_data, notgoing_data, counters_data, kicked_data) "
-            "VALUES ('ev_nodate','-100','1','P','👍','❌',0,'[]','[]','{}','[]')"
+            "event_status) "
+            "VALUES ('ev_nodate','-100','1','P','👍','❌',0)"
         )
         conn.commit()
         conn.close()

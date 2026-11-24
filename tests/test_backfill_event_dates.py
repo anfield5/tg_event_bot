@@ -28,8 +28,8 @@ def _insert_event(db_path, event_id, chat_id="-100", created_date=None, closed_d
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, "
-        "event_status, going_data, notgoing_data, counters_data, kicked_data, created_date, closed_date) "
-        "VALUES (?, ?, '1', 'Party', '👍', '❌', 2, '[]', '[]', '{}', '[]', ?, ?)",
+        "event_status, created_date, closed_date) "
+        "VALUES (?, ?, '1', 'Party', '👍', '❌', 2, ?, ?)",
         (event_id, chat_id, created_date, closed_date),
     )
     conn.commit()

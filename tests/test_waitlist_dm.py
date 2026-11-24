@@ -21,8 +21,7 @@ def seed(db_path, waitlist=True):
     ] if waitlist else []
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, going_data, "
-        "notgoing_data, counters_data, kicked_data, waitlist_data) VALUES ('ev1', ?, '1', 'Party', '👍', '❌', 0, '[]', '[]', '{}', '[]', ?)",
+        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, waitlist_data) VALUES ('ev1', ?, '1', 'Party', '👍', '❌', 0, ?)",
         (HUB, json.dumps(entries)),
     )
     conn.execute("INSERT INTO sub_chats (chat_id, owner_chat_id, alias) VALUES ('-200', ?, 'childgroup')", (HUB,))

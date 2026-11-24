@@ -313,19 +313,6 @@ Append-only historical trail. Never updated or deleted — only ever grows.
 
 Never updated or deleted by the bot itself (a pure usage log).
 
-### `bot_lock`
-**Columns:** `id` (PK, fixed to `1` via CHECK constraint — always exactly one row), `locked` (0/1)
-
-Backs the `/lockbot` global emergency switch. A single-row table by design — there's only ever one lock state for the whole bot, not per-chat.
-
-| Trigger | Operation |
-|---|---|
-| Startup / any `init_db()` run | INSERT OR IGNORE the single row with `locked=0` if it doesn't exist yet — never resets an already-set lock state on restart |
-| `/lockbot on` | UPDATE `locked=1` |
-| `/lockbot off` | UPDATE `locked=0` |
-
-Read on every single incoming command and callback query (`main.py`'s `lock_gate` handler, registered before every other handler) — deliberately a fast, index-free single-row lookup.
-
 ### `all_features`
 **Columns:** `feature_key` (PK), `feature_label`, `min_tier` (FREE/PRO/OWNER), `limit_count`, `sort_order`, `description`
 
@@ -340,13 +327,13 @@ The single source of truth for what's available at each tier. Seeded at startup 
 | One-time legacy migration (old per-tier limit columns) | UPDATE `limit_count` from whichever of the 3 old columns matched the row's current tier, then those 3 old columns are dropped |
 
 ### `events`
-**Columns:** `event_id` (PK), `chat_id` (NOT NULL), `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `going_data` (JSON, **frozen/vestigial** — see below), `notgoing_data` (JSON, **frozen/vestigial**), `counters_data` (JSON, **frozen/vestigial**), `event_date`, `kicked_data` (JSON, **frozen/vestigial**), `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON — still live, see below), `waitlist_joined`, `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`, `created_date`, `closed_date`
+**Columns:** `event_id` (PK), `chat_id` (NOT NULL), `message_id`, `name`, `going_icon`, `notgoing_icon`, `event_status` (-1 canceled / 0 open / 1 verification / 2 closed), `event_date`, `feature_snapshot` (JSON, frozen at creation), `total_limit`, `waitlist_data` (JSON — still live, see below), `waitlist_joined`, `waitlist_visibility`, `notgoing_visibility`, `clickability`, `created_by_user_id`, `created_date`, `closed_date`
 
 `created_date`/`closed_date` are real, persisted columns (not just written to the bound Google Sheet) — set via `now2ddmmyy()` at `/newevent` creation time and at Save&Close/Cancel/Directclose respectively. Both follow a "DB first, then Sheets reuses that exact value" pattern: the timestamp is computed once, written to the `events` row (via a plain `INSERT`/`UPDATE`), and the SAME in-memory value is reused for the Google Sheets Events tab export (if the hub is PRO with a bound sheet) — never recomputed a second time for the Sheet, which could otherwise drift from what was actually persisted. `closed_date` uses `COALESCE(?, closed_date)` in its own `UPDATE` so actions that don't close the event (kick, guest adjustments, `back`, pagination) never overwrite an already-set value with `NULL`.
 
 `reopened_roster` (TEXT, JSON `{user_id: name}`, normally `NULL`) is set by `/reopen` to the final roster the event had when it was closed and read-and-cleared by the next Save & Close, which logs the difference to the `Actions` tab (`ROSTER_ADDED` / `ROSTER_REMOVED`).
 
-**Variant B note:** `going_data`/`notgoing_data`/`counters_data`/`kicked_data` were the master hub's own source of truth *before* Variant B unified the master hub and every child chat under the single `event_users` table (see that table's own section below). These four columns are no longer written to by any button click or command — they're read exactly once per event, the very first time ANY code path touches that event after the Variant B deploy, to migrate their contents into `event_users` (see `db.migrate_event_to_event_users()`). After that one-time migration, they sit frozen, kept only so that an event nobody has touched yet doesn't render as empty (a fallback path in `update_all_shared_views` reads them directly if `event_users` has no rows yet for that event).
+**Roster storage:** the event's participants (the hub's own and every child chat's) live only in `event_users`. Older databases had four roster JSON columns here (`going_data`/`notgoing_data`/`counters_data`/`kicked_data`); at startup `init_db` moves each event's roster into `event_users` (`db.migrate_event_to_event_users()`) and drops the columns.
 
 | Trigger | Operation |
 |---|---|
@@ -416,7 +403,7 @@ An unresolvable person (e.g. added via Add Extra Member with no real Telegram us
 
 | Trigger | Operation |
 |---|---|
-| The FIRST click/command that touches an event since the Variant B deploy | One-time migration (`db.migrate_event_to_event_users()`) converts the event's old `going_data`/`notgoing_data`/`counters_data`/`kicked_data` into rows here for `chat_id = <the hub's own chat_id>`. Detected by "does this event have ANY row here yet" — safe to call repeatedly, a no-op once migrated |
+| Startup of a database that still has the old roster JSON columns on `events` | One-time migration (`db.migrate_event_to_event_users()`) converts each event's old `going_data`/`notgoing_data`/`counters_data`/`kicked_data` into rows here for `chat_id = <the hub's own chat_id>`, then the columns are dropped. A no-op for an event that already has rows here |
 | Going click (master hub or any child chat — identical code path) | INSERT OR REPLACE with `status='going'` |
 | Going click while the event is at capacity | No row written here — the person goes to the event-wide Waitlist instead (`events.waitlist_data`) |
 | Not Going click | INSERT OR REPLACE with `status='notgoing'` — **never deleted**, regardless of guest count (a permanent record of anyone who ever clicked, independent of whether they currently have guests) |
@@ -447,6 +434,7 @@ Every setting an owner switches is a row here - a new setting is a new key, not 
 |---|---|---|---|
 | `reopen` | hub | `on` / `off` | `/reopen on\|off` |
 | `hideability` | hub | `on` / `off` | `/hideability on\|off` - collapsible lists in the hub's posts (owner-level feature `hideability` in `all_features`) |
+| `bot.locked` | `*` | `1` (locked) / `0` | `/lockbot on\|off`, owner only (was the single-row `bot_lock` table; `init_db` copies the flag and drops it) |
 | `hideability.going`, `.notgoing`, `.waitlist`, `.sharedgoing`, `.sharednotgoing`, `.sharedwaitlist` | `*` | `show` (starts unfolded) / `hide` (folded) | `/hideability -g\|-ng\|-w\|-sg\|-sng\|-sw show\|hide`, owners only, from any chat including a DM |
 
 A list without a `hideability.<list>` row has its default from `richtext.FLAG_DEFAULTS` (Going shown, the rest hidden). The `shared…` keys are the three lists of posts shared to other chats; `going` also decides the `Going from <chat>` blocks of the hub post. A post in verification, closed or canceled is always fully open. Changing a flag re-renders the recent events of every hub that has `hideability` on. Earlier versions kept these in the tables `reopen_mode`, `hideability_mode` and `hideability_flags`; `init_db` copies their rows into `bot_settings` and drops them.

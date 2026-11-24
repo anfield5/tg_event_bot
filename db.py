@@ -348,11 +348,7 @@ def init_db(db_path: str = DB_PATH):
             going_icon TEXT,
             notgoing_icon TEXT,
             event_status INTEGER DEFAULT 0,
-            going_data TEXT,
-            notgoing_data TEXT,
-            counters_data TEXT,
             event_date TEXT DEFAULT NULL,
-            kicked_data TEXT DEFAULT '[]',
             feature_snapshot TEXT DEFAULT NULL,
             total_limit INTEGER DEFAULT NULL,
             waitlist_data TEXT DEFAULT '[]',
@@ -529,14 +525,6 @@ def init_db(db_path: str = DB_PATH):
             PRIMARY KEY (event_id, chat_id, user_id)
         )
     """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bot_lock (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            locked INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-    cursor.execute("INSERT OR IGNORE INTO bot_lock (id, locked) VALUES (1, 0)")
 
     # ── Migrations ────────────────────────────────────────────────────────────
 
@@ -1031,6 +1019,43 @@ def init_db(db_path: str = DB_PATH):
         )
     """)
 
+    # 0a15. bot_lock (a table of one row) became the global setting `bot.locked` in bot_settings.
+    cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'bot_lock'")
+    if cursor.fetchone():
+        row = cursor.execute("SELECT locked FROM bot_lock WHERE id = 1").fetchone()
+        if row and row[0]:
+            cursor.execute(
+                "INSERT OR IGNORE INTO bot_settings (scope, key, value, set_by, set_at) VALUES (?, ?, '1', NULL, ?)",
+                (GLOBAL_SCOPE, LOCK_KEY, _now()))
+        cursor.execute("DROP TABLE bot_lock")
+
+    # 0a16. events lost its four JSON roster columns (going_data, notgoing_data, counters_data, kicked_data): since the
+    # unified event_users model every roster lives in event_users, and new events only ever stored empty placeholders there.
+    # An event that was never touched since then may still hold its people ONLY in those columns - move them first (the same
+    # step a click used to do), then drop the columns. On an SQLite too old for DROP COLUMN (< 3.35) they are just left unused.
+    cursor.execute("PRAGMA table_info(events)")
+    legacy_cols = [c[1] for c in cursor.fetchall() if c[1] in ("going_data", "notgoing_data", "counters_data", "kicked_data")]
+    if legacy_cols:
+        def _json(raw, empty):
+            try:
+                value = json.loads(raw) if raw else empty
+            except (TypeError, ValueError):
+                return empty
+            return value if isinstance(value, type(empty)) else empty
+
+        wanted = ["event_id", "chat_id"] + legacy_cols
+        for row in cursor.execute(f"SELECT {', '.join(wanted)} FROM events").fetchall():
+            data = dict(zip(wanted, row))
+            migrate_event_to_event_users(
+                cursor, data["event_id"], data["chat_id"],
+                _json(data.get("going_data"), []), _json(data.get("notgoing_data"), []),
+                _json(data.get("counters_data"), {}), _json(data.get("kicked_data"), []))
+        for col in legacy_cols:
+            try:
+                cursor.execute(f"ALTER TABLE events DROP COLUMN {col}")
+            except sqlite3.OperationalError:
+                break
+
     # Indexes for the lookups that are not served by a primary key (CREATE IF NOT EXISTS: safe on an existing database).
     for name, table, columns in (
         ("idx_events_chat",          "events",              "chat_id, event_status"),
@@ -1051,18 +1076,12 @@ def is_bot_locked() -> bool:
     is set. Checked on every single incoming update (see main.py's
     early-group gate handler), so this must stay fast - a single-row
     lookup, no joins."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT locked FROM bot_lock WHERE id = 1")
-        row = cursor.fetchone()
-    return bool(row and row[0])
+    return get_setting(GLOBAL_SCOPE, LOCK_KEY) == "1"
 
 
 def set_bot_locked(locked: bool):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("UPDATE bot_lock SET locked = ? WHERE id = 1", (1 if locked else 0,))
-        conn.commit()
+    """/lockbot on|off. Stored as the global setting `bot.locked` in bot_settings."""
+    set_setting(GLOBAL_SCOPE, LOCK_KEY, "1" if locked else "0")
 
 
 def migrate_event_to_event_users(cursor, event_id: str, main_chat_id: str, going: list, not_going, counters: dict, kicked: list):
@@ -1141,32 +1160,6 @@ def migrate_event_to_event_users(cursor, event_id: str, main_chat_id: str, going
             "INSERT OR IGNORE INTO event_users (event_id, chat_id, user_id, username, status, guests) VALUES (?, ?, ?, ?, 'notselected', ?)",
             (event_id, main_chat_id, mg_row[0], c_username, c_count),
         )
-
-
-def ensure_event_migrated(cursor, event_id: str, main_chat_id: str):
-    """
-    Convenience wrapper around migrate_event_to_event_users: loads an
-    event's frozen going_data/notgoing_data/counters_data/kicked_data
-    columns and runs the migration on them - the "select + parse +
-    migrate" sequence every command that touches event_users needs to
-    repeat before that table is guaranteed populated. Uses the SAME
-    cursor/connection the caller already has open (an active
-    transaction) - never opens its own connection here. Safe to call
-    on an already-migrated event (a fast single-row SELECT, no-op) or
-    a nonexistent event_id (silently does nothing).
-    """
-    cursor.execute(
-        "SELECT going_data, notgoing_data, counters_data, kicked_data FROM events WHERE event_id = ?",
-        (event_id,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return
-    going_raw, notgoing_raw, counters_raw, kicked_raw = row
-    migrate_event_to_event_users(
-        cursor, event_id, main_chat_id,
-        json.loads(going_raw), json.loads(notgoing_raw), json.loads(counters_raw), json.loads(kicked_raw or "[]"),
-    )
 
 
 GROUP_ANONYMOUS_BOT_ID = 1087968824  # same constant as utils.py - duplicated
@@ -1758,6 +1751,7 @@ def clear_pending_left(chat_id: str, user_ids: list) -> None:
 # ---------------------------------------------------------------------------
 
 GLOBAL_SCOPE = "*"
+LOCK_KEY = "bot.locked"      # /lockbot: "1" while the bot ignores everybody but the owners
 
 
 def _now() -> str:

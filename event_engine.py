@@ -36,7 +36,7 @@ from config import (
 )
 from utils import escape_markdown, now2ddmmyy, is_real_admin
 from utils import remember_extra_player_prompt
-from db import get_connection, get_display_name, track_user, dedupe_waitlist, migrate_event_to_event_users
+from db import get_connection, get_display_name, track_user, dedupe_waitlist
 from db import is_hideability_active, get_hideability_flags
 import richtext
 from db import headcount_from_rows, reopen_button_offered, reopen_button_events, reopen_posts_to_refresh, get_reopened_roster, clear_reopened_roster, is_reopen_active
@@ -547,7 +547,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         cursor.execute(
             """
             SELECT chat_id, message_id, name, going_icon, notgoing_icon,
-                   event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
+                   event_status, event_date,
                    feature_snapshot, total_limit, waitlist_data, waitlist_visibility, notgoing_visibility, clickability
             FROM events WHERE event_id = ?
             """,
@@ -558,7 +558,7 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
             return
 
         (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
-         event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
+         event_status, event_date,
          feature_snapshot_raw, total_limit, waitlist_data_raw, waitlist_visibility, notgoing_visibility, clickability) = master
 
         try:
@@ -575,34 +575,21 @@ async def update_all_shared_views(context: ContextTypes.DEFAULT_TYPE, event_id: 
         )
         main_hub_users = cursor.fetchall()
 
-        if not main_hub_users:
-            # Not yet migrated to event_users (no click has touched this
-            # event since the Variant B deploy) - fall back to rendering
-            # straight from the old JSON columns rather than showing an
-            # empty event. The actual migration itself only happens in
-            # button_handler's own transaction (this function is
-            # read-only), so this fallback stays in place until the next
-            # real click on the event.
-            master_going = json.loads(going_data)
-            master_not_going = json.loads(notgoing_data)
-            master_counters = json.loads(counters_data)
-            master_kicked = set(json.loads(kicked_data or "[]"))
-        else:
-            master_going = []
-            master_not_going = []
-            master_counters = {}
-            master_kicked = set()
-            for m_username, m_status, m_guests, m_user_id, m_first, m_last in main_hub_users:
-                has_id = m_user_id and str(m_user_id).lstrip("-").isdigit()
-                entry = f"{m_username} ({m_user_id})" if has_id else m_username
-                if m_status == "going":
-                    master_going.append(entry)
-                elif m_status == "notgoing":
-                    master_not_going.append(entry)
-                elif m_status == "kicked":
-                    master_kicked.add(m_username)
-                if m_guests and m_guests > 0:
-                    master_counters[m_username] = m_guests
+        master_going = []
+        master_not_going = []
+        master_counters = {}
+        master_kicked = set()
+        for m_username, m_status, m_guests, m_user_id, m_first, m_last in main_hub_users:
+            has_id = m_user_id and str(m_user_id).lstrip("-").isdigit()
+            entry = f"{m_username} ({m_user_id})" if has_id else m_username
+            if m_status == "going":
+                master_going.append(entry)
+            elif m_status == "notgoing":
+                master_not_going.append(entry)
+            elif m_status == "kicked":
+                master_kicked.add(m_username)
+            if m_guests and m_guests > 0:
+                master_counters[m_username] = m_guests
         master_waitlist  = dedupe_waitlist(json.loads(waitlist_data_raw or "[]"))
 
         cursor.execute(
@@ -1120,7 +1107,7 @@ async def _handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cursor.execute(
                     """
                     SELECT chat_id, message_id, name, going_icon, notgoing_icon,
-                           event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
+                           event_status, event_date,
                            feature_snapshot, total_limit, waitlist_data, created_by_user_id, created_date
                     FROM events WHERE event_id = ?
                     """,
@@ -1131,7 +1118,7 @@ async def _handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 (main_chat_id, main_msg_id, name, going_icon, notgoing_icon,
-                 event_status, going_data, notgoing_data, counters_data, event_date, kicked_data,
+                 event_status, event_date,
                  feature_snapshot_raw, total_limit, waitlist_data_raw, created_by_user_id, created_date) = row
 
                 # NULL/malformed -> "everything enabled", matching how this
@@ -1143,16 +1130,6 @@ async def _handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 verification_enabled = feature_snapshot.get("verification", True)
                 add_extra_member_enabled = feature_snapshot.get("add_extra_member", True)
 
-                going     = json.loads(going_data)
-                not_going = set(json.loads(notgoing_data))
-                counters  = json.loads(counters_data)
-                kicked    = json.loads(kicked_data or "[]")
-
-                # ── One-time migration to the unified event_users model ────────
-                # See db.migrate_event_to_event_users for the full explanation -
-                # shared with handlers.py's /editevent, which also needs an
-                # accurate event_users state before button_handler ever runs.
-                migrate_event_to_event_users(cursor, event_id, main_chat_id, going, not_going, counters, kicked)
                 waitlist  = json.loads(waitlist_data_raw or "[]")
 
                 def _current_headcount():

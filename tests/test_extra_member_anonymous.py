@@ -117,8 +117,7 @@ def seed(db_path):
     """An event in verification mode, shared to a child chat where Andr is a tracked member."""
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status, "
-        "going_data, notgoing_data, counters_data, kicked_data) VALUES ('ev1','-100','1','Party','👍','❌',1,'[]','[]','{}','[]')"
+        "INSERT INTO events (event_id, chat_id, message_id, name, going_icon, notgoing_icon, event_status) VALUES ('ev1','-100','1','Party','👍','❌',1)"
     )
     conn.execute("INSERT INTO event_shares (event_id, chat_id, message_id, share_mode, chat_type) VALUES ('ev1','-200','5','-visible','channel')")
     conn.execute("INSERT INTO main_group_users (chat_id, username, user_id, first_name, last_name) VALUES ('-200','Andr','555','Andrew','Smith')")

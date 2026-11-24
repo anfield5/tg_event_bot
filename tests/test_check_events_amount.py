@@ -173,12 +173,6 @@ class TestAgainstASheet:
         assert (await run(book_with(row(amount=9)), db_path, cutoff=datetime(2026, 1, 1))).checked == 0
         assert (await run(book_with(row(amount=9)), db_path, cutoff=None)).checked == 1
 
-    async def test_an_event_closed_before_event_users_existed_is_checked_by_its_frozen_list(self, db_path):
-        import json
-        closed(db_path, going=json.dumps(["alice (1)", "bob (2)"]))
-        assert (await run(book_with(row(amount=2)), db_path)).findings == []
-        assert codes(await run(book_with(row(amount=3)), db_path)) == ["AMOUNT_WRONG"]
-
     async def test_a_failed_write_is_a_problem_and_the_rest_still_happen(self, db_path):
         closed(db_path); person(db_path, 1, "alice")
         closed(db_path, "ev2"); person(db_path, 2, "bob", event_id="ev2")
