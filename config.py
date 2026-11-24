@@ -13,6 +13,8 @@ STARTED_AT = time.time()
 
 # Logger configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# httpx logs every request URL at INFO - and the URL of a Telegram call contains the bot token. Keep it out of the log.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Default UI icons with safe fallback configurations

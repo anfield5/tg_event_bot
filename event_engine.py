@@ -27,7 +27,7 @@ from datetime import datetime
 
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 
 from keyboard import create_event_keyboard
 from config import (
@@ -112,10 +112,32 @@ async def schedule_view_refresh(context: ContextTypes.DEFAULT_TYPE, event_id: st
         return
     async with state["lock"]:
         state["pending"] = False
-        await _timed_refresh(context, event_id)
+        await _redraw_pass(context, event_id, state)
         while state["pending"]:
             state["pending"] = False
-            await _timed_refresh(context, event_id)
+            # The first redraw after a quiet moment goes out at once; a burst of clicks is drawn as ONE pass after this pause.
+            # Telegram lets a group take only about 20 edits a minute, and past that it stops ALL edits there for 10-30 s.
+            await asyncio.sleep(REDRAW_GAP)
+            await _redraw_pass(context, event_id, state)
+
+
+REDRAW_GAP = 3.0          # seconds between two redraws of one post while clicks keep coming
+FLOOD_WAIT_MAX = 60.0     # the longest the bot waits for Telegram's "flood control" pause before drawing the post again
+_flood_until = {}         # chat id -> time.monotonic() until which Telegram refuses edits there
+_flood_hits = 0           # counts the edits that were refused or skipped because of it
+
+
+async def _redraw_pass(context, event_id: str, state: dict):
+    """One redraw. If Telegram's flood control stopped any edit of it, waits the pause out and draws once more (the post
+    must end up showing the latest state, and calling an API that is refusing only lengthens the pause)."""
+    hits = _flood_hits
+    await _timed_refresh(context, event_id)
+    if _flood_hits != hits:
+        wait = min(max(_flood_until.values(), default=0) - time.monotonic(), FLOOD_WAIT_MAX)
+        if wait > 0:
+            logger.warning(f"Telegram flood control: the post of event {event_id} is drawn again in {wait:.0f} s")
+            await asyncio.sleep(wait)
+        state["pending"] = True
 
 
 async def _timed_refresh(context, event_id: str):
@@ -130,6 +152,23 @@ async def _timed_refresh(context, event_id: str):
 
 
 async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_delay: float = 0.5, **kwargs):
+    """Edits a post (see _edit_inner). Telegram's flood control is handled here: while a chat is under it no call is made, and
+    a refused edit is not retried - both only lengthen the pause. The redraw loop (_redraw_pass) draws the post again later."""
+    global _flood_hits
+    chat = str(kwargs.get("chat_id"))
+    if "message_id" in kwargs and _flood_until.get(chat, 0) > time.monotonic():
+        _flood_hits += 1
+        return
+    try:
+        await _edit_inner(context, max_retries, retry_delay, **kwargs)
+    except RetryAfter as e:
+        pause = e.retry_after.total_seconds() if hasattr(e.retry_after, "total_seconds") else float(e.retry_after)
+        _flood_until[chat] = time.monotonic() + pause + 1
+        _flood_hits += 1
+        logger.warning(f"Telegram flood control on {chat}: edits refused for {pause:.0f} s")
+
+
+async def _edit_inner(context, max_retries: int = 2, retry_delay: float = 0.5, **kwargs):
     """
     Wraps context.bot.edit_message_text with a couple of retries on
     transient failures - found via a real screenshot where the master
@@ -163,6 +202,8 @@ async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_del
             try:
                 await call()
                 return True
+            except RetryAfter:
+                raise
             except BadRequest as e:
                 if "Message is not modified" in str(e):
                     return True
@@ -187,6 +228,8 @@ async def _edit_message_text_with_retry(context, max_retries: int = 2, retry_del
                 await attempt_all(lambda: richtext.edit_rich(bot, kwargs["chat_id"], kwargs["message_id"], text, kwargs.get("reply_markup")),
                                   retry_refused=False)
                 return
+            except RetryAfter:
+                raise
             except Exception as e:
                 logger.warning(f"Rich message edit failed for {kwargs.get('chat_id')}/{kwargs.get('message_id')}, editing as plain text: {e}")
         kwargs["text"] = richtext.unfold(text)

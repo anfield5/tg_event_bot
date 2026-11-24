@@ -559,3 +559,78 @@ class TestRefusedRichEditIsNotRetried:
         with patch("event_engine.update_all_shared_views", new=AsyncMock()), patch.object(event_engine.logger, "info") as info:
             await event_engine.schedule_view_refresh(ctx, "ev1")
         assert any("post redrawn: event ev1 in" in str(c) for c in info.call_args_list)
+
+
+class TestTelegramFloodControl:
+    """Telegram allows a group about 20 edits a minute; past that every edit there fails for 10-30 s ("Flood control exceeded").
+    The log showed the bot answering each refusal with two more tries and the next click with more edits - the pause only grew.
+    Now: a refused edit is not retried, no call is made while the chat is paused, and the post is drawn once more afterwards;
+    a burst of clicks is drawn as one pass after a short gap, and the first redraw after a quiet time is immediate."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        event_engine._flood_until.clear(); event_engine._flood_hits = 0
+        yield
+        event_engine._flood_until.clear(); event_engine._flood_hits = 0
+
+    async def edit(self, bot, chat="-1"):
+        await event_engine._edit_message_text_with_retry(make_context(bot=bot), chat_id=chat, message_id=5, text="x", parse_mode="MarkdownV2")
+
+    async def test_a_refused_edit_is_not_retried_and_pauses_the_chat(self):
+        from telegram.error import RetryAfter
+        bot = make_bot(); bot.edit_message_text = AsyncMock(side_effect=RetryAfter(22))
+        await self.edit(bot)
+        assert bot.edit_message_text.await_count == 1
+        assert event_engine._flood_hits == 1 and event_engine._flood_until["-1"] > 0
+
+    async def test_no_call_is_made_while_the_chat_is_paused_but_another_chat_still_edits(self):
+        from telegram.error import RetryAfter
+        bot = make_bot(); bot.edit_message_text = AsyncMock(side_effect=RetryAfter(22))
+        await self.edit(bot)
+        bot.edit_message_text = AsyncMock()
+        await self.edit(bot); await self.edit(bot)
+        assert bot.edit_message_text.await_count == 0 and event_engine._flood_hits == 3
+        await self.edit(bot, chat="-2")
+        assert bot.edit_message_text.await_count == 1
+
+    async def test_the_post_is_drawn_again_after_the_pause_not_left_stale(self, db_path):
+        from telegram.error import RetryAfter
+        from tests.test_handlers_async import insert_event, MAIN_CHAT
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
+        bot = make_bot()
+        bot.edit_message_text = AsyncMock(side_effect=[RetryAfter(2), MagicMock()])
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+            event_engine._flood_until.clear()          # the pause is over
+
+        with patch("event_engine.asyncio.sleep", new=fake_sleep), patch.object(event_engine, "REDRAW_GAP", 0):
+            await event_engine.schedule_view_refresh(make_context(bot=bot), "ev1")
+        assert bot.edit_message_text.await_count == 2, "refused once, then drawn again"
+        assert any(2 <= s <= 4 for s in slept), slept
+
+    async def test_a_burst_is_drawn_as_one_trailing_pass_after_a_gap(self, db_path):
+        import asyncio
+        from tests.test_handlers_async import insert_event, MAIN_CHAT
+        insert_event(db_path, event_id="ev1", chat_id=MAIN_CHAT)
+        bot = make_bot()
+        gaps = []
+
+        async def yielding(*a, **k):
+            await asyncio.sleep(0)
+            return MagicMock()
+        bot.edit_message_text = AsyncMock(side_effect=yielding)
+        real_sleep = asyncio.sleep
+
+        async def spy(seconds, *a):
+            gaps.append(seconds); await real_sleep(0)
+
+        with patch("event_engine.asyncio.sleep", new=spy):
+            await asyncio.gather(*[event_engine.schedule_view_refresh(make_context(bot=bot), "ev1") for _ in range(6)])
+        assert bot.edit_message_text.await_count == 2 and [g for g in gaps if g] == [event_engine.REDRAW_GAP], "first at once, the rest as one pass"
+
+    def test_the_http_client_does_not_log_urls_with_the_bot_token(self):
+        import logging
+        import config  # noqa: F401
+        assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
