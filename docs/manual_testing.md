@@ -1,6 +1,6 @@
 # Manual Testing Guide
 
-> Written for **4.9.x**. **48 cases in total - 12 of them are smoke** (marked 🔥).
+> Written for **4.9.x**. **51 cases in total - 12 of them are smoke** (marked 🔥).
 > A full pass is ~3.5-4 hours for one tester; the smoke subset is ~20 minutes.
 
 This is the **prioritised test plan**: which cases to run, in what order, and how. It is risk-based - cases exist where this bot has actually broken before, or where the automated suite structurally cannot look (real Telegram, real Google Sheets, several people at once, a real deploy).
@@ -9,7 +9,7 @@ This is the **prioritised test plan**: which cases to run, in what order, and ho
 
 | Document | What it is |
 |---|---|
-| **this file** | the plan: 48 cases, selection rules, exploratory charters |
+| **this file** | the plan: 51 cases, selection rules, exploratory charters |
 | `docs/specs/*.md` | exact Given/When/Then per command/flag (`wl_waitlist.md` W1-W13, `clc_clickability.md` C1-C9, `newevent_editevent.md`, `shareevent.md` S1-S15, `ngl_notgoinglist.md`). Cases below point at them - run those scenarios, **tick the result there** |
 | `docs/specs/MANUAL_TESTING.md` | per-topic checklists + the **Regression Watch List** (why each check exists) |
 | `pytest tests/` (1000+ tests) | all logic. Do not re-test it by hand - see section 6 |
@@ -59,9 +59,10 @@ Smoke needs only Hub-PRO, Child, O, A, M1, M2. Use a **staging** bot token, shee
 | `db.py` migrations, startup, deploy | J3, J4, J1 |
 | `main.py` chat-member handling | J2 |
 | `hub_resolver.py` (DM) | G4 |
+| `joinform.py` | G5 |
 | `/deleteevent`, `/newevent` | H*, A7 |
 
-## 3. The 48 cases
+## 3. The 51 cases
 
 ### A. Event lifecycle (7)
 
@@ -107,19 +108,23 @@ Smoke needs only Hub-PRO, Child, O, A, M1, M2. Use a **staging** bot token, shee
 
 ### F. Google Sheets (6)
 
-- [ ] **F1** 🔥 **PRO hub end to end.** *Given* Hub-PRO with its sheet. *When* A creates an event, people click, A saves & closes it; then a second event is canceled. *Then* Events tab: row `OPEN` on creation (EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT); updated to `CLOSED` with the right `AMOUNT` and `EventUsers` rows after Save & Close; `CANCELED` for the second, with `AMOUNT` = the headcount it had when canceled and no `EventUsers` rows; `Actions` gets rows for button actions.
+- [ ] **F1** 🔥 **PRO hub end to end.** *Given* Hub-PRO with its sheet. *When* A creates an event, people click, A saves & closes it; then a second event is canceled. *Then* Events tab: row `OPEN` on creation (EVENT_ID, EVENT_NAME, CREATED_DATE, CREATED_BY, EVENT_DATE, CLOSED_AT, STATUS, AMOUNT); updated to `CLOSED` with the right `AMOUNT` and `EventUsers` rows after Save & Close; `CANCELED` for the second, with `AMOUNT` = the headcount it had when canceled and no `EventUsers` rows; `Actions` gets rows for button actions (a few seconds after the click - they are written in the background).
 - [ ] **F2** **No sheet.** *When* A creates an event on Hub-FREE, then on a PRO hub with no sheet bound. *Then* FREE: silent, no Sheets attempt; PRO without a sheet: an explicit "Please specify google sheet for save" message.
 - [ ] **F3** **Outage is visible, nothing is lost.** *Given* (staging) the service account's access revoked or credentials broken. *When* A runs `/newevent`, clicks, **Save & Close**, **Cancel**, `/refreshusers` and `/refreshusersall`. *Then* the events still work in Telegram; the chat shows "This event was created, but couldn't be saved to Google Sheets (...)" on create, "Event saved, but Google Sheets sync failed" on save, "Event cancelled, but Google Sheets sync failed" on cancel; `/refreshusers` says "Users tab sync incomplete" and `/refreshusersall` marks the chat "Partly synced" instead of success.
 - [ ] **F4** **Recovery.** *Given* F3's events exist only in the DB. *When* access is restored and `docker compose exec bot python3 scripts/sync_events_to_sheets.py` is run (optionally `--days 30` / `--chat-id <hub>`). *Then* the missing events appear in Events (plus `EventUsers` for closed ones and approximate `Actions`); a second run adds nothing.
 - [ ] **F5** **Users tab and presence log (hub).** *When* `/refreshusers` runs; a member's Telegram name changes (first and/or last name, and once the @username too); `/refreshusers` runs twice more; a member leaves; the refresh runs again and again; the member rejoins and leaves a second time. *Then* members are `MEMBER` with names; the changed name updates only its cell and unchanged names cause **no** writes on later refreshes; the earlier "First Last" is kept in `ARCHIVED_FULL_NAME` (column J; the header appears by itself the first time, and a tab whose column J is something else is left untouched) and the earlier `@username` in `ARCHIVED_USER_NAME` - neither is listed twice, and a change of letter case alone is not archived; the leaver becomes `LEFT` with `DATE_end` and **exactly one** `UserPresenceLog` row (USER_ID, CHAT_ID, DATE_start, DATE_end) no matter how many refreshes follow; rejoining flips to `MEMBER` and clears `DATE_end` without deleting the log row; the second leave adds a second row.
 - [ ] **F6** **Presence of a monitored chat.** *Given* Hub-PRO monitors Child (`/addmonitor`). *When* a member leaves Child and A runs `/refreshusersall`. *Then* their `Users` row (CHAT_ID = Child) becomes `LEFT` and the `UserPresenceLog` row for Child appears **in the hub's sheet**; the reply shows "Synced: <child> (-1)". (This was the bug where monitored chats were never logged.) Also have someone who **never** appeared in `Users` (joined and left between two refreshes) leave: after the refresh they get a `LEFT` row and a log row whose `DATE_start` is one hour before `DATE_end`.
+- [ ] **F7** **Detailed refresh (`/refreshusersall -d`).** *Given* Hub-PRO monitoring Child; a member of Child has just left and another has just joined. *When* A runs `/refreshusersall -d`; then `/refreshusersall` without the option; then `/refreshusersall -x`. *Then* the first reply has one `Chatname: joined N, left M` line per chat (Hub and Child) with the joined / left figures matching the `Users` tab changes of that run, and a `Total` line; the second is the usual `Synced:` report; the third refuses the unknown option and syncs nothing.
+- [ ] **F8** **`/who` names.** *Given* people who left and people who changed to Not Going, some with a Telegram `@username` and some without. *When* A runs `/who 48 -ng -l`. *Then* each person is `First Last (@username)` with the `@username` a tappable link to the profile (and nobody gets a notification), people without a username are plain names, and no line starts with a bullet point.
 
-### G. Users and monitoring (4)
+### G. Users and monitoring (5)
 
 - [ ] **G1** **`/refreshusers`.** *Given* a tracked user who left and an admin who isn't tracked. *When* A runs `/refreshusers`. *Then* the reply lists "Removed (left, invalid, or unverifiable)" and "Added (new admins found)"; with nothing to do it says "Nothing to change"; a person who was unresolvable becomes resolved after they become an admin or click something.
 - [ ] **G2** **Monitoring.** *When* A runs `/addmonitor <child>` (bot admin there, then not admin), `/listmonitors`, `/removemonitor`, and `/refreshusersall` on Hub-FREE and on Hub-PRO. *Then* `/addmonitor` refuses a chat where the bot is not admin; FREE gets the PRO-only message for `/refreshusersall`; PRO lists every monitored chat with a `Synced (+n/-n)` / `Partly synced` / `Failed - <reason>` line.
 - [ ] **G3** **User commands.** *When* A runs `/adduser <id> @name` twice, `/updateuser @name -p`, `/listusers`, `/listusers -a`, `/listusers -p` (and the long forms), `/notify`, and - after one member changed Going to Not Going and another left Child - `/who 24 -ng`, `/who 24 -l`, `/who 24 -l -c main`, `/who 24 -l -c <alias>`. *Then* the second `/adduser` says "Already in group"; `/listusers` shows "Tracked Users (N)" with **active before passive**; `-a` shows only "Active Users (N)", `-p` only "Passive Users (N)"; `/notify` pings only people who haven't responded; `/who -ng` (no hours = the last 6 h) lists only people who changed **from** another status (a first-time Not Going is not listed), `/who -l` lists departures grouped by chat (`main` = the main group), `-c` narrows it to `main` / an alias / `all`, and nobody is mentioned with `@` or a link.
 - [ ] **G4** 🔥 **DM sticky group.** *Given* A administers two groups. *When* A sends `/start`, picks a group (or `/switchgroup`), then `/status` and a hub command in the DM. *Then* `/start` lists the groups A administers (auto-selects when there is just one); `/status` names the group it reports on; DM commands behave **identically** to running them in that group; a non-admin gets no access. With **two** groups and none selected yet, a hub command typed in the DM shows the picker and, after the choice, runs to the end (for `/editevent`, `/shareevent` and `/reopen` that means the posts are refreshed too); on a FREE group the DM notice names the real command (e.g. `/listaliases`). `/chatid` in the DM shows the **selected group's** id and name (also for a FREE group).
+
+- [ ] **G5** **Join form (`/joinform`, `/joinlink`).** *Given* Hub-PRO with Child (the bot an admin there with "Invite users"), M1 not in Child. *When* A runs `/joinform add "Name?"`, `/joinform add "Sport?" football;tennis;none`, `/joinform preview`, `/joinlink child`; M1 opens the link, answers both questions (the second with a button); M2 opens the same link; M1 opens it again; A runs `/joinlink list`; then Hub-FREE's admin and a non-admin send `/joinform`. *Then* A sees the numbered form and a `t.me/<bot>?start=jf_...` link; M1 is asked one question at a time, then gets an invitation to Child and joins with it (the invitation works once); M2 is told the link has been taken; M1 is told it was used already; `list` shows it as `done` with M1's id; the `JoinForm` tab (Hub with a sheet) has one row with M1's answers under the question texts; the FREE hub is offered the PRO upgrade and the non-admin gets "Only admins".
 
 ### H. `/deleteevent`, orphaned events and reopen (4)
 

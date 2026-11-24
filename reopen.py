@@ -40,7 +40,6 @@ from sheets import reopen_event_in_sheet
 from subscription import require_feature, feature_available, feature_min_tier
 from utils import is_real_admin, now2ddmmyy
 
-BUTTON_PREFIX = "reopen_"
 MAX_LISTED = 5
 
 

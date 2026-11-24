@@ -138,3 +138,14 @@ class TestHelpAudit:
         assert markdown_v2_problems("fine \\. text *bold* `code.x`") == []
         assert markdown_v2_problems("unescaped. dot")
         assert markdown_v2_problems("*unbalanced")
+
+
+class TestJoinFormHelp:
+    """/joinform and /joinlink are listed only where the PRO feature `join_form` is available."""
+
+    async def test_shown_on_a_pro_hub_and_hidden_on_a_free_one(self, db_path):
+        _make_pro(db_path)                                   # chat -100 is PRO, -200 is FREE
+        pro = _plain((await _gather(OWNER, -100))["help_users"])
+        free = _plain((await _gather(OWNER, -200))["help_users"])
+        assert "/joinform" in pro and "/joinlink" in pro and "one-time" in pro
+        assert "/joinform" not in free and "/joinlink" not in free

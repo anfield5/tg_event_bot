@@ -57,12 +57,13 @@ zone are chosen to minimize crossing lines.
 >   (`events_count_waitlist_joins`, created in `init_db`) adds the growth of
 >   `waitlist_data` to it, because entries are appended in several places; it is
 >   skipped on a SQLite build without JSON1 (the waitlist itself is unaffected).
+> - `sub_chats` is the one table of a hub's other chats: its aliases (`/setalias`), the monitored ones (`/addmonitor`, `is_monitored`) and the chats an event is shared to; `owner_chat_id` is the hub it belongs to.
 > - `left_pending` holds people a refresh confirmed as gone whose departure hasn't reached the Google
 >   Sheet yet. `/refreshusers` deletes them from `main_group_users` immediately, so for someone with no
 >   `Users` row it is the only evidence left. Entries are dropped once the sheet has them; the stored
 >   time is the first detection, so a retry writes identical dates (no duplicate log rows).
 > - `actions_outbox` holds the `Actions`-tab rows waiting to be written to the Google Sheet (`actions_log.py`): a click queues its row here and a background task appends the rows of a burst in one go, then deletes them. A failed write is retried; a restart picks up what was waiting.
-> - `join_form_questions`, `join_form_links`, `join_form_responses` belong to the join form (`joinform.py`, PRO feature `join_form`): the hub's questions (up to 4, free text or buttons), the one-time links to the form (`status` new -> filling -> answered -> done, `user_id` = the one person the link belongs to) and one row per answer. With a bound sheet the answers also go to a `JoinForm` tab (columns = the question texts).
+> - `join_form_questions`, `join_form_links` and `join_form_responses` belong to the join form (`joinform.py`, PRO feature `join_form`): the hub's questions (up to 4, free text or buttons), the one-time links to the form (`status` new -> filling -> answered -> done, `user_id` = the one person the link belongs to) and one row per answer. With a bound sheet the answers also go to a `JoinForm` tab (columns = the question texts).
 > - `bot_settings` holds every setting the owners switch, in ONE table (`scope`, `key`, `value`, who and when) - a new
 >   setting is a new key, not a new table. `scope` is a hub's chat id, or `*` for a setting that is the same for every
 >   group. It is separate from `all_groups` because a hub's row there is deleted when the bot leaves the group, and the

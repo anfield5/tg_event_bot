@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import asyncio
-import re
 from telegram.error import BadRequest, RetryAfter
 
 from keyboard import create_event_keyboard
@@ -45,15 +44,6 @@ from sheets import (
 
 # events.event_status: -1 canceled / 0 open / 1 verification / 2 closed
 
-
-# ---------------------------------------------------------------------------
-# Share-mode alias map
-# ---------------------------------------------------------------------------
-MODE_MAP = {
-    "-v": "-visible", "--visible": "-visible", "-visible": "-visible",
-    "-h": "-hidden",  "--hidden":  "-hidden",  "-hidden":  "-hidden",
-    "-oc": "-onlycount", "--count": "-onlycount", "-onlycount": "-onlycount",
-}
 
 # ---------------------------------------------------------------------------
 # Argument parsers

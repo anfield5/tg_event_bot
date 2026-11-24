@@ -1,7 +1,5 @@
 import sqlite3
 import json
-import asyncio
-import functools
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -37,17 +35,6 @@ def get_connection(db_path: str = None):
         yield conn
     finally:
         conn.close()
-
-
-async def run_db(func, *args, **kwargs):
-    """
-    Runs a blocking sqlite3 function in a worker thread so it doesn't
-    block the asyncio event loop that python-telegram-bot relies on.
-    Usage: rows = await run_db(some_sync_function, arg1, arg2)
-    """
-    loop = asyncio.get_running_loop()
-    call = functools.partial(func, *args, **kwargs)
-    return await loop.run_in_executor(None, call)
 
 
 def _seed_all_features(cursor):
@@ -1043,6 +1030,16 @@ def init_db(db_path: str = DB_PATH):
             created_at  TEXT
         )
     """)
+
+    # Indexes for the lookups that are not served by a primary key (CREATE IF NOT EXISTS: safe on an existing database).
+    for name, table, columns in (
+        ("idx_events_chat",          "events",              "chat_id, event_status"),
+        ("idx_event_shares_chat",    "event_shares",        "chat_id"),
+        ("idx_join_questions_hub",   "join_form_questions", "hub_chat_id, position"),
+        ("idx_join_links_user",      "join_form_links",     "user_id, status"),
+        ("idx_join_links_hub",       "join_form_links",     "hub_chat_id"),
+    ):
+        cursor.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})")
 
     conn.commit()
     conn.close()

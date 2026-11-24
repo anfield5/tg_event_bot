@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bumped manually on each meaningful release; also used as the git tag.
-BOT_VERSION = "4.12.0"
+BOT_VERSION = "4.12.1"
 
 # Moment this process started - what /version reports as "Started" / uptime.
 STARTED_AT = time.time()
@@ -68,7 +68,6 @@ GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 ICON_GUEST = "⊕"   # marks "N guests, from: <username>" lines
 ICON_STANDBY = "💤"   # marks a person waiting in the Waitlist/Standby queue
-CLOSE_ICON = "🔴"
 ICON_VERIFICATION = "🔄"   # used on the "Verify" button (open -> verification mode)
 
 # Verification-mode roster actions
@@ -84,13 +83,11 @@ ICON_ADD            = "+"   # also used for "Add Extra Member"
 ICON_REMOVE         = "-"
 ICON_CANCEL_EVENT   = "🚫"
 ICON_SAVE           = "💾"
-ICON_REOPEN         = "🔓"
 
 # Message / status icons
 ICON_SHARED         = "↪️"
 ICON_STATS          = "📊"
 ICON_WARNING        = "⚠️"
-ICON_ERROR          = "❌"
 ICON_CLOCK          = "🕐"   # event date/time display
 ICON_NOTIFY         = "🔔"
 ICON_CLEAN          = "🧹"   # /refreshusers removal summary

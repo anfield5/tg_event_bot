@@ -24,7 +24,7 @@ from telegram.ext import ContextTypes
 import asyncio
 
 import richtext
-from config import ICON_ADMIN_ONLY, OWNER_USER_IDS, logger
+from config import ICON_ADMIN_ONLY, OWNER_USER_IDS
 from db import (active_hideability_hubs, get_connection, get_hideability_flags, is_hideability_active,
                 set_hideability_flags, set_hideability_mode)
 from event_engine import schedule_view_refresh

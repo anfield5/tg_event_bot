@@ -1,6 +1,6 @@
 # Minimal full-coverage tour
 
-> **102 actions** (59 commands, 29 button clicks, 11 manual operations, 3 sheet checks) - about **60 min** for someone who knows the bot and has all four accounts open, about 100 min the first time.
+> **104 actions** (61 commands, 29 button clicks, 11 manual operations, 3 sheet checks) - about **60 min** for someone who knows the bot and has all four accounts open, about 100 min the first time.
 
 One continuous scenario that touches **every command (all 35), every kind of event button, every role, the FREE / PRO / OWNER difference, Google Sheets, `/lockbot`, a restart and the orphan self-healing** - the smallest run that makes a broken area visible. It is breadth first and follows the happy path: it tells you *something is broken in area X*, not that every edge is right. For edges use the 46-case plan in `docs/manual_testing.md` (section "What it does not cover" says which cases to add).
 
@@ -179,6 +179,8 @@ Run in the container, one hub at a time. None of them is run with `--apply` here
 | 100 | O | Server | `docker compose exec bot python3 scripts/check_events_amount.py --chat-id <hub_id>` | "All amounts are right." | |
 | 101 | O | Server | `docker compose exec bot python3 scripts/fix_eventusers_ids.py --chat-id <hub_id>` | "Nothing to fix." - nothing in `EventUsers` holds a username instead of an id | |
 | 102 | O | Server | `docker compose exec bot python3 scripts/repair_event_users.py --chat-id <hub_id>` | "Nothing to repair." (a dry run) | |
+| 103 | A | Hub | `/joinform add "Name?"`, `/joinform add "Sport?" football;tennis;none`, `/joinform preview`, then `/joinlink <child alias>` | The preview numbers both questions (the second with its buttons); the reply is a `t.me/<bot>?start=jf_...` link and says the person will be invited to Child (PRO feature `join_form`; a FREE hub gets the upgrade message instead) | |
+| 104 | M1 | DM with the bot | open the link, answer "Name?" in text and tap a button for "Sport?" | One question at a time, then "Thank you, your answers are saved" with a one-time invitation to Child; a second person opening the same link is told it was taken; the Hub sheet's `JoinForm` tab has M1's row | |
 
 
 ## What the tour proves
